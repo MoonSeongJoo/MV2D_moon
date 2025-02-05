@@ -1,0 +1,423 @@
+# ------------------------------------------------------------------------
+# Modified from PETR (https://github.com/megvii-research/PETR)
+# Copyright (c) 2022 megvii-model. All Rights Reserved.
+# ------------------------------------------------------------------------
+import mmcv
+import numpy as np
+import torch
+from mmdet.datasets.builder import PIPELINES
+from mmdet3d.datasets.pipelines.loading import LoadAnnotations3D
+from einops import rearrange
+import matplotlib.pyplot as plt
+import torch.nn.functional as F
+
+from mmdet3d_plugin.datasets.pipelines.image_display import (points2depthmap,points2depthmap_gpu,add_calibration,
+                                                             add_mis_calibration,dense_map_gpu_optimized,colormap)
+
+@PIPELINES.register_module()
+class LoadAnnotationsMono3D(LoadAnnotations3D):
+    def __init__(self, with_bbox_2d=False, **kwargs):
+        super(LoadAnnotationsMono3D, self).__init__(**kwargs)
+        self.with_bbox_2d = with_bbox_2d
+
+    def _load_bboxes_2d(self, results):
+        results['gt_bboxes_2d'] = results['ann_info']['gt_bboxes_2d']
+        results['gt_labels_2d'] = results['ann_info']['gt_labels_2d']
+        results['gt_bboxes_2d_to_3d'] = results['ann_info']['gt_bboxes_2d_to_3d']
+        results['gt_bboxes_ignore'] = results['ann_info']['gt_bboxes_ignore']
+        results['bbox2d_fields'].append('gt_bboxes_2d')
+        return results
+
+    def __call__(self, results):
+        results = super().__call__(results)
+        if self.with_bbox_2d:
+            results = self._load_bboxes_2d(results)
+        return results
+    
+
+@PIPELINES.register_module()
+class LoadMapsFromFiles(object):
+    def __init__(self,k=None):
+        self.k=k
+    def __call__(self,results):
+        map_filename=results['map_filename']
+        maps=np.load(map_filename)
+        map_mask=maps['arr_0'].astype(np.float32)
+        
+        maps=map_mask.transpose((2,0,1))
+        results['gt_map']=maps
+        maps=rearrange(maps, 'c (h h1) (w w2) -> (h w) c h1 w2 ', h1=16, w2=16)
+        maps=maps.reshape(256,3*256)
+        results['map_shape']=maps.shape
+        results['maps']=maps
+        return results
+    
+@PIPELINES.register_module()
+class LoadMultiViewImageFromFiles_moon(object):
+    """Load multi channel images from a list of separate channel files.
+
+    Expects results['img_filename'] to be a list of filenames.
+
+    Args:
+        to_float32 (bool, optional): Whether to convert the img to float32.
+            Defaults to False.
+        color_type (str, optional): Color type of the file.
+            Defaults to 'unchanged'.
+    """
+
+    def __init__(self, to_float32=False, color_type='unchanged'):
+        self.to_float32 = to_float32
+        self.color_type = color_type
+
+    # def __call__(self, results):
+    #     """Call function to load multi-view image from files.
+
+    #     Args:
+    #         results (dict): Result dict containing multi-view image filenames.
+
+    #     Returns:
+    #         dict: The result dict containing the multi-view image data.
+    #             Added keys and values are described below.
+
+    #             - filename (str): Multi-view image filenames.
+    #             - img (np.ndarray): Multi-view image arrays.
+    #             - img_shape (tuple[int]): Shape of multi-view image arrays.
+    #             - ori_shape (tuple[int]): Shape of original image arrays.
+    #             - pad_shape (tuple[int]): Shape of padded image arrays.
+    #             - scale_factor (float): Scale factor.
+    #             - img_norm_cfg (dict): Normalization configuration of images.
+    #     """
+    #     filename = results['img_filename']
+    #     # img is of shape (h, w, c, num_views)
+    #     img = np.stack(
+    #         [mmcv.imread(name, self.color_type) for name in filename], axis=-1)
+    #     if self.to_float32:
+    #         img = img.astype(np.float32)
+    #     results['filename'] = filename
+    #     # unravel to list, see `DefaultFormatBundle` in formatting.py
+    #     # which will transpose each image separately and then stack into array
+    #     results['img'] = [img[..., i] for i in range(img.shape[-1])]
+    #     results['img_shape'] = img.shape
+    #     results['ori_shape'] = img.shape
+    #     # Set initial values for default meta_keys
+    #     results['pad_shape'] = img.shape
+    #     results['scale_factor'] = 1.0
+    #     num_channels = 1 if len(img.shape) < 3 else img.shape[2]
+    #     results['img_norm_cfg'] = dict(
+    #         mean=np.zeros(num_channels, dtype=np.float32),
+    #         std=np.ones(num_channels, dtype=np.float32),
+    #         to_rgb=False)
+    #     return results
+
+    def __repr__(self):
+        """str: Return a string that describes the module."""
+        repr_str = self.__class__.__name__
+        repr_str += f'(to_float32={self.to_float32}, '
+        repr_str += f"color_type='{self.color_type}')"
+        return repr_str
+    
+    def __call__(self, results):
+        filenames = results['img_filename']
+        valid_images = []
+        valid_indices = []
+        
+        for idx, name in enumerate(filenames):
+            try:
+                img = mmcv.imread(name, self.color_type)
+                if img is None:
+                    if valid_images:  # 이전 유효한 이미지가 있는 경우
+                        img = valid_images[-1].copy()  # 마지막 유효한 이미지를 복사
+                        print(f"Image {name} is corrupted. Using the previous valid image.")
+                    else:
+                        raise ValueError(f"Image {name} is corrupted and no previous valid image exists.")
+                valid_images.append(img)
+                valid_indices.append(idx)
+            except Exception as e:
+                print(f"Skipping file {name} due to error: {e}")
+                if valid_images:
+                    valid_images.append(valid_images[-1].copy())
+                    valid_indices.append(idx)
+                continue
+        
+        if not valid_images:
+            raise ValueError("No valid images found.")
+        
+        # Update all relevant data in results
+        for key in results.keys():
+            if isinstance(results[key], list) and len(results[key]) == len(filenames):
+                results[key] = [results[key][i] if i in valid_indices else results[key][valid_indices[-1]] for i in range(len(filenames))]
+        
+        # img is of shape (h, w, c, num_views)
+        img = np.stack(valid_images, axis=-1)
+        if self.to_float32:
+            img = img.astype(np.float32)
+        
+        results['img_filename'] = filenames  # 원래 파일 이름 유지
+        results['img'] = [img[..., i] for i in range(img.shape[-1])]
+        results['img_shape'] = img.shape
+        results['ori_shape'] = img.shape
+        results['pad_shape'] = img.shape
+        results['scale_factor'] = 1.0
+        num_channels = 1 if len(img.shape) < 3 else img.shape[2]
+        results['img_norm_cfg'] = dict(
+            mean=np.zeros(num_channels, dtype=np.float32),
+            std=np.ones(num_channels, dtype=np.float32),
+            to_rgb=False)
+        
+        return results
+
+
+
+@PIPELINES.register_module()
+class LoadMultiViewImageFromMultiSweepsFiles(object):
+    """Load multi channel images from a list of separate channel files.
+    Expects results['img_filename'] to be a list of filenames.
+    Args:
+        to_float32 (bool): Whether to convert the img to float32.
+            Defaults to False.
+        color_type (str): Color type of the file. Defaults to 'unchanged'.
+    """
+
+    def __init__(self, 
+                sweeps_num=5,
+                to_float32=False, 
+                file_client_args=dict(backend='disk'),
+                pad_empty_sweeps=False,
+                sweep_range=[3,27],
+                sweeps_id = None,
+                color_type='unchanged',
+                sensors = ['CAM_FRONT', 'CAM_FRONT_RIGHT', 'CAM_FRONT_LEFT', 'CAM_BACK', 'CAM_BACK_LEFT', 'CAM_BACK_RIGHT'],
+                test_mode=True,
+                prob=1.0,
+                ):
+
+        self.sweeps_num = sweeps_num    
+        self.to_float32 = to_float32
+        self.color_type = color_type
+        self.file_client_args = file_client_args.copy()
+        self.file_client = None
+        self.pad_empty_sweeps = pad_empty_sweeps
+        self.sensors = sensors
+        self.test_mode = test_mode
+        self.sweeps_id = sweeps_id
+        self.sweep_range = sweep_range
+        self.prob = prob
+        if self.sweeps_id:
+            assert len(self.sweeps_id) == self.sweeps_num
+
+    def __call__(self, results):
+        """Call function to load multi-view image from files.
+        Args:
+            results (dict): Result dict containing multi-view image filenames.
+        Returns:
+            dict: The result dict containing the multi-view image data. \
+                Added keys and values are described below.
+                - filename (str): Multi-view image filenames.
+                - img (np.ndarray): Multi-view image arrays.
+                - img_shape (tuple[int]): Shape of multi-view image arrays.
+                - ori_shape (tuple[int]): Shape of original image arrays.
+                - pad_shape (tuple[int]): Shape of padded image arrays.
+                - scale_factor (float): Scale factor.
+                - img_norm_cfg (dict): Normalization configuration of images.
+        """
+        sweep_imgs_list = []
+        timestamp_imgs_list = []
+        imgs = results['img']
+        img_timestamp = results['img_timestamp']
+        lidar_timestamp = results['timestamp']
+        img_timestamp = [lidar_timestamp - timestamp for timestamp in img_timestamp]
+        sweep_imgs_list.extend(imgs)
+        timestamp_imgs_list.extend(img_timestamp)
+        nums = len(imgs)
+        if self.pad_empty_sweeps and len(results['sweeps']) == 0:
+            for i in range(self.sweeps_num):
+                sweep_imgs_list.extend(imgs)
+                mean_time = (self.sweep_range[0] + self.sweep_range[1]) / 2.0 * 0.083
+                timestamp_imgs_list.extend([time + mean_time for time in img_timestamp])
+                for j in range(nums):
+                    results['filename'].append(results['filename'][j])
+                    results['lidar2img'].append(np.copy(results['lidar2img'][j]))
+                    results['intrinsics'].append(np.copy(results['intrinsics'][j]))
+                    results['extrinsics'].append(np.copy(results['extrinsics'][j]))
+        else:
+            if self.sweeps_id:
+                choices = self.sweeps_id
+            elif len(results['sweeps']) <= self.sweeps_num:
+                choices = np.arange(len(results['sweeps']))
+            elif self.test_mode:
+                choices = [int((self.sweep_range[0] + self.sweep_range[1])/2) - 1] 
+            else:
+                if np.random.random() < self.prob:
+                    if self.sweep_range[0] < len(results['sweeps']):
+                        sweep_range = list(range(self.sweep_range[0], min(self.sweep_range[1], len(results['sweeps']))))
+                    else:
+                        sweep_range = list(range(self.sweep_range[0], self.sweep_range[1]))
+                    choices = np.random.choice(sweep_range, self.sweeps_num, replace=False)
+                else:
+                    choices = [int((self.sweep_range[0] + self.sweep_range[1])/2) - 1] 
+                
+            for idx in choices:
+                sweep_idx = min(idx, len(results['sweeps']) - 1)
+                sweep = results['sweeps'][sweep_idx]
+                if len(sweep.keys()) < len(self.sensors):
+                    sweep = results['sweeps'][sweep_idx - 1]
+                # import ipdb; ipdb.set_trace()
+                results['filename'].extend([sweep[sensor]['data_path'] for sensor in self.sensors])
+
+                img = np.stack([mmcv.imread(sweep[sensor]['data_path'], self.color_type) for sensor in self.sensors], axis=-1)
+                
+                if self.to_float32:
+                    img = img.astype(np.float32)
+                img = [img[..., i] for i in range(img.shape[-1])]
+                sweep_imgs_list.extend(img)
+                sweep_ts = [lidar_timestamp - sweep[sensor]['timestamp'] / 1e6  for sensor in self.sensors]
+                timestamp_imgs_list.extend(sweep_ts)
+                for sensor in self.sensors:
+                    results['lidar2img'].append(sweep[sensor]['lidar2img'])
+                    results['intrinsics'].append(sweep[sensor]['intrinsics'])
+                    results['extrinsics'].append(sweep[sensor]['extrinsics'])
+        results['img'] = sweep_imgs_list
+        results['timestamp'] = timestamp_imgs_list  
+
+        return results
+
+    def __repr__(self):
+        """str: Return a string that describes the module."""
+        repr_str = self.__class__.__name__
+        repr_str += f'(to_float32={self.to_float32}, '
+        repr_str += f"color_type='{self.color_type}')"
+ 
+@PIPELINES.register_module()
+class PointToMultiViewDepth(object):
+
+    def __init__(self, grid_config, downsample=1):
+        self.downsample = downsample
+        self.grid_config = grid_config
+        self.num_points =900
+        self.grid_size = 30
+    
+    def __call__(self, results):
+        raw_points_lidar = results['points']
+        
+        # points_lidar = image_display.trim_corrs(raw_points_lidar)
+        points_lidar = raw_points_lidar
+
+        point2img_gt =[]
+        point2img_mis =[]
+        lidar_depth_map_mis=[]
+        lidar_depth_map_gt =[]
+        list_gt_KT ,list_mis_RT = [] ,[] 
+        
+        for cid in range(len(results['lidar2img'])):
+            lidar2img = torch.from_numpy(results['lidar2img'][cid]).to(torch.float32)
+            lidar2cam = torch.from_numpy(results['extrinsics'][cid]).to(torch.float32)
+            cam2img = torch.from_numpy(results['intrinsics'][cid]).to(torch.float32)
+
+            ##### ref : K(T.t): [results['intrinsics'][i] @ results['extrinsics'][i].T 
+
+            points2img = add_calibration(lidar2img , points_lidar)
+            miscalibrated_points2img , mis_RT = add_mis_calibration(lidar2cam,cam2img, points_lidar,max_r=10.,max_t=0.075)
+
+            point2img_gt.append(points2img) # lidar coordination 3d
+            point2img_mis.append(miscalibrated_points2img) # lidar coordination 3d mis-calibration
+            list_gt_KT.append(lidar2img)
+            list_mis_RT.append(mis_RT)
+            
+            ####### depth image display ######
+            depth_gt, gt_uv,gt_z, valid_indices_gt= points2depthmap(points2img, results['img'][0].shape[0] ,results['img'][0].shape[1])
+            # depth_gt= points2depthmap_gpu(points2img, results['img'][0].shape[0] ,results['img'][0].shape[1])
+            # lidarOnImage_gt = torch.cat((gt_uv, gt_z.unsqueeze(1)), dim=1)
+            # dense_depth_img_gt = image_display.dense_map_gpu_optimized(lidarOnImage_gt.T , results['img'][0].shape[1], results['img'][0].shape[0], 1)
+            # dense_depth_img_gt = dense_depth_img_gt.to(dtype=torch.uint8)
+            # dense_depth_img_color_gt = image_display.colormap(dense_depth_img_gt)
+
+            depth_mis, uv,z,valid_indices = points2depthmap(miscalibrated_points2img, results['img'][0].shape[0] ,results['img'][0].shape[1])
+            # depth_mis= points2depthmap_gpu(miscalibrated_points2img, results['img'][0].shape[0] ,results['img'][0].shape[1])
+            lidarOnImage_mis = torch.cat((uv, z.unsqueeze(1)), dim=1)
+            dense_depth_img_mis = dense_map_gpu_optimized(lidarOnImage_mis.T , results['img'][0].shape[1], results['img'][0].shape[0], 4)
+            dense_depth_img_mis = dense_depth_img_mis.to(dtype=torch.uint8)
+            dense_depth_img_color_mis = colormap(dense_depth_img_mis)
+
+            # lidar_depth_dense_gt.append(dense_depth_img_color_gt)
+            lidar_depth_map_mis.append(dense_depth_img_color_mis)
+            # gt_uvz.append(dense_depth_img_gt)
+            lidar_depth_map_gt.append(depth_gt)
+            # uvz.append(dense_depth_img_mis)
+            
+            # ###### input display ######
+            # img = results['img'][cid]
+            # # 이미지 데이터가 float 타입인 경우 0과 1 사이로 정규화
+            # if img.dtype == np.float32 or img.dtype == np.float64:
+            #     img = (img - img.min()) / (img.max() - img.min())
+            # plt.figure(figsize=(20, 20))
+            # plt.subplot(3,2,1)
+            # plt.imshow(img)
+            # plt.scatter(gt_uv[:, 0], gt_uv[:, 1], c=gt_z, s=0.5)
+            # plt.title("input calibrated display", fontsize=10)
+
+            # plt.subplot(3,2,2)
+            # plt.imshow(img)
+            # plt.scatter(uv[:, 0], uv[:, 1], c=z, s=0.5)
+            # plt.title("input mis-calibrated display", fontsize=10)
+
+            # disp_gt2 = dense_depth_img_color_gt.detach().cpu().numpy()
+            # plt.subplot(3,2,3)
+            # plt.imshow(disp_gt2, cmap='magma_r')
+            # plt.title("gt display", fontsize=10)
+            # plt.axis('off')
+
+            # disp_mis2 = dense_depth_img_color_mis.detach().cpu().numpy()
+            # plt.subplot(3,2,4)
+            # plt.imshow(disp_mis2, cmap='magma_r')
+            # plt.title("mis display", fontsize=10)
+            # plt.axis('off')
+
+            # gt_gray = dense_depth_img_gt.detach().cpu().numpy()
+            # plt.subplot(3,2,5)
+            # plt.imshow(gt_gray, cmap='magma_r')
+            # plt.title("gt gray display", fontsize=10)
+            # plt.axis('off')
+
+            # mis_gray = dense_depth_img_mis.detach().cpu().numpy()
+            # plt.subplot(3,2,6)
+            # plt.imshow(mis_gray, cmap='magma_r')
+            # plt.title("mis gray display", fontsize=10)
+            # plt.axis('off')
+            
+            # # 전체 그림 저장
+            # plt.tight_layout()
+            # plt.savefig('all_displays6.jpg', dpi=300, bbox_inches='tight')
+            # plt.close()
+            # print ("end of print")
+        
+        # mis_KT = torch.stack(list_mis_KT)
+        # mis_T = torch.stack(list_mis_T)
+        # mis_K = torch.stack(list_mis_K)
+        gt_KT = torch.stack(list_gt_KT)
+        mis_RT = torch.stack(list_mis_RT)
+        # points2img_gt = torch.stack(point_gts)
+        # points2img_mis = torch.stack(point_mis)
+        # lidar_depth_gt = torch.stack(lidar_depth_dense_gt)
+        lidar_depth_mis = torch.stack(lidar_depth_map_mis)
+        lidar_depth_gt = torch.stack(lidar_depth_map_gt)
+        # depth_uvz = torch.stack(uvz)
+        # lidar_depth_gt = lidar_depth_gt.permute(0, 3, 1, 2)
+        # lidar_depth_mis = lidar_depth_mis.unsqueeze(3).permute(0, 3, 1, 2).expand(-1, 3, -1, -1)
+        lidar_depth_mis = lidar_depth_mis.permute(0, 3, 1, 2)
+        # raw_points_tensor = raw_points_lidar.tensor[:,:3]
+        reduced_points_tensor = points_lidar.tensor[:, :3]
+        # lidar_depth_gt = F.interpolate(lidar_depth_gt, size=[192, 640], mode="bilinear") # lidar 2d depth map input [192,640,1]
+        # lidar_depth_mis = F.interpolate(lidar_depth_mis, size=[192, 640], mode="bilinear") 
+
+        results['lidar_depth_gt']  = lidar_depth_gt
+        # results['points_mis'] = depth_uvz
+        # results['lidar_depth_gt'] =lidar_depth_gt
+        results['lidar_depth_mis'] = lidar_depth_mis
+        results['reduce_points_raw'] = reduced_points_tensor
+        # results['points_raw'] = raw_points_tensor
+        # results['mis_KT'] = mis_KT
+        results['mis_RT'] = mis_RT
+        # results['mis_T'] = mis_T
+        results['gt_KT'] = gt_KT
+
+        return results

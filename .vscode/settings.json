@@ -1,0 +1,23 @@
+{
+    "python.analysis.autoImportCompletions": true,
+    "python.analysis.typeCheckingMode": "off",
+    "files.exclude": {
+        "**/node_modules": true,
+        "**/.git": true,
+        "**/build": true,
+      },
+    "python.analysis.exclude": [
+        "**/node_modules",
+        "**/.git",
+        "**/build",
+        "**/__pycache__",
+        "**/data",
+        "**/weights",
+        "**/work_dirs",
+      ],
+    "remote.autoForwardPortsFallback": 0,
+    "python.envFile": "${workspaceFolder}/.env",
+    "terminal.integrated.env.linux": {
+      "PYTHONPATH": "${env:PYTHONPATH}:${workspaceFolder}"
+  }  
+}
