@@ -11,8 +11,12 @@ from einops import rearrange
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
 
-from mmdet3d_plugin.datasets.pipelines.image_display import (points2depthmap,points2depthmap_gpu,add_calibration,
-                                                             add_mis_calibration,dense_map_gpu_optimized,colormap)
+from mmdet3d_plugin.datasets.pipelines.image_display import (points2depthmap_cpu,points2depthmap_gpu,
+                                                             add_calibration,add_calibration_cpu,
+                                                             add_mis_calibration,add_mis_calibration_cpu,
+                                                             dense_map_gpu_optimized,dense_map_cpu_optimized,
+                                                             colormap,colormap_cpu,
+                                                             visualize_depth_maps)
 
 @PIPELINES.register_module()
 class LoadAnnotationsMono3D(LoadAnnotations3D):
@@ -324,14 +328,14 @@ class PointToMultiViewDepth(object):
             list_mis_RT.append(mis_RT)
             
             ####### depth image display ######
-            depth_gt, gt_uv,gt_z, valid_indices_gt= points2depthmap(points2img, results['img'][0].shape[0] ,results['img'][0].shape[1])
+            depth_gt, gt_uv,gt_z, valid_indices_gt= points2depthmap_gpu(points2img, results['img'][0].shape[0] ,results['img'][0].shape[1])
             # depth_gt= points2depthmap_gpu(points2img, results['img'][0].shape[0] ,results['img'][0].shape[1])
             # lidarOnImage_gt = torch.cat((gt_uv, gt_z.unsqueeze(1)), dim=1)
             # dense_depth_img_gt = image_display.dense_map_gpu_optimized(lidarOnImage_gt.T , results['img'][0].shape[1], results['img'][0].shape[0], 1)
             # dense_depth_img_gt = dense_depth_img_gt.to(dtype=torch.uint8)
             # dense_depth_img_color_gt = image_display.colormap(dense_depth_img_gt)
 
-            depth_mis, uv,z,valid_indices = points2depthmap(miscalibrated_points2img, results['img'][0].shape[0] ,results['img'][0].shape[1])
+            depth_mis, uv,z,valid_indices = points2depthmap_gpu(miscalibrated_points2img, results['img'][0].shape[0] ,results['img'][0].shape[1])
             # depth_mis= points2depthmap_gpu(miscalibrated_points2img, results['img'][0].shape[0] ,results['img'][0].shape[1])
             lidarOnImage_mis = torch.cat((uv, z.unsqueeze(1)), dim=1)
             dense_depth_img_mis = dense_map_gpu_optimized(lidarOnImage_mis.T , results['img'][0].shape[1], results['img'][0].shape[0], 4)
@@ -350,39 +354,39 @@ class PointToMultiViewDepth(object):
             # if img.dtype == np.float32 or img.dtype == np.float64:
             #     img = (img - img.min()) / (img.max() - img.min())
             # plt.figure(figsize=(20, 20))
-            # plt.subplot(3,2,1)
+            # plt.subplot(3,1,1)
             # plt.imshow(img)
             # plt.scatter(gt_uv[:, 0], gt_uv[:, 1], c=gt_z, s=0.5)
             # plt.title("input calibrated display", fontsize=10)
 
-            # plt.subplot(3,2,2)
+            # plt.subplot(3,1,2)
             # plt.imshow(img)
             # plt.scatter(uv[:, 0], uv[:, 1], c=z, s=0.5)
             # plt.title("input mis-calibrated display", fontsize=10)
 
-            # disp_gt2 = dense_depth_img_color_gt.detach().cpu().numpy()
-            # plt.subplot(3,2,3)
-            # plt.imshow(disp_gt2, cmap='magma_r')
-            # plt.title("gt display", fontsize=10)
-            # plt.axis('off')
+            # # disp_gt2 = dense_depth_img_color_gt.detach().cpu().numpy()
+            # # plt.subplot(3,2,3)
+            # # plt.imshow(disp_gt2, cmap='magma_r')
+            # # plt.title("gt display", fontsize=10)
+            # # plt.axis('off')
 
             # disp_mis2 = dense_depth_img_color_mis.detach().cpu().numpy()
-            # plt.subplot(3,2,4)
-            # plt.imshow(disp_mis2, cmap='magma_r')
+            # plt.subplot(3,1,3)
+            # plt.imshow(disp_mis2, cmap='magma')
             # plt.title("mis display", fontsize=10)
             # plt.axis('off')
 
-            # gt_gray = dense_depth_img_gt.detach().cpu().numpy()
-            # plt.subplot(3,2,5)
-            # plt.imshow(gt_gray, cmap='magma_r')
-            # plt.title("gt gray display", fontsize=10)
-            # plt.axis('off')
+            # # gt_gray = dense_depth_img_gt.detach().cpu().numpy()
+            # # plt.subplot(3,2,5)
+            # # plt.imshow(gt_gray, cmap='magma_r')
+            # # plt.title("gt gray display", fontsize=10)
+            # # plt.axis('off')
 
-            # mis_gray = dense_depth_img_mis.detach().cpu().numpy()
-            # plt.subplot(3,2,6)
-            # plt.imshow(mis_gray, cmap='magma_r')
-            # plt.title("mis gray display", fontsize=10)
-            # plt.axis('off')
+            # # mis_gray = dense_depth_img_mis.detach().cpu().numpy()
+            # # plt.subplot(3,2,6)
+            # # plt.imshow(mis_gray, cmap='magma_r')
+            # # plt.title("mis gray display", fontsize=10)
+            # # plt.axis('off')
             
             # # 전체 그림 저장
             # plt.tight_layout()
@@ -405,7 +409,7 @@ class PointToMultiViewDepth(object):
         # lidar_depth_mis = lidar_depth_mis.unsqueeze(3).permute(0, 3, 1, 2).expand(-1, 3, -1, -1)
         lidar_depth_mis = lidar_depth_mis.permute(0, 3, 1, 2)
         # raw_points_tensor = raw_points_lidar.tensor[:,:3]
-        reduced_points_tensor = points_lidar.tensor[:, :3]
+        # reduced_points_tensor = points_lidar.tensor[:, :3]
         # lidar_depth_gt = F.interpolate(lidar_depth_gt, size=[192, 640], mode="bilinear") # lidar 2d depth map input [192,640,1]
         # lidar_depth_mis = F.interpolate(lidar_depth_mis, size=[192, 640], mode="bilinear") 
 
@@ -413,7 +417,7 @@ class PointToMultiViewDepth(object):
         # results['points_mis'] = depth_uvz
         # results['lidar_depth_gt'] =lidar_depth_gt
         results['lidar_depth_mis'] = lidar_depth_mis
-        results['reduce_points_raw'] = reduced_points_tensor
+        # results['reduce_points_raw'] = reduced_points_tensor
         # results['points_raw'] = raw_points_tensor
         # results['mis_KT'] = mis_KT
         results['mis_RT'] = mis_RT
@@ -421,3 +425,80 @@ class PointToMultiViewDepth(object):
         results['gt_KT'] = gt_KT
 
         return results
+    
+    # def __call__(self, results):
+    #     # CPU에서 처리
+    #     raw_points_lidar = results['points'].tensor.numpy()  # GPU 텐서를 NumPy 배열로 변환
+    #     points_lidar = raw_points_lidar
+        
+    #     num_cameras = len(results['lidar2img'])
+        
+    #     # NumPy 배열로 초기화
+    #     point2img_gt = np.zeros((num_cameras, points_lidar.shape[0], 3))  # (num_cam, N, 3)
+    #     point2img_mis = np.zeros_like(point2img_gt)
+    #     lidar_depth_map_mis = np.zeros((num_cameras, *results['img'][0].shape[:2], 3), dtype=np.uint8)
+    #     # lidar_depth_map_mis = np.zeros((num_cameras, *results['img'][0].shape[:2]))
+    #     lidar_depth_map_gt  = np.zeros((num_cameras, *results['img'][0].shape[:2]))
+    #     list_gt_KT = np.zeros((num_cameras, 4, 4))
+    #     list_mis_RT = np.zeros_like(list_gt_KT)
+        
+    #     # NumPy 배열로 변환
+    #     lidar2img = np.stack([results['lidar2img'][i] for i in range(num_cameras)])
+    #     lidar2cam = np.stack([results['extrinsics'][i] for i in range(num_cameras)])
+    #     cam2img = np.stack([results['intrinsics'][i] for i in range(num_cameras)])
+        
+    #     for cid in range(num_cameras):
+    #         # CPU에서 연산 수행
+    #         points2img = add_calibration_cpu(lidar2img[cid], points_lidar)
+    #         miscalibrated_points2img, mis_RT = add_mis_calibration_cpu(lidar2cam[cid], cam2img[cid], points_lidar, max_r=10., max_t=0.075)
+            
+    #         point2img_gt[cid] = points2img
+    #         point2img_mis[cid] = miscalibrated_points2img
+    #         list_gt_KT[cid] = lidar2img[cid]
+    #         list_mis_RT[cid] = mis_RT
+            
+    #         depth_gt, _, _, _ = points2depthmap_cpu(points2img, results['img'][0].shape[0], results['img'][0].shape[1])
+    #         depth_mis, uv, z, _ = points2depthmap_cpu(miscalibrated_points2img, results['img'][0].shape[0], results['img'][0].shape[1])
+            
+    #         lidarOnImage_mis = np.concatenate((uv, z[:, np.newaxis]), axis=1)
+    #         dense_depth_img_mis = dense_map_cpu_optimized(lidarOnImage_mis.T, results['img'][0].shape[1], results['img'][0].shape[0], 4)
+    #         dense_depth_img_mis = dense_depth_img_mis.astype(np.uint8)
+    #         dense_depth_img_color_mis = colormap(dense_depth_img_mis)
+            
+    #         lidar_depth_map_mis[cid] = dense_depth_img_color_mis
+    #         # lidar_depth_map_mis[cid] = depth_mis
+    #         # lidar_depth_map_mis[cid] = np.stack([depth_mis, depth_mis, depth_mis], axis=-1)
+    #         lidar_depth_map_gt[cid] = depth_gt
+        
+    #     # 결과 저장 (NumPy 배열로 저장)
+    #     results['lidar_depth_gt'] = lidar_depth_map_gt
+    #     # results['lidar_depth_mis'] = lidar_depth_map_mis
+    #     # 수정 후 (CHW 형식으로 변환)
+    #     results['lidar_depth_mis'] = np.transpose(lidar_depth_map_mis, (0, 3, 1, 2))
+    #     # results['reduce_points_raw'] = points_lidar[:, :3]
+    #     results['mis_RT'] = list_mis_RT
+    #     results['gt_KT'] = list_gt_KT
+
+    #     # 결과 저장 후 시각화
+    #     visualize_depth_maps(results['lidar_depth_gt'], results['lidar_depth_mis'])
+        
+    #     return results
+
+@PIPELINES.register_module()
+class ToPytorchTensor(object):
+    """Convert ndarrays in sample to Tensors while preserving integer types."""
+    def __call__(self, results):
+        tensor_results = {}
+        for key, value in results.items():
+            if isinstance(value, np.ndarray):
+                if value.dtype in [np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16, np.uint32, np.uint64]:
+                    # 정수형 타입 유지
+                    tensor_results[key] = torch.from_numpy(value).long()
+                else:
+                    # 부동소수점 타입은 float로 변환
+                    tensor_results[key] = torch.from_numpy(value).float()
+            else:
+                tensor_results[key] = value
+        return tensor_results
+
+

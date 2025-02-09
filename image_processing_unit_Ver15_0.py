@@ -1275,6 +1275,81 @@ def find_rois_nonzero_z_adv3(detections, depth_map):
     
     return torch.stack(result), confidence_scores
 
+def find_rois_nonzero_z_adv3_gpu(detections, depth_map):
+    device = depth_map.device
+    batch_size, num_cam, h, w = depth_map.shape
+    depth_map_re = depth_map.view(batch_size * num_cam, h, w)
+    
+    # 통계값 및 신뢰도 스코어 초기화
+    cam_means = torch.zeros(batch_size * num_cam, device=device, dtype=torch.float32)
+    cam_medians = torch.zeros(batch_size * num_cam, device=device, dtype=torch.float32)
+    
+    # 배치 평균 계산
+    non_zero_mask = depth_map_re > 0
+    batch_mean = torch.mean(depth_map_re[non_zero_mask]) if torch.any(non_zero_mask) else torch.tensor(0.0, device=device)
+    
+    # 카메라별 통계값 계산
+    non_zero_counts = torch.sum(non_zero_mask, dim=(1,2))
+    cam_means = torch.sum(depth_map_re, dim=(1,2)) / non_zero_counts.clamp(min=1)
+    cam_medians = torch.median(depth_map_re.view(batch_size * num_cam, -1), dim=1)[0]
+    cam_means = torch.where(non_zero_counts > 0, cam_means, batch_mean)
+    cam_medians = torch.where(non_zero_counts > 0, cam_medians, batch_mean)
+
+    # Detection 처리
+    cam_indices = detections[:, 0].long().to(device)
+    bboxes = detections[:, 1:].to(device)
+    x_min, y_min, x_max, y_max = bboxes.long().t()
+    
+    x_min = torch.clamp(x_min, 0, w-1)
+    y_min = torch.clamp(y_min, 0, h-1)
+    x_max = torch.clamp(x_max, 0, w-1)
+    y_max = torch.clamp(y_max, 0, h-1)
+    
+    # 중심점 계산
+    center_x = (x_min + x_max) // 2
+    center_y = (y_min + y_max) // 2
+    
+    # 동적 서치 윈도우 크기 계산
+    bbox_width = x_max - x_min + 1
+    bbox_height = y_max - y_min + 1
+    search_radius_x = torch.clamp(bbox_width // 4, min=3)
+    search_radius_y = torch.clamp(bbox_height // 4, min=3)
+    
+    # 중심점 깊이값 계산
+    center_z = depth_map_re[cam_indices, center_y, center_x]
+    confidence_scores = torch.ones(len(detections), device=device)
+    
+    # 중심점 깊이값이 0인 경우 처리
+    zero_mask = center_z == 0
+    if torch.any(zero_mask):
+        # 확장된 영역 생성
+        y_start = torch.clamp(center_y[zero_mask] - search_radius_y[zero_mask], min=0)
+        y_end = torch.clamp(center_y[zero_mask] + search_radius_y[zero_mask] + 1, max=h)
+        x_start = torch.clamp(center_x[zero_mask] - search_radius_x[zero_mask], min=0)
+        x_end = torch.clamp(center_x[zero_mask] + search_radius_x[zero_mask] + 1, max=w)
+        
+        # 확장된 영역에서 유효한 깊이값 찾기
+        for i, (cid, ys, ye, xs, xe) in enumerate(zip(cam_indices[zero_mask], y_start, y_end, x_start, x_end)):
+            expanded_area = depth_map_re[cid, ys:ye, xs:xe]
+            valid_depths = expanded_area[expanded_area > 0]
+            if len(valid_depths) > 0:
+                center_z[zero_mask][i] = torch.median(valid_depths)
+                valid_pos = torch.nonzero(expanded_area > 0).float().mean(dim=0)
+                center_y[zero_mask][i] = ys + int(valid_pos[0])
+                center_x[zero_mask][i] = xs + int(valid_pos[1])
+                confidence_scores[zero_mask][i] = 0.6
+    
+    # 여전히 깊이값이 0인 경우 통계값 사용
+    still_zero_mask = center_z == 0
+    center_z[still_zero_mask] = cam_medians[cam_indices[still_zero_mask]]
+    confidence_scores[still_zero_mask] = 0.4
+    
+    # 최종 결과 생성
+    result = torch.stack([cam_indices, center_x, center_y, center_z, confidence_scores], dim=1)
+    
+    return result, confidence_scores
+
+
 def image_to_lidar_global(detection_uvz, lidar2img):
 
     img2lidar = torch.inverse(lidar2img).float()

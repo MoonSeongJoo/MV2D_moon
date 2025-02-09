@@ -18,7 +18,7 @@ from .mv2d_head import MV2DHead
 # from mmdet3d_plugin.models.utils.pe import PE
 
 from image_processing_unit_Ver15_0 import (find_rois_nonzero_z,find_rois_nonzero_z_adv,find_rois_nonzero_z_adv1,
-                                           find_rois_nonzero_z_adv2,find_rois_nonzero_z_adv3,
+                                           find_rois_nonzero_z_adv2,find_rois_nonzero_z_adv3,find_rois_nonzero_z_adv3_gpu,
                                            image_to_lidar_global_modi,image_to_lidar_global_modi1,
                                            miscalib_transform, miscalib_transform1,
                                            points2depthmap,dense_map_gpu_optimized,colormap)
@@ -234,7 +234,7 @@ class MV2DSHead(MV2DHead):
 
         return padded_reference_points, attn_mask, mask_dict
 
-    def _bbox_forward_denoise(self, img,lidar_depth_mis,x, depth_x, proposal_list,img_metas, points_gt,gt_KT,mis_RT): # for SJMOON
+    def _bbox_forward_denoise(self, img,lidar_depth_mis,x, depth_x, proposal_list,img_metas, uvz_gt,gt_KT,mis_RT): # for SJMOON
     # def _bbox_forward_denoise(self, x, proposal_list, img_metas): # for original 
         # avoid empty 2D detection
         if sum([len(p) for p in proposal_list]) == 0:
@@ -263,20 +263,20 @@ class MV2DSHead(MV2DHead):
         # detection_nonzero_uvz = find_rois_nonzero_z_adv(rois,points_gt)
         # detection_nonzero_xyz = image_to_lidar_global_modi(detection_nonzero_uvz,gt_KT) # 교정되어진 lidar좌표계 pc
         # gt_xyz = miscalib_transform(detection_nonzero_xyz,mis_RT) #mis-calibrated lidar좌표계 pc
-        detection_nonzero_uvz , conf_scores = find_rois_nonzero_z_adv3(rois,points_gt) 
+        detection_nonzero_uvz , conf_scores = find_rois_nonzero_z_adv3(rois,uvz_gt) 
         detection_nonzero_xyz = image_to_lidar_global_modi1(detection_nonzero_uvz,gt_KT) # 교정되어진 lidar좌표계 pc
         gt_xyz = miscalib_transform1(detection_nonzero_xyz,mis_RT) #mis-calibrated lidar좌표계 pc
 
         # ####### input 검증용 #############
-        # lidar_img = detection_nonzero_xyz.matmul(gt_KT[0][:3, :3].T) + gt_KT[0][:3, 3].unsqueeze(0)
+        # lidar_img = detection_nonzero_xyz[:,1:4].matmul(gt_KT[0][:3, :3].T) + gt_KT[0][:3, 3].unsqueeze(0)
         # lidar_img = torch.cat([lidar_img[:, :2] / lidar_img[:, 2:3], lidar_img[:, 2:3]], 1)
         # depth , uv,z, valid_indices = points2depthmap(lidar_img , img_metas[0]['img_shape'][0] ,img_metas[0]['img_shape'][1])
         # ref_uvz = torch.cat((uv, z.unsqueeze(1)), dim=1)
-        # dense_depth_img_ref = dense_map_gpu_optimized(ref_uvz.T , img_metas[0]['img_shape'][1] ,img_metas[0]['img_shape'][0], 1)
+        # dense_depth_img_ref = dense_map_gpu_optimized(ref_uvz.T , img_metas[0]['img_shape'][1] ,img_metas[0]['img_shape'][0], 4)
         # dense_depth_img_ref = dense_depth_img_ref.to(dtype=torch.uint8).to(dense_depth_img_ref.device)
         # dense_depth_img_color_ref = colormap(dense_depth_img_ref)
 
-        # lidar_img_mis = detection_nonzero_xyz.matmul(mis_KT[0][:3, :3].T) + mis_KT[0][:3, 3].unsqueeze(0)
+        # lidar_img_mis = gt_xyz[:,1:4].matmul(gt_KT[0][:3, :3].T) + gt_KT[0][:3, 3].unsqueeze(0)
         # lidar_img_mis = torch.cat([lidar_img_mis[:, :2] / lidar_img_mis[:, 2:3], lidar_img_mis[:, 2:3]], 1)
         # depth , gt_uv,gt_z, valid_indices = points2depthmap(lidar_img_mis , img_metas[0]['img_shape'][0] ,img_metas[0]['img_shape'][1])
         # gt_uvz = torch.cat((gt_uv, gt_z.unsqueeze(1)), dim=1)
@@ -300,9 +300,9 @@ class MV2DSHead(MV2DHead):
         # # scale_y = new_height / original_height
 
         # # 깊이 맵의 알파 채널 설정 (투명도 조절)
-        # alpha = 0.5
-        # depth_np_with_alpha = np.concatenate([depth_np, np.ones((*depth_np.shape[:2], 1)) * alpha], axis=2)
-        # mis_depth_np_with_alpha = np.concatenate([mis_depth_np, np.ones((*mis_depth_np.shape[:2], 1)) * alpha], axis=2)
+        # # alpha = 0.5
+        # # depth_np_with_alpha = np.concatenate([depth_np, np.ones((*depth_np.shape[:2], 1)) * alpha], axis=2)
+        # # mis_depth_np_with_alpha = np.concatenate([mis_depth_np, np.ones((*mis_depth_np.shape[:2], 1)) * alpha], axis=2)
 
         # # # 그림 생성
         # # fig, ax = plt.subplots(figsize=(20, 10))
@@ -330,19 +330,25 @@ class MV2DSHead(MV2DHead):
         # # plt.close()
 
         # # 그림 생성
-        # fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(40, 20))
+        # fig, (ax1,ax2,ax3) = plt.subplots(3, 1, figsize=(40, 20))
 
         # # 첫 번째 서브플롯: img와 depth_np 오버레이
         # ax1.imshow(img_np)
-        # ax1.imshow(depth_np_with_alpha)
-        # ax1.set_title("Image with Depth Map Overlay", fontsize=15)
+        # # ax1.imshow(depth_np_with_alpha)
+        # ax1.set_title("Image", fontsize=10)
         # ax1.axis('off')
 
-        # # 두 번째 서브플롯: img와 mis_depth_np 오버레이
-        # ax2.imshow(lidar_depth_mis_np)
-        # ax2.imshow(mis_depth_np_with_alpha)
-        # ax2.set_title("Image with Mis-depth Map Overlay", fontsize=15)
+        # # # 두 번째 서브플롯: img와 mis_depth_np 오버레이
+        # ax2.imshow(depth_np)
+        # # ax2.imshow(mis_depth_np_with_alpha)
+        # ax2.set_title("Object depth Map", fontsize=10)
         # ax2.axis('off')
+
+        # # # 세 번째 서브플롯: img와 mis_depth_np 오버레이
+        # ax3.imshow(mis_depth_np)
+        # # ax2.imshow(mis_depth_np_with_alpha)
+        # ax3.set_title("Object mis depth Map", fontsize=10)
+        # ax3.axis('off')
 
         # # 전체 그림 저장
         # plt.tight_layout()
@@ -510,9 +516,9 @@ class MV2DSHead(MV2DHead):
         return bbox_results , loss_corr
 
     # def _bbox_forward(self, x, proposal_list, img_metas): # for original 
-    def _bbox_forward(self,img, lidar_depth_mis,x,depth_x, proposal_list,img_metas, points_gt,gt_KT,mis_RT): ### this modified moon
+    def _bbox_forward(self,img, lidar_depth_mis,x,depth_x, proposal_list,img_metas, uvz_gt,gt_KT,mis_RT): ### this modified moon
         # bbox_results = self._bbox_forward_denoise(x, proposal_list, img_metas) # for original 
-        bbox_results ,loss_corr = self._bbox_forward_denoise(img,lidar_depth_mis,x, depth_x, proposal_list,img_metas,points_gt,gt_KT,mis_RT) # for SJMOON 
+        bbox_results ,loss_corr = self._bbox_forward_denoise(img,lidar_depth_mis,x, depth_x, proposal_list,img_metas,uvz_gt,gt_KT,mis_RT) # for SJMOON 
         return bbox_results ,loss_corr
 
     def prepare_for_dn_loss(self, mask_dict):
@@ -540,7 +546,7 @@ class MV2DSHead(MV2DHead):
                       mis_depthmap_feat,
                       proposal_list,
                       img_metas,
-                      points_gt,
+                      uvz_gt,
                       gt_KT,
                       mis_RT,
                       gt_bboxes,
@@ -579,7 +585,7 @@ class MV2DSHead(MV2DHead):
             img_metas[0]['gt_bboxes_3d'] = ori_gt_bboxes_3d[0]
             img_metas[0]['gt_labels_3d'] = ori_gt_labels_3d[0]
 
-        results_from_last, loss_corr = self._bbox_forward_train(img,lidar_depth_mis, x, depth_x, proposal_boxes, img_metas, points_gt,gt_KT,mis_RT) # for SJ MOON 
+        results_from_last, loss_corr = self._bbox_forward_train(img,lidar_depth_mis, x, depth_x, proposal_boxes, img_metas, uvz_gt,gt_KT,mis_RT) # for SJ MOON 
         # results_from_last = self._bbox_forward_train(x, proposal_boxes, img_metas) # for original 
         preds = results_from_last['pred']
 
@@ -616,7 +622,7 @@ class MV2DSHead(MV2DHead):
 
         return losses ,loss_corr
     
-    def simple_test(self,img,lidar_depth_mis, x, mis_depthmap_feat,proposal_list, points_gt,gt_KT,mis_RT,img_metas,rescale=False):
+    def simple_test(self,img,lidar_depth_mis, x, mis_depthmap_feat,proposal_list, uvz_gt,gt_KT,mis_RT,img_metas,rescale=False):
         assert self.with_bbox, 'Bbox head must be implemented.'
         assert len(img_metas) // img_metas[0]['num_views'] == 1
 
@@ -630,10 +636,14 @@ class MV2DSHead(MV2DHead):
         results_from_last = dict()
 
         results_from_last['batch_size'] = len(img_metas) // img_metas[0]['num_views']
-        results_from_last = self._bbox_forward(img, lidar_depth_mis,x,depth_x, proposal_list,points_gt,gt_KT,mis_RT,img_metas)
+        results_from_last = self._bbox_forward(img, lidar_depth_mis,x,depth_x, proposal_list,img_metas,uvz_gt,gt_KT,mis_RT,)
 
-        cls_scores = results_from_last['cls_scores'][-1]
-        bbox_preds = results_from_last['bbox_preds'][-1]
+        # original
+        # cls_scores = results_from_last['cls_scores'][-1]
+        # bbox_preds = results_from_last['bbox_preds'][-1]
+
+        cls_scores = results_from_last[0]['cls_scores'][-1]
+        bbox_preds = results_from_last[0]['bbox_preds'][-1]
 
         bbox_list = self.bbox_head.get_bboxes({'cls_scores': [cls_scores], 'bbox_preds': [bbox_preds]}, img_metas,)
 

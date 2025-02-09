@@ -18,12 +18,12 @@ from mmdet.models.builder import DETECTORS, build_detector, build_head, build_ne
 from mmdet3d.core import (bbox3d2result, box3d_multiclass_nms)
 from mmdet3d.models.detectors.base import Base3DDetector
 from mmdet3d_plugin.models.utils.grid_mask import CustomGridMask
-from mmdet3d_plugin.datasets.pipelines.image_display import (display_depth_maps, add_calibration, points2depthmap 
-                                                             ,dense_map_gpu_optimized,add_mis_calibration)
+# from mmdet3d_plugin.datasets.pipelines.image_display import (display_depth_maps, add_calibration, points2depthmap 
+#                                                              ,dense_map_gpu_optimized,add_mis_calibration)
 # from COTR.COTR_models.cotr_model_moon_Ver12_0 import build
-from image_processing_unit_Ver15_0 import (two_images_side_by_side , find_depthmap_z ,find_all_depthmap_z,find_nonzero_depthmap_z,
-                                           image_to_lidar_global,display_nonzero_depthmap,trim_corrs_torch,resize_points,draw_points_torch,
-                                           normalize_point_cloud ,corrs_normalization,corrs_denormalization)
+# from image_processing_unit_Ver15_0 import (two_images_side_by_side , find_depthmap_z ,find_all_depthmap_z,find_nonzero_depthmap_z,
+#                                            image_to_lidar_global,display_nonzero_depthmap,trim_corrs_torch,resize_points,draw_points_torch,
+#                                            normalize_point_cloud ,corrs_normalization,corrs_denormalization)
 
 # cotr_args = easydict.EasyDict({
 #                 "out_dir" : "general_config['out']",
@@ -236,15 +236,33 @@ class MV2D(Base3DDetector):
             feat = detector_feat
         return feat
     
-    # def position_embedding(self, query_pos):
-    #     return self.query_embedding(pos2posemb3d(query_pos, num_pos_feats=self.embed_dims//2))
+    # @force_fp32(apply_to=('img', 'points'))
+    def forward(self, return_loss=True, **kwargs):
+        """Calls either forward_train or forward_test depending on whether
+        return_loss=True.
+        Note this setting will change the expected inputs. When
+        `return_loss=True`, img and img_metas are single-nested (i.e.
+        torch.Tensor and list[dict]), and when `resturn_loss=False`, img and
+        img_metas should be double nested (i.e.  list[torch.Tensor],
+        list[list[dict]]), with the outer list indicating test time
+        augmentations.
+        """
+        # if 'return_loss' in kwargs:
+        #     return_loss = kwargs['return_loss']
+        # else:
+        #     return_loss = False  # 기본값을 False로 설정
+        
+        if return_loss:
+            return self.forward_train(**kwargs)
+        else:
+            return self.forward_test(**kwargs)
 
     def forward_train(self,
                       img,
                       img_metas,
-                    #   lidar_depth_gt,
-                      lidar_depth_mis,
                       lidar_depth_gt,
+                      lidar_depth_mis,
+                    #   lidar_depth_gt,
                     #   points_mis,
                     #   mis_KT,
                       gt_KT,
@@ -269,12 +287,11 @@ class MV2D(Base3DDetector):
         mis_RT = mis_RT.view(batch_size * num_views, *mis_RT.shape[2:])
         gt_KT = gt_KT.view(batch_size * num_views, *gt_KT.shape[2:])
     
-        # lidar_depth_gt = lidar_depth_gt.view(batch_size * num_views, *lidar_depth_gt.shape[2:]).to(torch.float32)
+        # lidar_depth_gt = lidar_depth_gt.view(batch_size * num_views, *lidar_depth_gt.shape[2:]).to(torch.float32) # uvz_gt
         lidar_depth_mis = lidar_depth_mis.view(batch_size * num_views, *lidar_depth_mis.shape[2:]).to(torch.float32)
 
         # img_resized = F.interpolate(img, size=[192, 640], mode="bilinear")
         # lidar_depth_mis_resized = F.interpolate(lidar_depth_mis, size=[h, w], mode="bilinear")
-        lidar_depth_mis_resized = lidar_depth_mis
 
         # sbs_img = two_images_side_by_side(img_resized, lidar_depth_mis)
         # sbs_img = torch.from_numpy(sbs_img).permute(0,3,1,2).to('cuda')
@@ -285,7 +302,7 @@ class MV2D(Base3DDetector):
         
         if self.use_grid_mask:
             img = self.grid_mask(img)
-            lidar_depth_mis_resized = self.grid_mask(lidar_depth_mis_resized)
+            lidar_depth_mis_resized = self.grid_mask(lidar_depth_mis)
             # img_resized = self.grid_mask(img_resized)
 
         # get pseudo monocular input
@@ -564,7 +581,8 @@ class MV2D(Base3DDetector):
                     len(img), len(img_metas)))
 
         if num_augs == 1:
-            return self.simple_test(img[0], img_metas[0], lidar_depth_mis, lidar_depth_gt, gt_KT, mis_RT, **kwargs)
+            # return self.simple_test(img[0], img_metas[0], lidar_depth_mis[0], lidar_depth_gt[0], gt_KT[0], mis_RT[0], **kwargs)
+            return self.simple_test(img, img_metas, lidar_depth_mis, lidar_depth_gt, gt_KT, mis_RT, **kwargs)
         else:
             return self.aug_test(img, img_metas, **kwargs)
 

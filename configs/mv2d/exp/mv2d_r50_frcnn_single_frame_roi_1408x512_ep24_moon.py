@@ -124,13 +124,16 @@ model = dict(
     train_cfg=dict(
         complement_2d_gt=0.4,
         detection_proposal=dict(
-            score_thr=0.05,
+            # score_thr=0.05,
+            score_thr=0.1,
             nms_pre=1000,
-            max_per_img=75,
+            # max_per_img=75,
+            max_per_img=100,
             nms=dict(type='nms', iou_threshold=0.6, class_agnostic=True, ),
             min_bbox_size=8),
         rcnn=dict(
-            stage_loss_weights=[0.1, 0.1, 0.1, 0.1, 0.1, 0.1],
+            # stage_loss_weights=[0.1, 0.1, 0.1, 0.1, 0.1, 0.1],
+            stage_loss_weights=[0.05, 0.1, 0.15, 0.2,0.25, 0.25],
             assigner=dict(
                 type='HungarianAssigner3D',
                 cls_cost=dict(type='FocalLossCost', weight=2.0),
@@ -144,20 +147,23 @@ model = dict(
     ),
     test_cfg=dict(
         detection_proposal=dict(
-            score_thr=0.05,
+            # score_thr=0.05,
+            score_thr=0.1,
             nms_pre=1000,
-            max_per_img=75,
+            # max_per_img=75,
+            max_per_img=100,
             nms=dict(type='nms', iou_threshold=0.6, class_agnostic=True, ),
             min_bbox_size=8),
         rcnn=dict(
-            score_thr=0.0,
+            # score_thr=0.0,
+            score_thr=0.05,
             nms=dict(nms_thr=1.0, use_rotate_nms=True, ),
             max_per_scene=300,
         ))
 )
 
 data = dict(
-    workers_per_gpu=4,
+    workers_per_gpu=8,
 )
 
 optimizer = dict(
@@ -184,7 +190,7 @@ load_from = None #check point path
 # resume_from = 'work_dirs/mv2d_r50_frcnn_single_frame_roi_1408x512_ep24_moon/epoch_3.pth'  # 같은 체크포인트 경로
 resume_from = None
 runner = dict(type='EpochBasedRunner', max_epochs=total_epochs)
-evaluation = dict(interval=4, )
+evaluation = dict(interval=24, )
 
 # checkpoint_config 추가
 checkpoint_config = dict(interval=1)  # 매 epoch마다 저장

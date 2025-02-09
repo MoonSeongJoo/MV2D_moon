@@ -22,6 +22,7 @@ from mmdet3d.models import build_model
 from mmdet3d.utils import collect_env, get_root_logger
 from mmdet.apis import set_random_seed
 from mmseg import __version__ as mmseg_version
+import torch.multiprocessing as mp
 
 try:
     # If mmdet version > 2.20.0, setup_multi_processes would be imported and
@@ -289,4 +290,5 @@ def main():
     # meta=meta)
 
 if __name__ == '__main__':
+    mp.set_start_method('spawn', force=True)
     main()
