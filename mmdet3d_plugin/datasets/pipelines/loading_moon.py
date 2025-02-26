@@ -12,8 +12,8 @@ import matplotlib.pyplot as plt
 import torch.nn.functional as F
 
 from mmdet3d_plugin.datasets.pipelines.image_display import (points2depthmap_cpu,points2depthmap_gpu,
-                                                             add_calibration,add_calibration_cpu,
-                                                             add_mis_calibration,add_mis_calibration_cpu,
+                                                             add_calibration,add_calibration_adv,add_mis_calibration_ori,add_calibration_adv2,
+                                                             add_mis_calibration,add_mis_calibration_cpu,add_mis_calibration_adv,
                                                              dense_map_gpu_optimized,dense_map_cpu_optimized,
                                                              colormap,colormap_cpu,
                                                              visualize_depth_maps)
@@ -73,45 +73,45 @@ class LoadMultiViewImageFromFiles_moon(object):
         self.to_float32 = to_float32
         self.color_type = color_type
 
-    # def __call__(self, results):
-    #     """Call function to load multi-view image from files.
+    def __call__(self, results):
+        """Call function to load multi-view image from files.
 
-    #     Args:
-    #         results (dict): Result dict containing multi-view image filenames.
+        Args:
+            results (dict): Result dict containing multi-view image filenames.
 
-    #     Returns:
-    #         dict: The result dict containing the multi-view image data.
-    #             Added keys and values are described below.
+        Returns:
+            dict: The result dict containing the multi-view image data.
+                Added keys and values are described below.
 
-    #             - filename (str): Multi-view image filenames.
-    #             - img (np.ndarray): Multi-view image arrays.
-    #             - img_shape (tuple[int]): Shape of multi-view image arrays.
-    #             - ori_shape (tuple[int]): Shape of original image arrays.
-    #             - pad_shape (tuple[int]): Shape of padded image arrays.
-    #             - scale_factor (float): Scale factor.
-    #             - img_norm_cfg (dict): Normalization configuration of images.
-    #     """
-    #     filename = results['img_filename']
-    #     # img is of shape (h, w, c, num_views)
-    #     img = np.stack(
-    #         [mmcv.imread(name, self.color_type) for name in filename], axis=-1)
-    #     if self.to_float32:
-    #         img = img.astype(np.float32)
-    #     results['filename'] = filename
-    #     # unravel to list, see `DefaultFormatBundle` in formatting.py
-    #     # which will transpose each image separately and then stack into array
-    #     results['img'] = [img[..., i] for i in range(img.shape[-1])]
-    #     results['img_shape'] = img.shape
-    #     results['ori_shape'] = img.shape
-    #     # Set initial values for default meta_keys
-    #     results['pad_shape'] = img.shape
-    #     results['scale_factor'] = 1.0
-    #     num_channels = 1 if len(img.shape) < 3 else img.shape[2]
-    #     results['img_norm_cfg'] = dict(
-    #         mean=np.zeros(num_channels, dtype=np.float32),
-    #         std=np.ones(num_channels, dtype=np.float32),
-    #         to_rgb=False)
-    #     return results
+                - filename (str): Multi-view image filenames.
+                - img (np.ndarray): Multi-view image arrays.
+                - img_shape (tuple[int]): Shape of multi-view image arrays.
+                - ori_shape (tuple[int]): Shape of original image arrays.
+                - pad_shape (tuple[int]): Shape of padded image arrays.
+                - scale_factor (float): Scale factor.
+                - img_norm_cfg (dict): Normalization configuration of images.
+        """
+        filename = results['img_filename']
+        # img is of shape (h, w, c, num_views)
+        img = np.stack(
+            [mmcv.imread(name, self.color_type) for name in filename], axis=-1)
+        if self.to_float32:
+            img = img.astype(np.float32)
+        results['filename'] = filename
+        # unravel to list, see `DefaultFormatBundle` in formatting.py
+        # which will transpose each image separately and then stack into array
+        results['img'] = [img[..., i] for i in range(img.shape[-1])]
+        results['img_shape'] = img.shape
+        results['ori_shape'] = img.shape
+        # Set initial values for default meta_keys
+        results['pad_shape'] = img.shape
+        results['scale_factor'] = 1.0
+        num_channels = 1 if len(img.shape) < 3 else img.shape[2]
+        results['img_norm_cfg'] = dict(
+            mean=np.zeros(num_channels, dtype=np.float32),
+            std=np.ones(num_channels, dtype=np.float32),
+            to_rgb=False)
+        return results
 
     def __repr__(self):
         """str: Return a string that describes the module."""
@@ -120,55 +120,55 @@ class LoadMultiViewImageFromFiles_moon(object):
         repr_str += f"color_type='{self.color_type}')"
         return repr_str
     
-    def __call__(self, results):
-        filenames = results['img_filename']
-        valid_images = []
-        valid_indices = []
+    # def __call__(self, results):
+    #     filenames = results['img_filename']
+    #     valid_images = []
+    #     valid_indices = []
         
-        for idx, name in enumerate(filenames):
-            try:
-                img = mmcv.imread(name, self.color_type)
-                if img is None:
-                    if valid_images:  # 이전 유효한 이미지가 있는 경우
-                        img = valid_images[-1].copy()  # 마지막 유효한 이미지를 복사
-                        print(f"Image {name} is corrupted. Using the previous valid image.")
-                    else:
-                        raise ValueError(f"Image {name} is corrupted and no previous valid image exists.")
-                valid_images.append(img)
-                valid_indices.append(idx)
-            except Exception as e:
-                print(f"Skipping file {name} due to error: {e}")
-                if valid_images:
-                    valid_images.append(valid_images[-1].copy())
-                    valid_indices.append(idx)
-                continue
+    #     for idx, name in enumerate(filenames):
+    #         try:
+    #             img = mmcv.imread(name, self.color_type)
+    #             if img is None:
+    #                 if valid_images:  # 이전 유효한 이미지가 있는 경우
+    #                     img = valid_images[-1].copy()  # 마지막 유효한 이미지를 복사
+    #                     print(f"Image {name} is corrupted. Using the previous valid image.")
+    #                 else:
+    #                     raise ValueError(f"Image {name} is corrupted and no previous valid image exists.")
+    #             valid_images.append(img)
+    #             valid_indices.append(idx)
+    #         except Exception as e:
+    #             print(f"Skipping file {name} due to error: {e}")
+    #             if valid_images:
+    #                 valid_images.append(valid_images[-1].copy())
+    #                 valid_indices.append(idx)
+    #             continue
         
-        if not valid_images:
-            raise ValueError("No valid images found.")
+    #     if not valid_images:
+    #         raise ValueError("No valid images found.")
         
-        # Update all relevant data in results
-        for key in results.keys():
-            if isinstance(results[key], list) and len(results[key]) == len(filenames):
-                results[key] = [results[key][i] if i in valid_indices else results[key][valid_indices[-1]] for i in range(len(filenames))]
+    #     # Update all relevant data in results
+    #     for key in results.keys():
+    #         if isinstance(results[key], list) and len(results[key]) == len(filenames):
+    #             results[key] = [results[key][i] if i in valid_indices else results[key][valid_indices[-1]] for i in range(len(filenames))]
         
-        # img is of shape (h, w, c, num_views)
-        img = np.stack(valid_images, axis=-1)
-        if self.to_float32:
-            img = img.astype(np.float32)
+    #     # img is of shape (h, w, c, num_views)
+    #     img = np.stack(valid_images, axis=-1)
+    #     if self.to_float32:
+    #         img = img.astype(np.float32)
         
-        results['img_filename'] = filenames  # 원래 파일 이름 유지
-        results['img'] = [img[..., i] for i in range(img.shape[-1])]
-        results['img_shape'] = img.shape
-        results['ori_shape'] = img.shape
-        results['pad_shape'] = img.shape
-        results['scale_factor'] = 1.0
-        num_channels = 1 if len(img.shape) < 3 else img.shape[2]
-        results['img_norm_cfg'] = dict(
-            mean=np.zeros(num_channels, dtype=np.float32),
-            std=np.ones(num_channels, dtype=np.float32),
-            to_rgb=False)
+    #     results['img_filename'] = filenames  # 원래 파일 이름 유지
+    #     results['img'] = [img[..., i] for i in range(img.shape[-1])]
+    #     results['img_shape'] = img.shape
+    #     results['ori_shape'] = img.shape
+    #     results['pad_shape'] = img.shape
+    #     results['scale_factor'] = 1.0
+    #     num_channels = 1 if len(img.shape) < 3 else img.shape[2]
+    #     results['img_norm_cfg'] = dict(
+    #         mean=np.zeros(num_channels, dtype=np.float32),
+    #         std=np.ones(num_channels, dtype=np.float32),
+    #         to_rgb=False)
         
-        return results
+    #     return results
 
 
 
@@ -304,39 +304,37 @@ class PointToMultiViewDepth(object):
         raw_points_lidar = results['points']
         
         # points_lidar = image_display.trim_corrs(raw_points_lidar)
-        points_lidar = raw_points_lidar
+        points_lidar = raw_points_lidar.clone()
 
         point2img_gt =[]
-        point2img_mis =[]
         lidar_depth_map_mis=[]
         lidar_depth_map_gt =[]
-        list_gt_KT ,list_mis_RT = [] ,[] 
-        
+        list_gt_KT ,list_mis_RT ,list_mis_KT = [] ,[] ,[]
+        list_gt_KT_3by4 =[]
         for cid in range(len(results['lidar2img'])):
             lidar2img = torch.from_numpy(results['lidar2img'][cid]).to(torch.float32)
             lidar2cam = torch.from_numpy(results['extrinsics'][cid]).to(torch.float32)
             cam2img = torch.from_numpy(results['intrinsics'][cid]).to(torch.float32)
 
-            ##### ref : K(T.t): [results['intrinsics'][i] @ results['extrinsics'][i].T 
-
-            points2img = add_calibration(lidar2img , points_lidar)
-            miscalibrated_points2img , mis_RT = add_mis_calibration(lidar2cam,cam2img, points_lidar,max_r=10.,max_t=0.075)
+            # points2img = add_calibration_adv(lidar2img , points_lidar)
+            points2img , KT_ori  = add_calibration_adv2(lidar2cam ,cam2img, points_lidar)
+            # miscalibrated_points2img_ori , mis_RT_ori , mis_KT_ori ,mis_K_ori = add_mis_calibration_ori(lidar2cam,cam2img, points_lidar,max_r=0.0,max_t=0.0)
+            miscalibrated_points2img , extrinsic_perturb, lidar2img_original ,lidar2img_mis = add_mis_calibration_adv(lidar2img,lidar2cam,cam2img, points_lidar, max_r=1.0,max_t=0.010)
 
             point2img_gt.append(points2img) # lidar coordination 3d
-            point2img_mis.append(miscalibrated_points2img) # lidar coordination 3d mis-calibration
+            list_mis_RT.append(extrinsic_perturb) # lidar coordination 3d mis-calibration
             list_gt_KT.append(lidar2img)
-            list_mis_RT.append(mis_RT)
+            list_gt_KT_3by4.append(lidar2img_original)
+            list_mis_KT.append(lidar2img_mis)
             
             ####### depth image display ######
             depth_gt, gt_uv,gt_z, valid_indices_gt= points2depthmap_gpu(points2img, results['img'][0].shape[0] ,results['img'][0].shape[1])
-            # depth_gt= points2depthmap_gpu(points2img, results['img'][0].shape[0] ,results['img'][0].shape[1])
             # lidarOnImage_gt = torch.cat((gt_uv, gt_z.unsqueeze(1)), dim=1)
-            # dense_depth_img_gt = image_display.dense_map_gpu_optimized(lidarOnImage_gt.T , results['img'][0].shape[1], results['img'][0].shape[0], 1)
+            # dense_depth_img_gt = dense_map_gpu_optimized(lidarOnImage_gt.T , results['img'][0].shape[1], results['img'][0].shape[0], 4)
             # dense_depth_img_gt = dense_depth_img_gt.to(dtype=torch.uint8)
-            # dense_depth_img_color_gt = image_display.colormap(dense_depth_img_gt)
+            # dense_depth_img_color_gt = colormap(dense_depth_img_gt)
 
             depth_mis, uv,z,valid_indices = points2depthmap_gpu(miscalibrated_points2img, results['img'][0].shape[0] ,results['img'][0].shape[1])
-            # depth_mis= points2depthmap_gpu(miscalibrated_points2img, results['img'][0].shape[0] ,results['img'][0].shape[1])
             lidarOnImage_mis = torch.cat((uv, z.unsqueeze(1)), dim=1)
             dense_depth_img_mis = dense_map_gpu_optimized(lidarOnImage_mis.T , results['img'][0].shape[1], results['img'][0].shape[0], 4)
             dense_depth_img_mis = dense_depth_img_mis.to(dtype=torch.uint8)
@@ -354,24 +352,24 @@ class PointToMultiViewDepth(object):
             # if img.dtype == np.float32 or img.dtype == np.float64:
             #     img = (img - img.min()) / (img.max() - img.min())
             # plt.figure(figsize=(20, 20))
-            # plt.subplot(3,1,1)
+            # plt.subplot(4,1,1)
             # plt.imshow(img)
             # plt.scatter(gt_uv[:, 0], gt_uv[:, 1], c=gt_z, s=0.5)
             # plt.title("input calibrated display", fontsize=10)
 
-            # plt.subplot(3,1,2)
+            # plt.subplot(4,1,2)
             # plt.imshow(img)
             # plt.scatter(uv[:, 0], uv[:, 1], c=z, s=0.5)
             # plt.title("input mis-calibrated display", fontsize=10)
 
-            # # disp_gt2 = dense_depth_img_color_gt.detach().cpu().numpy()
-            # # plt.subplot(3,2,3)
-            # # plt.imshow(disp_gt2, cmap='magma_r')
-            # # plt.title("gt display", fontsize=10)
-            # # plt.axis('off')
+            # disp_gt2 = dense_depth_img_color_gt.detach().cpu().numpy()
+            # plt.subplot(4,1,3)
+            # plt.imshow(disp_gt2, cmap='magma_r')
+            # plt.title("gt display", fontsize=10)
+            # plt.axis('off')
 
             # disp_mis2 = dense_depth_img_color_mis.detach().cpu().numpy()
-            # plt.subplot(3,1,3)
+            # plt.subplot(4,1,4)
             # plt.imshow(disp_mis2, cmap='magma')
             # plt.title("mis display", fontsize=10)
             # plt.axis('off')
@@ -390,39 +388,26 @@ class PointToMultiViewDepth(object):
             
             # # 전체 그림 저장
             # plt.tight_layout()
-            # plt.savefig('all_displays6.jpg', dpi=300, bbox_inches='tight')
+            # plt.savefig('load_pipeline.jpg', dpi=300, bbox_inches='tight')
             # plt.close()
             # print ("end of print")
         
-        # mis_KT = torch.stack(list_mis_KT)
-        # mis_T = torch.stack(list_mis_T)
-        # mis_K = torch.stack(list_mis_K)
         gt_KT = torch.stack(list_gt_KT)
+        gt_KT_3by4 = torch.stack(list_gt_KT_3by4)
         mis_RT = torch.stack(list_mis_RT)
-        # points2img_gt = torch.stack(point_gts)
-        # points2img_mis = torch.stack(point_mis)
-        # lidar_depth_gt = torch.stack(lidar_depth_dense_gt)
+        mis_KT = torch.stack(list_mis_KT)
         lidar_depth_mis = torch.stack(lidar_depth_map_mis)
         lidar_depth_gt = torch.stack(lidar_depth_map_gt)
-        # depth_uvz = torch.stack(uvz)
-        # lidar_depth_gt = lidar_depth_gt.permute(0, 3, 1, 2)
-        # lidar_depth_mis = lidar_depth_mis.unsqueeze(3).permute(0, 3, 1, 2).expand(-1, 3, -1, -1)
         lidar_depth_mis = lidar_depth_mis.permute(0, 3, 1, 2)
-        # raw_points_tensor = raw_points_lidar.tensor[:,:3]
-        # reduced_points_tensor = points_lidar.tensor[:, :3]
         # lidar_depth_gt = F.interpolate(lidar_depth_gt, size=[192, 640], mode="bilinear") # lidar 2d depth map input [192,640,1]
         # lidar_depth_mis = F.interpolate(lidar_depth_mis, size=[192, 640], mode="bilinear") 
 
         results['lidar_depth_gt']  = lidar_depth_gt
-        # results['points_mis'] = depth_uvz
-        # results['lidar_depth_gt'] =lidar_depth_gt
         results['lidar_depth_mis'] = lidar_depth_mis
-        # results['reduce_points_raw'] = reduced_points_tensor
-        # results['points_raw'] = raw_points_tensor
-        # results['mis_KT'] = mis_KT
-        results['mis_RT'] = mis_RT
-        # results['mis_T'] = mis_T
+        results['mis_KT'] = mis_KT
+        results['mis_Rt'] = mis_RT
         results['gt_KT'] = gt_KT
+        results['gt_KT_3by4'] = gt_KT_3by4
 
         return results
     

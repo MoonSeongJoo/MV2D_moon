@@ -229,63 +229,162 @@ def add_calibration(lidar2img, points_lidar):
     return points_img
 
 
-def add_calibration_cpu(lidar2img, points_lidar): 
-    # NumPy 행렬 곱셈 사용
-    points_img = np.dot(points_lidar[:, :3], lidar2img[:3, :3].T) + lidar2img[:3, 3]
-    
-    # 투영 좌표 계산
-    points_img = np.hstack([points_img[:, :2] / points_img[:, 2:3], points_img[:, 2:3]])
+
+def add_calibration_adv(lidar2img, points_lidar): 
+    lidar_points = points_lidar.tensor[:, :3]
+    lidar_points_homo = torch.cat([lidar_points, torch.ones_like(lidar_points[:, :1])], dim=1)
+    points_img = (lidar2img @ lidar_points_homo.T).T
+    points_img = torch.cat([points_img[:, :2] / points_img[:, 2:3], points_img[:, 2:3]], 1)
 
     return points_img
 
+def add_calibration_adv2 (extrinsic, intrinsic, points_lidar) :
+    lidar_points = points_lidar.tensor[:, :3]
+    lidar_points_homo = torch.cat([lidar_points, torch.ones_like(lidar_points[:, :1])], dim=1)
+    KT = intrinsic @ extrinsic.T 
+    points_img = (KT @ lidar_points_homo.T).T
+    points_img = torch.cat([points_img[:, :2] / points_img[:, 2:3], points_img[:, 2:3]], 1)
+    return points_img , KT
 
-# def add_mis_calibration(extrinsic, intrinsic, points_lidar):
-#     max_r = 0.
-#     max_t = 0.
-#     # 회전 각도 랜덤 생성 (deg 단위)
-#     max_angle = max_r  # 최대 회전 각도
-#     rotz = np.random.uniform(-max_angle, max_angle) * (np.pi / 180.0)
-#     roty = np.random.uniform(-max_angle, max_angle) * (np.pi / 180.0)
-#     rotx = np.random.uniform(-max_angle, max_angle) * (np.pi / 180.0)
+def add_mis_calibration_adv(lidar2img ,extrinsic, homo_intrinsic, points_lidar, max_r=1.0, max_t=0.1):
+    device = extrinsic.device
+    dtype = extrinsic.dtype
+    intrinsic = homo_intrinsic[:3,:3] 
+    # # 회전 각도 생성 (random)
+    angles = torch.rand(3, device=device, dtype=dtype) * 2 * max_r - max_r
+    angles = angles * (torch.pi / 180.0)
+    # # 회전 각도 생성 (고정 for test)
+    # angles = torch.tensor([0.0, 0.0, 0.0], device=device, dtype=dtype) * (torch.pi / 180.0)  # 10도 → 라디안
     
-#     # 회전 행렬 생성
-#     Rz = np.array([[np.cos(rotz), -np.sin(rotz), 0],
-#                 [np.sin(rotz), np.cos(rotz), 0],
-#                 [0, 0, 1]])
-#     Ry = np.array([[np.cos(roty), 0, np.sin(roty)],
-#                 [0, 1, 0],
-#                 [-np.sin(roty), 0, np.cos(roty)]])
-#     Rx = np.array([[1, 0, 0],
-#                 [0, np.cos(rotx), -np.sin(rotx)],
-#                 [0, np.sin(rotx), np.cos(rotx)]])
-    
-#     # 총 회전 행렬 생성
-#     R = np.dot(Rz, np.dot(Ry, Rx))
-    
-#     # 이동 벡터 랜덤 생성
-#     transl_x = np.random.uniform(-max_t, max_t)
-#     transl_y = np.random.uniform(-max_t, max_t)
-#     transl_z = np.random.uniform(-max_t, max_t)
-#     T = np.array([transl_x, transl_y, transl_z])
+    # 회전 행렬 생성 (Rx, Ry, Rz)
+    Rx = torch.tensor([[1, 0, 0],
+    [0, torch.cos(angles[0]), -torch.sin(angles[0])],
+    [0, torch.sin(angles[0]), torch.cos(angles[0])]], device=device, dtype=dtype)
 
-#     # lidar2img 행렬에 mis-calibration 적용
-#     lidar2img_mis_calibrated = extrinsic.clone()
-#     lidar2img_mis_calibrated[:3, :3] = torch.tensor(R, dtype=torch.float32) @ extrinsic[:3, :3]
-#     lidar2img_mis_calibrated[:3, 3] += torch.tensor(T, dtype=torch.float32)
+    Ry = torch.tensor([[torch.cos(angles[1]), 0, torch.sin(angles[1])],
+    [0, 1, 0],
+    [-torch.sin(angles[1]), 0, torch.cos(angles[1])]], device=device, dtype=dtype)
 
-#     # intrinsic 변환
-#     homo_intrinsic = torch.eye(4,dtype=torch.float32)
-#     # homo_intrinsic[:3,:3] = intrinsic
-#     homo_intrinsic = intrinsic
-#     KT = homo_intrinsic.matmul(lidar2img_mis_calibrated)
+    Rz = torch.tensor([[torch.cos(angles[2]), -torch.sin(angles[2]), 0],
+    [torch.sin(angles[2]), torch.cos(angles[2]), 0],
+    [0, 0, 1]], device=device, dtype=dtype)
 
-#     # Mis-calibrated depth map 계산
-#     points_img_mis_calibrated = points_lidar.tensor[:, :3].matmul(KT[:3, :3].T) + KT[:3, 3].unsqueeze(0)
-#     points_img_mis_calibrated = torch.cat([points_img_mis_calibrated[:, :2] / points_img_mis_calibrated[:, 2:3], points_img_mis_calibrated[:, 2:3]], 1)
-#     # points_img_mis_calibrated = points_img_mis_calibrated.matmul(post_rots[cid].T) + post_trans[cid:cid + 1, :]
-#     # mis_calibrated_depth_map, uv , z = points2depthmap(points_img_mis_calibrated, imgs.shape[2], imgs.shape[3])
+    R_perturb = Rz @ Ry @ Rx
+    # R_perturb = Rx @ Ry @ Rz
+
+    # 2. 이동 벡터 생성 (delta_t)
+    delta_t = (torch.rand(3, device=device, dtype=dtype) * 2 * max_t - max_t)
+    # 이동량 고정 (7.5cm)
+    # delta_t = torch.tensor([1.0, 0.0, 0.0], device=device, dtype=dtype)  # x,y,z 축 각각 7.5cm
+
+    # # Extrinsic에 회전/이동 적용
+    # RT_mis = extrinsic.clone()
+    # # RT_mis[:3, :3] = R_perturb @ extrinsic[:3, :3]
+    # RT_mis[:3, :3] = extrinsic[:3, :3] @ 
     
-#     return points_img_mis_calibrated , KT 
+    # 3. Extrinsic Perturbation Matrix 생성 (검색 결과 [2]의 로직 적용)
+    extrinsic_perturb = torch.eye(4, device=device, dtype=dtype)
+    extrinsic_perturb[:3, :3] = R_perturb
+    extrinsic_perturb[:3, 3] = delta_t
+
+    # # 이동 벡터 덮어쓰기 (대입 방식으로 수정)
+    # # RT_mis[:3, 3] = (torch.rand(3, device=device, dtype=dtype) * 2 * max_t - max_t)
+    # delta_t = (torch.rand(3) * 2 * max_t - max_t)
+    # RT_mis[:3, 3] = extrinsic[:3, 3] + delta_t
+
+    # 4. 원본 Extrinsic에 Perturbation 적용 (RT_mis = extrinsic @ extrinsic_perturb)
+    # RT_mis = extrinsic_perturb @ extrinsic  
+    RT_mis = extrinsic @ extrinsic_perturb
+
+    # 라이다 포인트 동차 좌표 변환 및 투영
+    points_tensor = points_lidar.tensor[:, :3]
+    # 라이다 축 반전 (테스트용)
+    # points_tensor = points_tensor[:, [1, 2, 0]]  # x ↔ z 교환
+    # points_tensor[:, 1] *= -1                  # y축 반전
+    
+    points_hom = torch.cat([points_tensor, torch.ones_like(points_tensor[:, :1])], dim=1)
+
+    # 외란에 의해 변형된 라이다 포인트 클라우드
+    perturbed_points = (extrinsic_perturb @ points_hom.T).T[:,:3]
+    perturbed_points_hom = torch.cat([perturbed_points, torch.ones_like(perturbed_points[:, :1])], dim=1)
+
+    # 디버깅용 출력 (확인용)
+    if max_r == 0.0 and max_t == 0.0:
+        assert torch.allclose(R_perturb, torch.eye(3, device=device)), "Rotation matrix is not identity!"
+        assert torch.allclose(RT_mis[:3], extrinsic[:3]), "RT_mis does not match extrinsic!"
+    # points_cam = (RT_mis @ points_hom.T).T  # [N,4]
+
+    # # Step 3: 카메라 → 이미지 투영
+    # projected = (intrinsic[:3,:3] @ points_cam[:, :3].T).T  # [N,3]
+
+    # # 투영 행렬 계산
+    # KT = intrinsic @ RT_mis
+    # lidar2img_mis = intrinsic @ RT_mis.T
+    lidar2img_mis = intrinsic @ RT_mis[:3, :]
+    projected = (lidar2img_mis @ points_hom.T).T
+    projected[:, :2] /= projected[:, 2:3] 
+    
+    # Perturbed 투영 (원래 extrinsic 사용)
+    lidar2img_original = intrinsic @ extrinsic[:3, :]  # 기존 변환 행렬
+    perturbed_projected = (lidar2img_original @ perturbed_points_hom.T).T
+    perturbed_projected[:, :2] /= perturbed_projected[:, 2:3]
+
+     # Perturbed 투영 (homo_intrinsic/extrinsic 사용)
+    KT = homo_intrinsic @ extrinsic.T # 이게 lidar2img와 값이 같음
+    points_img = (lidar2img @ perturbed_points_hom.T).T
+    points_img = torch.cat([points_img[:, :2] / points_img[:, 2:3], points_img[:, 2:3]], 1)
+
+    points_img_mis_calibrated = projected[:, :3]
+    perturbed_projected = perturbed_projected[:, :3]
+
+    return points_img, extrinsic_perturb, lidar2img_original ,lidar2img_mis
+
+
+def add_mis_calibration_ori(extrinsic, intrinsic, points_lidar ,max_r=1.0, max_t=0.1):
+    # 회전 각도 랜덤 생성 (deg 단위)
+    max_angle = max_r  # 최대 회전 각도
+    rotz = np.random.uniform(-max_angle, max_angle) * (np.pi / 180.0)
+    roty = np.random.uniform(-max_angle, max_angle) * (np.pi / 180.0)
+    rotx = np.random.uniform(-max_angle, max_angle) * (np.pi / 180.0)
+    
+    # 회전 행렬 생성
+    Rz = np.array([[np.cos(rotz), -np.sin(rotz), 0],
+                [np.sin(rotz), np.cos(rotz), 0],
+                [0, 0, 1]])
+    Ry = np.array([[np.cos(roty), 0, np.sin(roty)],
+                [0, 1, 0],
+                [-np.sin(roty), 0, np.cos(roty)]])
+    Rx = np.array([[1, 0, 0],
+                [0, np.cos(rotx), -np.sin(rotx)],
+                [0, np.sin(rotx), np.cos(rotx)]])
+    
+    # 총 회전 행렬 생성
+    R = np.dot(Rz, np.dot(Ry, Rx))
+    
+    # 이동 벡터 랜덤 생성
+    transl_x = np.random.uniform(-max_t, max_t)
+    transl_y = np.random.uniform(-max_t, max_t)
+    transl_z = np.random.uniform(-max_t, max_t)
+    T = np.array([transl_x, transl_y, transl_z])
+
+    # lidar2img 행렬에 mis-calibration 적용
+    lidar2img_mis_calibrated = extrinsic.clone()
+    lidar2img_mis_calibrated[:3, :3] = torch.tensor(R, dtype=torch.float32) @ extrinsic[:3, :3]
+    lidar2img_mis_calibrated[:3, 3] += torch.tensor(T, dtype=torch.float32)
+
+    # intrinsic 변환
+    homo_intrinsic = torch.eye(4,dtype=torch.float32)
+    # homo_intrinsic[:3,:3] = intrinsic
+    homo_intrinsic = intrinsic
+    KT = homo_intrinsic.matmul(lidar2img_mis_calibrated)
+
+    # Mis-calibrated depth map 계산
+    points_img_mis_calibrated = points_lidar.tensor[:, :3].matmul(KT[:3, :3].T) + KT[:3, 3].unsqueeze(0)
+    points_img_mis_calibrated = torch.cat([points_img_mis_calibrated[:, :2] / points_img_mis_calibrated[:, 2:3], points_img_mis_calibrated[:, 2:3]], 1)
+    # points_img_mis_calibrated = points_img_mis_calibrated.matmul(post_rots[cid].T) + post_trans[cid:cid + 1, :]
+    # mis_calibrated_depth_map, uv , z = points2depthmap(points_img_mis_calibrated, imgs.shape[2], imgs.shape[3])
+    
+    return points_img_mis_calibrated , lidar2img_mis_calibrated, KT ,homo_intrinsic
 
 def add_mis_calibration(extrinsic, intrinsic, points_lidar, max_r=1.0, max_t=0.1):
     """
@@ -304,6 +403,11 @@ def add_mis_calibration(extrinsic, intrinsic, points_lidar, max_r=1.0, max_t=0.1
     """
     device = extrinsic.device
     dtype = extrinsic.dtype
+
+    # 1. 원본 Extrinsic의 4행 검증 및 강제 수정
+    if not torch.allclose(extrinsic[3, :], torch.tensor([0, 0, 0, 1], device=device, dtype=dtype)):
+        extrinsic = extrinsic.clone()
+        extrinsic[3, :] = torch.tensor([0, 0, 0, 1], device=device, dtype=dtype)
     
     # Generate random rotation angles
     angles = torch.rand(3, device=device, dtype=dtype) * 2 * max_r - max_r
@@ -328,7 +432,7 @@ def add_mis_calibration(extrinsic, intrinsic, points_lidar, max_r=1.0, max_t=0.1
                            [0, 0, 1]], device=device, dtype=dtype)
     
     R = Rz @ Ry @ Rx
-    
+
     # Generate random translation
     T = torch.zeros(3, device=device, dtype=dtype)
     if max_t > 0:
@@ -343,6 +447,14 @@ def add_mis_calibration(extrinsic, intrinsic, points_lidar, max_r=1.0, max_t=0.1
     lidar2img_mis_calibrated = extrinsic.clone()
     lidar2img_mis_calibrated[:3, :3] = R @ extrinsic[:3, :3]
     lidar2img_mis_calibrated[:3, 3] += T
+
+    R_perturb = Rz @ Ry @ Rx
+    T_perturb = (torch.rand(3, device=device, dtype=dtype) * 2 - 1) * max_t  # [-max_t, max_t]
+    # 올바른 회전 적용: R_original @ R_perturb
+    RT_mis = extrinsic.clone()
+    RT_mis[:3, :3] = extrinsic[:3, :3] @ R_perturb  # 회전 적용
+    RT_mis[:3, 3] += T_perturb  # 이동 적용
+    RT_mis[3, :] = torch.tensor([0, 0, 0, 1], device=device, dtype=dtype)  # 4행 강제 설정
     
     # Ensure intrinsic is 4x4
     if intrinsic.shape == (3, 3):
@@ -364,7 +476,8 @@ def add_mis_calibration(extrinsic, intrinsic, points_lidar, max_r=1.0, max_t=0.1
     points_img_mis_calibrated = points_lidar.tensor[:, :3].matmul(KT[:3, :3].T) + KT[:3, 3].unsqueeze(0)
     points_img_mis_calibrated = torch.cat([points_img_mis_calibrated[:, :2] / points_img_mis_calibrated[:, 2:3], points_img_mis_calibrated[:, 2:3]], 1)
     
-    return points_img_mis_calibrated,RT
+    return points_img_mis_calibrated, RT_mis, KT ,homo_intrinsic
+
 
 def add_mis_calibration_cpu(extrinsic, intrinsic, points_lidar, max_r=1.0, max_t=0.1):
     """

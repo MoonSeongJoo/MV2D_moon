@@ -779,6 +779,53 @@ def find_all_depthmap_z(detections, depth_map):
 
     return result_list
 
+def find_all_depthmap_z_adv(detections, depth_map):
+    device = depth_map.device
+    batch_size, num_cam, h, w = depth_map.shape
+    depth_map_re = depth_map.view(batch_size * num_cam, h, w)
+
+    all_bbox_points = []
+
+    for bbox in detections:
+        cid = int(bbox[0])  # Get camera ID
+        x_min, y_min, x_max, y_max = bbox[1:5].long()
+        
+        # 바운딩 박스가 이미지 범위를 벗어나지 않도록 조정
+        x_min = max(0, x_min)
+        y_min = max(0, y_min)
+        x_max = min(w - 1, x_max)
+        y_max = min(h - 1, y_max)
+        
+        # 바운딩 박스 내의 모든 포인트에 대해 z값 추출
+        bbox_depth = depth_map_re[cid, y_min:y_max+1, x_min:x_max+1]
+        
+        # x, y 좌표 생성
+        y_coords, x_coords = torch.meshgrid(torch.arange(y_min, y_max+1), torch.arange(x_min, x_max+1), indexing='ij')
+        coords = torch.stack((x_coords.flatten(), y_coords.flatten()), dim=1).to(device)
+        
+        # z값과 좌표 결합
+        z_values = bbox_depth.flatten().unsqueeze(1)
+        bbox_points = torch.cat((coords, z_values), dim=1)
+        
+        all_bbox_points.append(bbox_points)
+
+    if all_bbox_points:
+        # 모든 포인트를 하나의 텐서로 결합
+        combined_points = torch.cat(all_bbox_points, dim=0)
+        
+        # 중복된 (x, y) 좌표 제거 및 해당하는 z 값 유지
+        unique_coords, unique_indices = torch.unique(combined_points[:, :2], dim=0, return_inverse=True)
+        unique_z_values = torch.zeros(unique_coords.shape[0], 1, device=device)
+        
+        # 중복된 좌표의 z 값 평균 계산
+        for i in range(unique_coords.shape[0]):
+            unique_z_values[i] = combined_points[unique_indices == i, 2].mean()
+        
+        # 고유한 좌표와 해당하는 z 값을 결합
+        return torch.cat((unique_coords, unique_z_values), dim=1)
+    else:
+        return torch.empty((0, 3), device=device)
+
 def find_nonzero_depthmap_z(detections, depth_map):
     result_list = []
     device = depth_map.device
@@ -1275,27 +1322,13 @@ def find_rois_nonzero_z_adv3(detections, depth_map):
     
     return torch.stack(result), confidence_scores
 
-def find_rois_nonzero_z_adv3_gpu(detections, depth_map):
+def find_rois_nonzero_z_adv4(detections, depth_map, model_pred_z):
     device = depth_map.device
     batch_size, num_cam, h, w = depth_map.shape
     depth_map_re = depth_map.view(batch_size * num_cam, h, w)
     
-    # 통계값 및 신뢰도 스코어 초기화
-    cam_means = torch.zeros(batch_size * num_cam, device=device, dtype=torch.float32)
-    cam_medians = torch.zeros(batch_size * num_cam, device=device, dtype=torch.float32)
+    confidence_scores = torch.zeros(len(detections), device=device)
     
-    # 배치 평균 계산
-    non_zero_mask = depth_map_re > 0
-    batch_mean = torch.mean(depth_map_re[non_zero_mask]) if torch.any(non_zero_mask) else torch.tensor(0.0, device=device)
-    
-    # 카메라별 통계값 계산
-    non_zero_counts = torch.sum(non_zero_mask, dim=(1,2))
-    cam_means = torch.sum(depth_map_re, dim=(1,2)) / non_zero_counts.clamp(min=1)
-    cam_medians = torch.median(depth_map_re.view(batch_size * num_cam, -1), dim=1)[0]
-    cam_means = torch.where(non_zero_counts > 0, cam_means, batch_mean)
-    cam_medians = torch.where(non_zero_counts > 0, cam_medians, batch_mean)
-
-    # Detection 처리
     cam_indices = detections[:, 0].long().to(device)
     bboxes = detections[:, 1:].to(device)
     x_min, y_min, x_max, y_max = bboxes.long().t()
@@ -1305,85 +1338,101 @@ def find_rois_nonzero_z_adv3_gpu(detections, depth_map):
     x_max = torch.clamp(x_max, 0, w-1)
     y_max = torch.clamp(y_max, 0, h-1)
     
-    # 중심점 계산
-    center_x = (x_min + x_max) // 2
-    center_y = (y_min + y_max) // 2
-    
-    # 동적 서치 윈도우 크기 계산
-    bbox_width = x_max - x_min + 1
-    bbox_height = y_max - y_min + 1
-    search_radius_x = torch.clamp(bbox_width // 4, min=3)
-    search_radius_y = torch.clamp(bbox_height // 4, min=3)
-    
-    # 중심점 깊이값 계산
-    center_z = depth_map_re[cam_indices, center_y, center_x]
-    confidence_scores = torch.ones(len(detections), device=device)
-    
-    # 중심점 깊이값이 0인 경우 처리
-    zero_mask = center_z == 0
-    if torch.any(zero_mask):
-        # 확장된 영역 생성
-        y_start = torch.clamp(center_y[zero_mask] - search_radius_y[zero_mask], min=0)
-        y_end = torch.clamp(center_y[zero_mask] + search_radius_y[zero_mask] + 1, max=h)
-        x_start = torch.clamp(center_x[zero_mask] - search_radius_x[zero_mask], min=0)
-        x_end = torch.clamp(center_x[zero_mask] + search_radius_x[zero_mask] + 1, max=w)
+    result = []
+    for i in range(len(detections)):
+        cid = cam_indices[i].item()
+        cx = (x_min[i] + x_max[i]) // 2
+        cy = (y_min[i] + y_max[i]) // 2
+        center_z = 0.0
+        conf = 0.0
         
-        # 확장된 영역에서 유효한 깊이값 찾기
-        for i, (cid, ys, ye, xs, xe) in enumerate(zip(cam_indices[zero_mask], y_start, y_end, x_start, x_end)):
-            expanded_area = depth_map_re[cid, ys:ye, xs:xe]
-            valid_depths = expanded_area[expanded_area > 0]
-            if len(valid_depths) > 0:
-                center_z[zero_mask][i] = torch.median(valid_depths)
-                valid_pos = torch.nonzero(expanded_area > 0).float().mean(dim=0)
-                center_y[zero_mask][i] = ys + int(valid_pos[0])
-                center_x[zero_mask][i] = xs + int(valid_pos[1])
-                confidence_scores[zero_mask][i] = 0.6
+        # 1단계: 3x3 윈도우 내 최대 Z 값 검출
+        y_start = max(0, cy-1)
+        y_end = min(h, cy+2)
+        x_start = max(0, cx-1)
+        x_end = min(w, cx+2)
+        
+        window = depth_map_re[cid, y_start:y_end, x_start:x_end]
+        valid_depths = window[window > 0]
+        
+        if valid_depths.numel() > 0:
+            max_z = valid_depths.max()
+            max_pos = (window == max_z).nonzero()[0]
+            local_y = max_pos[0].item()
+            local_x = max_pos[1].item()
+            center_z = max_z.item()
+            cx = x_start + local_x
+            cy = y_start + local_y
+            conf = 1.0
+
+        # 2단계: BBox 내 최대 Z 값 검출
+        if conf == 0.0:
+            bbox_area = depth_map_re[cid, y_min[i]:y_max[i]+1, x_min[i]:x_max[i]+1]
+            valid_depths = bbox_area[bbox_area > 0]
+            
+            if valid_depths.numel() > 0:
+                max_z = valid_depths.max()
+                max_pos = (bbox_area == max_z).nonzero()[0]
+                local_y = max_pos[0].item()
+                local_x = max_pos[1].item()
+                center_z = max_z.item()
+                cx = x_min[i] + local_x
+                cy = y_min[i] + local_y
+                conf = 0.8
+
+        # 3단계: 모델 예측값 사용
+        if conf == 0.0:
+            cx = int(model_pred_z[i,0].item() * w)
+            cy = int(model_pred_z[i,1].item() * h)
+            center_z = model_pred_z[i,2].item()
+            conf = 0.7
+
+        # 좌표 클램핑
+        cx = torch.clamp(torch.tensor(cx), 0, w-1).item()
+        cy = torch.clamp(torch.tensor(cy), 0, h-1).item()
+        
+        result.append(torch.tensor(
+            [cid, cx, cy, center_z, conf], 
+            device=device
+        ))
+        confidence_scores[i] = conf
     
-    # 여전히 깊이값이 0인 경우 통계값 사용
-    still_zero_mask = center_z == 0
-    center_z[still_zero_mask] = cam_medians[cam_indices[still_zero_mask]]
-    confidence_scores[still_zero_mask] = 0.4
-    
-    # 최종 결과 생성
-    result = torch.stack([cam_indices, center_x, center_y, center_z, confidence_scores], dim=1)
-    
-    return result, confidence_scores
+    return torch.stack(result), confidence_scores
 
 
-def image_to_lidar_global(detection_uvz, lidar2img):
+# def image_to_lidar_global(detection_uvz, lidar2img):
+#     img2lidar = torch.inverse(lidar2img).float()
 
-    img2lidar = torch.inverse(lidar2img).float()
+#     # uv z로 normalize
+#     normalize_uvz = torch.cat([detection_uvz[:, :2] * detection_uvz[:, 2:3], detection_uvz[:, 2:3]], dim=1).float()
+#     # 동차 좌표계로 변환
+#     uvz_homogeneous = torch.cat([normalize_uvz, normalize_uvz.new_ones([normalize_uvz.shape[0], 1])], dim=1)  # [num_rois, 4]
+    
+#     # 카메라 좌표계에서 LiDAR 전역 좌표계로 변환
+#     xyz_global = torch.matmul(uvz_homogeneous, img2lidar.T)[:, :3]
 
-    # uv z로 normalize
-    normalize_uvz = torch.cat([detection_uvz[:, :2] * detection_uvz[:, 2:3], detection_uvz[:, 2:3]], dim=1).float()
-    # 동차 좌표계로 변환
-    uvz_homogeneous = torch.cat([normalize_uvz, normalize_uvz.new_ones([normalize_uvz.shape[0], 1])], dim=1)  # [num_rois, 4]
-    
-    # 카메라 좌표계에서 LiDAR 전역 좌표계로 변환
-    xyz_global = torch.matmul(img2lidar[:3, :3], uvz_homogeneous[:, :3].T).T + img2lidar[:3, 3]
+#     return xyz_global
 
-    return xyz_global
-
-# def image_to_lidar_global_modi(det_uvz, gt_KT):
-#     inverse_gt_kt = torch.inverse(gt_KT).float()
+def image_to_lidar_global_modi(det_uvz, gt_KT):
+    inverse_gt_kt = torch.inverse(gt_KT).float()
     
-#     list_xyz_global = []
-#     for cid in range(6):
-#         img2lidar = inverse_gt_kt[cid]
-#         mask = (det_uvz[:, 0] == cid)
-#         if mask.any():
-#             detection_uvz = det_uvz[mask, 1:]
-#             normalize_uvz = torch.cat([detection_uvz[:, :2] * detection_uvz[:, 2:3], detection_uvz[:, 2:3]], dim=1).float()
-#             uvz_homogeneous = torch.cat([normalize_uvz, normalize_uvz.new_ones([normalize_uvz.shape[0], 1])], dim=1)
-#             xyz_global = torch.matmul(img2lidar[:3, :3], uvz_homogeneous[:, :3].T).T + img2lidar[:3, 3]
-#             list_xyz_global.append(xyz_global)
+    list_xyz_global = []
+    for cid in range(6):
+        img2lidar = inverse_gt_kt[cid]
+        mask = (det_uvz[:, 0] == cid)
+        if mask.any():
+            detection_uvz = det_uvz[mask, 1:]
+            normalize_uvz = torch.cat([detection_uvz[:, :2] * detection_uvz[:, 2:3], detection_uvz[:, 2:3]], dim=1).float()
+            uvz_homogeneous = torch.cat([normalize_uvz, normalize_uvz.new_ones([normalize_uvz.shape[0], 1])], dim=1)
+            xyz_global = torch.matmul(img2lidar[:3, :3], uvz_homogeneous[:, :3].T).T + img2lidar[:3, 3]
+            list_xyz_global.append(xyz_global)
     
-#     if list_xyz_global:
-#         xyz_global_torch = torch.cat(list_xyz_global, dim=0)
-#     else:
-#         xyz_global_torch = torch.empty(0, 3, device=det_uvz.device)
+    if list_xyz_global:
+        xyz_global_torch = torch.cat(list_xyz_global, dim=0)
+    else:
+        xyz_global_torch = torch.empty(0, 3, device=det_uvz.device)
     
-#     return xyz_global_torch
+    return xyz_global_torch
 
 def image_to_lidar_global_modi(det_uvz, gt_KT):
     inverse_gt_kt = torch.inverse(gt_KT).float()
@@ -1464,20 +1513,33 @@ def miscalib_transform(det_xyz, mis_T):
     
     return xyz_global_torch
 
-def miscalib_transform1(det_xyz, mis_T):
+def miscalib_transform1(det_xyz, mis_extrinsic):
     list_xyz_global = []
     list_confidence = []
     list_cam_indices = []  # New list for camera indices
     
     for cid in range(6):
-        rotate_lidar2lidar = mis_T[cid]
+        RT = mis_extrinsic[cid]
+        # 회전 행렬(R)과 이동 벡터(t) 분리
+        # R = RT[:3, :3]  # 회전 행렬 전치 (LiDAR → 카메라 좌표계 변환)
+        # t = RT[:3, 3]
+        
         mask = (det_xyz[:, 0] == cid)
         if mask.any():
             detection_xyz = det_xyz[mask, 1:4]  # Only take x,y,z coordinates
             confidence = det_xyz[mask, 4]  # Get confidence scores
             cam_indices = det_xyz[mask, 0]  # Get camera indices
-            
-            rotated_points = detection_xyz[:, :3].matmul(rotate_lidar2lidar[:3, :3].T) + rotate_lidar2lidar[:3, 3].unsqueeze(0)
+
+            # 회전 적용: (N,3) @ (3,3) → (N,3)
+            # rotated_points = detection_xyz @ R
+            points_hom = torch.cat([detection_xyz, torch.ones_like(detection_xyz[:, :1])], dim=1)
+            # Apply inverse transformation: LiDAR → Camera
+            rotated_points = (RT @ points_hom.T).T
+            rotated_points = rotated_points[:,:3]
+            # 이동 적용: (N,3) + (1,3)
+            # translated_points = rotated_points + t.unsqueeze(0)
+            # # Z축 반전 (카메라 좌표계 방향 보정)
+            # translated_points[:, 2] *= -1
             
             list_xyz_global.append(rotated_points)
             list_confidence.append(confidence)
@@ -1492,6 +1554,48 @@ def miscalib_transform1(det_xyz, mis_T):
         xyz_global_torch = torch.cat([cam_indices_torch, xyz_global_torch, confidence_torch], dim=1)
     else:
         xyz_global_torch = torch.empty(0, 5, device=det_xyz.device)  # [0, 5] for cam_id,x,y,z,confidence
+    
+    return xyz_global_torch
+
+def miscalib_transform2(det_xyz, mis_Rt):
+    list_xyz_global = []
+    list_confidence = []
+    list_cam_indices = []  
+    
+    for cid in range(6):
+        Rt_perturb = mis_Rt[cid]
+        mask = (det_xyz[:, 0] == cid)
+        if mask.any():
+            detection_xyz = det_xyz[mask, 1:4]  
+            confidence = det_xyz[mask, 4]  
+            cam_indices = det_xyz[mask, 0]
+
+            # Convert to homogeneous coordinates and apply inverse
+            points_hom = torch.cat([
+                detection_xyz, 
+                torch.ones_like(detection_xyz[:, :1])
+            ], dim=1)
+            
+            # LiDAR → LiDAR
+            perturbed_points = (Rt_perturb @ points_hom.T).T[:,:3]
+            # rotated = detection_xyz @ RT_perturb[:3,:3].T
+            # disturbed_xyz = rotated + RT_perturb[:3, 3]
+            
+            list_xyz_global.append(perturbed_points)
+            list_confidence.append(confidence)
+            list_cam_indices.append(cam_indices)
+    
+    if list_xyz_global:
+        xyz_global_torch = torch.cat(list_xyz_global, dim=0)
+        confidence_torch = torch.cat(list_confidence, dim=0).unsqueeze(1)
+        cam_indices_torch = torch.cat(list_cam_indices, dim=0).unsqueeze(1)
+        
+        xyz_global_torch = torch.cat(
+            [cam_indices_torch, xyz_global_torch, confidence_torch], 
+            dim=1
+        )
+    else:
+        xyz_global_torch = torch.empty(0, 5, device=det_xyz.device)
     
     return xyz_global_torch
 
@@ -1577,7 +1681,7 @@ def corrs_denormalization(corrs_modi, origin_img_shape=(900, 1600, 3)):
        
     return corrs
 
-def points2depthmap(points, height, width ,downsample=1):
+def points2depthmap(points, height, width ,downsample=1): 
     device = points.device
     grid_config = {
         'x': [-51.2, 51.2, 0.8],

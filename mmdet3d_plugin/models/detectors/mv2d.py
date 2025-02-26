@@ -237,37 +237,35 @@ class MV2D(Base3DDetector):
         return feat
     
     # @force_fp32(apply_to=('img', 'points'))
-    def forward(self, return_loss=True, **kwargs):
-        """Calls either forward_train or forward_test depending on whether
-        return_loss=True.
-        Note this setting will change the expected inputs. When
-        `return_loss=True`, img and img_metas are single-nested (i.e.
-        torch.Tensor and list[dict]), and when `resturn_loss=False`, img and
-        img_metas should be double nested (i.e.  list[torch.Tensor],
-        list[list[dict]]), with the outer list indicating test time
-        augmentations.
-        """
-        # if 'return_loss' in kwargs:
-        #     return_loss = kwargs['return_loss']
-        # else:
-        #     return_loss = False  # 기본값을 False로 설정
+    # def forward(self, return_loss=True, **kwargs):
+    #     """Calls either forward_train or forward_test depending on whether
+    #     return_loss=True.
+    #     Note this setting will change the expected inputs. When
+    #     `return_loss=True`, img and img_metas are single-nested (i.e.
+    #     torch.Tensor and list[dict]), and when `resturn_loss=False`, img and
+    #     img_metas should be double nested (i.e.  list[torch.Tensor],
+    #     list[list[dict]]), with the outer list indicating test time
+    #     augmentations.
+    #     """
+    #     # if 'return_loss' in kwargs:
+    #     #     return_loss = kwargs['return_loss']
+    #     # else:
+    #     #     return_loss = False  # 기본값을 False로 설정
         
-        if return_loss:
-            return self.forward_train(**kwargs)
-        else:
-            return self.forward_test(**kwargs)
+    #     if return_loss:
+    #         return self.forward_train(**kwargs)
+    #     else:
+    #         return self.forward_test(**kwargs)
 
     def forward_train(self,
                       img,
                       img_metas,
                       lidar_depth_gt,
                       lidar_depth_mis,
-                    #   lidar_depth_gt,
-                    #   points_mis,
-                    #   mis_KT,
+                      mis_KT,
+                      mis_Rt,
                       gt_KT,
-                    #   mis_K,
-                      mis_RT,
+                      gt_KT_3by4,
                       gt_bboxes_2d,
                       gt_labels_2d,
                       gt_bboxes_2d_to_3d,
@@ -282,10 +280,10 @@ class MV2D(Base3DDetector):
         assert batch_size == 1, 'only support batch_size 1 now'
         
         img_ori = img
-        # mis_KT = mis_KT.view(batch_size * num_views, *mis_KT.shape[2:])
-        # mis_K = mis_K.view(batch_size * num_views, *mis_K.shape[2:])
-        mis_RT = mis_RT.view(batch_size * num_views, *mis_RT.shape[2:])
+        mis_KT = mis_KT.view(batch_size * num_views, *mis_KT.shape[2:])
+        mis_Rt = mis_Rt.view(batch_size * num_views, *mis_Rt.shape[2:])
         gt_KT = gt_KT.view(batch_size * num_views, *gt_KT.shape[2:])
+        gt_KT_3by4 = gt_KT_3by4.view(batch_size * num_views, *gt_KT_3by4.shape[2:])
     
         # lidar_depth_gt = lidar_depth_gt.view(batch_size * num_views, *lidar_depth_gt.shape[2:]).to(torch.float32) # uvz_gt
         lidar_depth_mis = lidar_depth_mis.view(batch_size * num_views, *lidar_depth_mis.shape[2:]).to(torch.float32)
@@ -371,191 +369,12 @@ class MV2D(Base3DDetector):
         # extracting mis-calibatated depthmap feature 
         # calib_attn_feat = self.lidar_depth_backbone(lidar_depth_mis)
         
-        ####### SJ MOON ###############
-        # to-do : auto-calib cross-attention
-        # detection_uvz = find_depthmap_z(detections,points_gt)
-        # detection_all_uvz = find_all_depthmap_z(detections,points_gt)
-        # display_nonzero_depthmap(detection_nonzero_uvz, img_ori) # display
-        # to-do : gt_uvz를 구하기 위해 inverse-transform --> mis-calib transform 로직 필요 
-        # detection_xyz = image_to_lidar_global(detection_uvz,img_metas)
-        ##########  검증용 ########
-
-        # ###### SJ MOON 실제 구현 코드 ########## 
-        # detection_nonzero_uvz = find_nonzero_depthmap_z(detections,points_gt)
-        # detection_xyz_set_all, detection_uvz_set_all  =[] ,[]
- 
-        # for i in range(6):
-        #     detection_gt_xyz_all_temp,detection_nonzero_xyz_temp = [] ,[]
-        #     gt_lidar2img = gt_KT[i]
-        #     mis_lidar2img = mis_KT[i]
-        #     mis_intrisic = mis_K[i]
-        #     mis_extrinsic = mis_T[i]
-        #     mis_det_xyz,mis_det_uvz,reduced_mis_det_xyz = None ,None , None # 초기화
-        #     det_xyz ,det_uvz,reduced_det_xyz = None , None ,None # 초기화 
-        #     # det_uvz = detection_uvz[i]
-        #     # detection_xyz = image_to_lidar_global(det_uvz,gt_lidar2img)
-
-        # # #     # ## inverse transform 검증용 -- 검증시 맞음 #######
-        # # #     # points_img = detection_xyz.matmul(gt_lidar2img[:3, :3].T) + gt_lidar2img[:3, 3].unsqueeze(0)
-        # # #     # points_img = torch.cat([points_img[:, :2] / points_img[:, 2:3], points_img[:, 2:3]], 1).cpu()
-        # # #     # depth , uv,z = points2depthmap(points_img, img_meta['img_shape'][0] ,img_meta['img_shape'][1])
-        # # #     # ref_uvz = torch.cat((uv, z.unsqueeze(1)), dim=1)
-        # # #     # dense_depth_img_ref = dense_map_gpu_optimized(ref_uvz.T , img_meta['img_shape'][1] ,img_meta['img_shape'][0], 4)
-        # # #     # dense_depth_img_ref = dense_depth_img_ref.to(dtype=torch.uint8).cuda()
-
-        # # #     # # Mis-calibrated depth map 계산
-        # # #     # points_img_mis_calibrated = detection_xyz[:, :3].matmul(mis_lidar2img[:3, :3].T) + mis_lidar2img[:3, 3].unsqueeze(0)
-        # # #     # points_img_mis_calibrated = torch.cat([points_img_mis_calibrated[:, :2] / points_img_mis_calibrated[:, 2:3], points_img_mis_calibrated[:, 2:3]], 1).cpu()
-        # # #     # depth_mis, gt_uv,gt_z = points2depthmap(points_img_mis_calibrated, img_meta['img_shape'][0] ,img_meta['img_shape'][1])
-        # # #     # lidarOnImage_gt = torch.cat((gt_uv, gt_z.unsqueeze(1)), dim=1)
-        # # #     # dense_depth_img_gt = dense_map_gpu_optimized(lidarOnImage_gt.T , img_meta['img_shape'][1] ,img_meta['img_shape'][0], 4)
-        # # #     # dense_depth_img_gt = dense_depth_img_gt.to(dtype=torch.uint8).cuda()
-
-        # # #     # import matplotlib.pyplot as plt
-        # # #     # plt.figure(figsize=(20, 20))
-        # # #     # ref_gray = dense_depth_img_ref.detach().cpu().numpy()
-        # # #     # plt.subplot(1,2,1)
-        # # #     # plt.imshow(ref_gray, cmap='magma')
-        # # #     # plt.title("gt gray display", fontsize=10)
-        # # #     # plt.axis('off')
-
-        # # #     # mis_gray = dense_depth_img_gt.detach().cpu().numpy()
-        # # #     # plt.subplot(1,2,2)
-        # # #     # plt.imshow(mis_gray, cmap='magma')
-        # # #     # plt.title("mis gray display", fontsize=10)
-        # # #     # plt.axis('off')
-            
-        # # #     # # 전체 그림 저장
-        # # #     # plt.tight_layout()
-        # # #     # plt.savefig('verify1.jpg', dpi=300, bbox_inches='tight')
-        # # #     # plt.close()
-        # # #     # print ("end of print")
-        # # #     ##################################################
-            
-        #     # # to-do : object 별로 인덱스 (detection_nonzero_uvz 때문에) for문 구현 필요 !!!
-        #     if len(detection_nonzero_uvz[i]) == 0:  # object가 없을 시 랜덤값 생성
-        #         mis_det_xyz = torch.rand((100, 3), dtype=torch.float32, device='cuda') * 1e-6
-        #         det_xyz = torch.rand((100, 3), dtype=torch.float32, device='cuda') * 1e-6
-        #         mis_det_uvz = torch.rand((100, 3), dtype=torch.float32, device='cuda') * 1e-6
-        #         det_uvz = torch.rand((100, 3), dtype=torch.float32, device='cuda') * 1e-6
-
-        #     for j in range(len(detection_nonzero_uvz[i])) :
-                
-        #         det_nonzero_uvz = detection_nonzero_uvz[i][j]
-        #         detection_nonzero_xyz = image_to_lidar_global(det_nonzero_uvz,gt_lidar2img)
-                
-        #         mis_detection_nonzero_xyz = detection_nonzero_xyz.matmul(mis_lidar2img[:3, :3].T) + mis_lidar2img[:3, 3].unsqueeze(0)
-        #         mis_detection_nonzero_xyz = torch.cat([mis_detection_nonzero_xyz[:, :2] / mis_detection_nonzero_xyz[:, 2:3], mis_detection_nonzero_xyz[:, 2:3]], 1)
-        #         # mis_detection_nonzero_xyz = mis_detection_nonzero_xyz.cpu()
-        #         depth_mis, gt_uv,gt_z , valid_indices = points2depthmap(mis_detection_nonzero_xyz, img_meta['img_shape'][0] ,img_meta['img_shape'][1])
-        #         det_gt_uvz = torch.cat((gt_uv, gt_z.unsqueeze(1)), dim=1).to(torch.int64)
-        #         det_uvz_raw = det_nonzero_uvz[valid_indices]
-
-        #         ### xyz concat ###
-        #         # if mis_det_xyz is None:
-        #         #     mis_det_xyz = mis_detection_nonzero_xyz  # 첫 번째 값은 그대로 저장
-        #         # else :
-        #         #     mis_det_xyz = torch.cat([mis_det_xyz, mis_detection_nonzero_xyz], dim=0)  # 이전 값
-                
-        #         # if det_xyz is None:
-        #         #     det_xyz = detection_nonzero_xyz
-        #         # else:
-        #         #     det_xyz = torch.cat([det_xyz, detection_nonzero_xyz], dim=0)  # 이전 값
-            
-        #         ### uvz concat : 나중에 다시 해보자 !! ###
-        #         if mis_det_uvz is None:
-        #             mis_det_uvz = det_gt_uvz  # 첫 번째 값은 그대로 저장
-        #         else :
-        #             mis_det_uvz = torch.cat([mis_det_uvz, det_gt_uvz], dim=0)  # 이전 값
-                
-        #         if det_uvz is None:
-        #             det_uvz = det_uvz_raw  # 첫 번째 값은 그대로 저장
-        #         else :
-        #             det_uvz = torch.cat([det_uvz, det_uvz_raw], dim=0)  # 이전 값
-        #             #### mis_det_uvz 와 det_uvz 점의 갯수가 차이나는 이유는 mis_det_uvz가 projection 하면서 이미지 프레임에서 벗어남. 
-
-        #         # #### 검증용 display #####
-        #         # import matplotlib.pyplot as plt
-        #         # detection_gt_uvz_all_temp.append(lidarOnImage_gt)
-        #         # dense_depth_img_gt = dense_map_gpu_optimized(lidarOnImage_gt.T , img_meta['img_shape'][1] ,img_meta['img_shape'][0], 2)
-        #         # dense_depth_img_gt = dense_depth_img_gt.to(dtype=torch.uint8).cuda()
-                
-        #         # plt.figure(figsize=(20, 20))
-        #         # ref_gray = dense_depth_img_gt.detach().cpu().numpy()
-        #         # plt.subplot(1,1,1)
-        #         # plt.imshow(ref_gray, cmap='magma')
-        #         # plt.title("gt gray display", fontsize=10)
-        #         # plt.axis('off')
-                
-        #         # # 전체 그림 저장
-        #         # plt.tight_layout()
-        #         # plt.savefig('verify2.jpg', dpi=300, bbox_inches='tight')
-        #         # plt.close()
-        #         # print ("end of print")
-        #     # xyz_set = torch.cat((det_xyz,mis_det_xyz),dim=1)
-        #     # reduced_xyz_set_torch = trim_corrs_torch(xyz_set ,num_kp=100)
-        #     # detection_xyz_set_all.append(reduced_xyz_set_torch)
-            
-        #     ##### 카메라 이미지별 object set uvz_set 대응점 구하기 ####
-        #     uvz_set = torch.cat((det_uvz,mis_det_uvz),dim=1)
-        #     reduced_uvz_set_torch = trim_corrs_torch(uvz_set ,num_kp=100)
-        #     detection_uvz_set_all.append(reduced_uvz_set_torch)
-        
-        # # reduced_xyz_set =torch.stack(detection_xyz_set_all)
-        # # reduced_query_xyz = reduced_xyz_set[:,:,:3]
-        # # reduced_gt_xyz = reduced_xyz_set[:,:,3:]
-        # # normal_query_xyz = normalize_point_cloud(reduced_query_xyz)
-        # # normal_gt_xyz = normalize_point_cloud(reduced_gt_xyz)
-
-        # ######## UVZ correspendence matching pre-processing ############
-        # reduced_uvz_set =torch.stack(detection_uvz_set_all)
-        # reduced_uvz_set_clone= reduced_uvz_set.clone().detach().to(torch.float32)
-        # normalized_corrs = corrs_normalization(reduced_uvz_set_clone)
-        # normalized_query_uvz = normalized_corrs[:,:,:3]
-        # normlaized_gt_uvz = normalized_corrs[:,:,3:]
-        # query_input = normalized_query_uvz.clone().detach()
-        # corr_target = normlaized_gt_uvz.clone().detach()
-
-        # query_input[:,:,0] = query_input[:,:,0]/2    # recaling points for sbs image resizing
-        # query_input[:,:,1] = query_input[:,:,1]/2 
-        # corr_target[:,:,0] = corr_target[:,:,0]/2 + 0.5 # recaling points for sbs image resizing
-        # corr_target[:,:,1] = corr_target[:,:,1]/2 
-  
-        # # draw_points_torch(sbs_img,resized_query_xyz) # : uvz 포인트 검증용 
-        
-        
-        # # mask,query_emb,pos_emb ,corrs_pred =[],[],[],[] # dummy data
-
-        # # attended_features = self.calib_cross_attn(calib_attn_feat, normal_query_xyz ,img_metas)
-
-        # corrs_pred , cycle , mask , enc_out = self.corr(sbs_img, query_input)
-        # loss_corr_cycle = self.corr_loss(corrs_pred, corr_target, cycle, query_input, mask) # argumenrts : corr_pred, corr_target, cycle, queries, mask
-        # losses['loss_corr_cycle'] = loss_corr_cycle
-
-        # #### UVZ correspondence matching post-processing ##############
-        # corrs_pred_modi = corrs_pred.clone().detach()
-
-        # corrs_pred_modi[:, :, 0] = (corrs_pred_modi[:, :, 0] - 0.5) * 2
-        # corrs_pred_modi[:, :, 1] = corrs_pred_modi[:, :, 1] * 2
-
-        # denormal_corrs_pred = corrs_denormalization(corrs_pred_modi)
-
-        # corr_list =[]
-        # for i in range(6):
-        #     gt_lidar2img = gt_KT[i]
-        #     mis_lidar2img = mis_KT[i]
-        #     corr_pred = denormal_corrs_pred[i]
-        #     corr_xyz = image_to_lidar_global(corr_pred , mis_lidar2img) # gt calibration parameter를 쓰는것이 맞는지 모르겠어. 
-        #     corr_list.append(corr_xyz)
-        
-        # corrs_pred_xyz = torch.stack(corr_list)
-        
         # roi_losses = self.roi_head.forward_train(feat, img_metas, detections,gt_bboxes, gt_labels,
         #                                          gt_bboxes_3d, gt_labels_3d,
         #                                          ori_gt_bboxes_3d, ori_gt_labels_3d,
         #                                          attr_labels, None)
         
-        roi_losses, loss_corr = self.roi_head.forward_train(img_ori,lidar_depth_mis, feat,mis_depthmap_feat, detections,img_metas,lidar_depth_gt,gt_KT,mis_RT, gt_bboxes, gt_labels,
+        roi_losses , loss_corr = self.roi_head.forward_train(img_ori,img_metas,lidar_depth_mis, feat,mis_depthmap_feat, detections,lidar_depth_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4, gt_bboxes, gt_labels,
                                             gt_bboxes_3d, gt_labels_3d,
                                             ori_gt_bboxes_3d, ori_gt_labels_3d,
                                             attr_labels, None)
@@ -563,16 +382,15 @@ class MV2D(Base3DDetector):
         losses.update(roi_losses)
         return losses
 
-    def forward_test(self, img,               
-                    # lidar_depth_gt,
+    def forward_test(self, 
+                    img, 
+                    img_metas,              
                     lidar_depth_mis,
                     lidar_depth_gt,
-                    # points_mis,
-                    # mis_KT,
+                    mis_KT,
+                    mis_Rt,
                     gt_KT,
-                    # mis_K,
-                    mis_RT,
-                    img_metas,
+                    gt_KT_3by4,
                     **kwargs):
         num_augs = len(img)
         if num_augs != len(img_metas):
@@ -581,22 +399,23 @@ class MV2D(Base3DDetector):
                     len(img), len(img_metas)))
 
         if num_augs == 1:
-            # return self.simple_test(img[0], img_metas[0], lidar_depth_mis[0], lidar_depth_gt[0], gt_KT[0], mis_RT[0], **kwargs)
-            return self.simple_test(img, img_metas, lidar_depth_mis, lidar_depth_gt, gt_KT, mis_RT, **kwargs)
+            return self.simple_test(img[0], img_metas[0], lidar_depth_mis[0], lidar_depth_gt[0], gt_KT[0], mis_Rt[0],mis_KT[0],gt_KT_3by4[0], **kwargs)
+            # return self.simple_test(img, img_metas, lidar_depth_mis, lidar_depth_gt, gt_KT, mis_RT, **kwargs)
         else:
             return self.aug_test(img, img_metas, **kwargs)
 
-    def simple_test(self, img, img_metas,lidar_depth_mis, lidar_depth_gt, gt_KT, mis_RT, proposal_bboxes=None, proposal_labels=None, rescale=False, **kwargs):
+    def simple_test(self, img, img_metas,lidar_depth_mis, lidar_depth_gt, gt_KT, mis_Rt,mis_KT,gt_KT_3by4, proposal_bboxes=None, proposal_labels=None, rescale=False, **kwargs):
 
         # process multi-view inputs
         batch_size, num_views, c, h, w = img.shape
         img = img.view(batch_size * num_views, c, h, w)
 
         img_ori = img
-        # mis_KT = mis_KT.view(batch_size * num_views, *mis_KT.shape[2:])
+        mis_KT = mis_KT.view(batch_size * num_views, *mis_KT.shape[2:])
         # mis_K = mis_K.view(batch_size * num_views, *mis_K.shape[2:])
-        mis_RT = mis_RT.view(batch_size * num_views, *mis_RT.shape[2:])
+        mis_Rt = mis_Rt.view(batch_size * num_views, *mis_Rt.shape[2:])
         gt_KT = gt_KT.view(batch_size * num_views, *gt_KT.shape[2:])
+        gt_KT_3by4 = gt_KT_3by4.view(batch_size * num_views, *gt_KT_3by4.shape[2:])
     
         # lidar_depth_gt = lidar_depth_gt.view(batch_size * num_views, *lidar_depth_gt.shape[2:]).to(torch.float32)
         lidar_depth_mis = lidar_depth_mis.view(batch_size * num_views, *lidar_depth_mis.shape[2:]).to(torch.float32)
@@ -635,7 +454,7 @@ class MV2D(Base3DDetector):
 
         # generate 3D detection
         # to -do 여기 아규먼트 수정해야 함 !! 
-        bbox_outputs_all = self.roi_head.simple_test(img_ori,lidar_depth_mis,feat,mis_depthmap_feat, detections,lidar_depth_gt,gt_KT,mis_RT, img_metas, rescale=rescale)
+        bbox_outputs_all = self.roi_head.simple_test(img_ori,img_metas,lidar_depth_mis,feat,mis_depthmap_feat, detections,lidar_depth_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4,rescale=rescale)
         bbox_outputs = []
         box_type_3d = img_metas[0]['box_type_3d']
 

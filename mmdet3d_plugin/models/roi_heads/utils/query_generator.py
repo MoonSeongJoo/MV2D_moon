@@ -343,11 +343,11 @@ class QueryGenerator(BaseModule):
     def forward(self, x, intrinsics, extrinsics, extra_feats=dict()):
         if not self.with_cp:
             roi_feat, return_feats = self.get_roi_feat(x, extra_feats)
-            center_pred,return_feats = self.get_prediction(roi_feat, intrinsics, extrinsics, extra_feats, return_feats)
+            center_pred_uvz,center_pred_lidar,return_feats = self.get_prediction(roi_feat, intrinsics, extrinsics, extra_feats, return_feats)
         else:
             roi_feat, return_feats = cp.checkpoint(self.get_roi_feat, x, extra_feats)
             center_pred, return_feats = cp.checkpoint(self.get_prediction, roi_feat, intrinsics, extrinsics, extra_feats, return_feats)
-        return center_pred, return_feats
+        return center_pred_uvz,center_pred_lidar, return_feats
 
     def get_roi_feat(self, x, extra_feats=dict()):
         return_feats = dict()
@@ -374,19 +374,7 @@ class QueryGenerator(BaseModule):
         return x, return_feats
 
     def get_prediction(self, x, intrinsics, extrinsics, extra_feats, return_feats):
-
-        # import matplotlib
-        # matplotlib.use('Agg')
-        # import matplotlib.pyplot as plt
-
-        # # x를 시각화하고 파일로 저장하는 코드 추가
-        # plt.figure(figsize=(10, 8))
-        # plt.imshow(x.detach().cpu().numpy(), cmap='viridis')
-        # plt.colorbar()
-        # plt.title('Visualization of x')
-        # plt.savefig('x_visualization.png')
-        # plt.close()
-        
+   
         # separate branches
         x_cls = x
         x_center = x
@@ -415,4 +403,4 @@ class QueryGenerator(BaseModule):
 
         center_lidar = self.center2lidar(center_pred, intrinsics, extrinsics)
 
-        return center_lidar, return_feats
+        return center_pred, center_lidar, return_feats
