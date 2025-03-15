@@ -11,7 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.transforms import functional as tvtf
 from torchvision.models import resnet50
-import easydict
+
 from mmcv.runner import auto_fp16
 
 from mmdet.models.builder import DETECTORS, build_detector, build_head, build_neck #,build_calib_cross_attn
@@ -46,52 +46,6 @@ from mmdet3d_plugin.models.utils.grid_mask import CustomGridMask
                 
 # })
 
-# class COTR(nn.Module):
-    
-#     def __init__(self, num_kp=500):
-#         super(COTR, self).__init__()
-#         self.num_kp = num_kp
-#         ##### CORR network #######
-#         self.corr = build(cotr_args)
-    
-#     def forward(self, sbs_img , query_input):
-
-#         for i in range(6) :
-#             # multi camera batch cotr 필요
-#             corrs_pred , enc_out = self.corr(sbs_img, query_input)
-            
-#             img_reverse_input = torch.cat([sbs_img[..., 640:], sbs_img[..., :640]], axis=-1)
-#             ##cyclic loss pre-processing
-#             query_reverse = corrs_pred
-#             query_reverse[..., 0] = query_reverse[..., 0] - 0.5
-#             cycle,_ = self.corr(img_reverse_input, query_reverse)
-#             cycle[..., 0] = cycle[..., 0] - 0.5
-#             mask = torch.norm(cycle - query_input, dim=-1) < 10 / 640
-
-#         return corrs_pred , cycle , mask , enc_out
-
-# class CorrelationCycleLoss(nn.Module):
-#     def __init__(self, loss_weight=1.0):
-#         super().__init__()
-#         self.loss_weight = loss_weight
-
-#     def forward(self, corr_pred, corr_target, cycle, queries, mask):
-#         corr_loss = torch.nn.functional.mse_loss(corr_pred, corr_target)
-        
-#         if mask.sum() > 0:
-#             cycle_loss = torch.nn.functional.mse_loss(cycle[mask], queries[mask])
-#             corr_loss += cycle_loss 
-        
-#         return self.loss_weight * corr_loss
-
-# class ResNet50Backbone(nn.Module):
-#     def __init__(self):
-#         super().__init__()
-#         resnet = resnet50(pretrained=True)
-#         self.features = nn.Sequential(*list(resnet.children())[:-2])
-    
-#     def forward(self, x):
-#         return self.features(x)
 
 @DETECTORS.register_module()
 class MV2D(Base3DDetector):
@@ -287,16 +241,6 @@ class MV2D(Base3DDetector):
     
         # lidar_depth_gt = lidar_depth_gt.view(batch_size * num_views, *lidar_depth_gt.shape[2:]).to(torch.float32) # uvz_gt
         lidar_depth_mis = lidar_depth_mis.view(batch_size * num_views, *lidar_depth_mis.shape[2:]).to(torch.float32)
-
-        # img_resized = F.interpolate(img, size=[192, 640], mode="bilinear")
-        # lidar_depth_mis_resized = F.interpolate(lidar_depth_mis, size=[h, w], mode="bilinear")
-
-        # sbs_img = two_images_side_by_side(img_resized, lidar_depth_mis)
-        # sbs_img = torch.from_numpy(sbs_img).permute(0,3,1,2).to('cuda')
-        # sbs_img = tvtf.normalize(sbs_img, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-
-        ############## input display ##########################
-        # display_depth_maps(img,lidar_depth_gt,lidar_depth_mis)
         
         if self.use_grid_mask:
             img = self.grid_mask(img)

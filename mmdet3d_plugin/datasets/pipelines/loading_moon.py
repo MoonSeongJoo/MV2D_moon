@@ -319,7 +319,7 @@ class PointToMultiViewDepth(object):
             # points2img = add_calibration_adv(lidar2img , points_lidar)
             points2img , KT_ori  = add_calibration_adv2(lidar2cam ,cam2img, points_lidar)
             # miscalibrated_points2img_ori , mis_RT_ori , mis_KT_ori ,mis_K_ori = add_mis_calibration_ori(lidar2cam,cam2img, points_lidar,max_r=0.0,max_t=0.0)
-            miscalibrated_points2img , extrinsic_perturb, lidar2img_original ,lidar2img_mis = add_mis_calibration_adv(lidar2img,lidar2cam,cam2img, points_lidar, max_r=1.0,max_t=0.010)
+            miscalibrated_points2img , extrinsic_perturb, lidar2img_original ,lidar2img_mis = add_mis_calibration_adv(lidar2img,lidar2cam,cam2img, points_lidar, max_r=10.0,max_t=0.075)
 
             point2img_gt.append(points2img) # lidar coordination 3d
             list_mis_RT.append(extrinsic_perturb) # lidar coordination 3d mis-calibration

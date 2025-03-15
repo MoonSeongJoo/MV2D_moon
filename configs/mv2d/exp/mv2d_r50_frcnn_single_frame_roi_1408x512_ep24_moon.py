@@ -27,6 +27,7 @@ model = dict(
             with_cp=False,
             dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False),
             stage_with_dcn=(False, False, True, True),
+            # frozen_stages=4, # Freeze all stages of the backbone
         ),
     ),
     neck=dict(
@@ -90,9 +91,9 @@ model = dict(
                 use_sigmoid=True,
                 gamma=2.0,
                 alpha=0.25,
-                loss_weight=1.0,
+                loss_weight=2.0,
             ),
-            loss_bbox=dict(type='L1Loss', loss_weight=0.5),
+            loss_bbox=dict(type='L1Loss', loss_weight=0.25),
             # # 여기에 새로운 loss_corr_cycle을 추가합니다
             # loss_corr_cycle=dict(type='CorrelationCycleLoss', loss_weight=1.0),
         ),
@@ -163,23 +164,28 @@ model = dict(
 )
 
 data = dict(
-    workers_per_gpu=8,
+    workers_per_gpu=16,
 )
 
 optimizer = dict(
     _delete_=True,
     type='AdamW',
     lr=2e-4,
+    # lr=1e-4,
     paramwise_cfg=dict(
         custom_keys={
             'base_detector.backbone': dict(lr_mult=0.25),
         }
     ),
-    weight_decay=0.01)
+    weight_decay=0.01
+    # weight_decay=0.1  # 10x 증가
+    )
 
 optimizer_config = dict(
     _delete_=True,
     grad_clip=dict(max_norm=10, norm_type=2)
+    # 수정 제안 (검색 결과[5][6] 참조)
+    # grad_clip=dict(max_norm=5.0, norm_type=2)
 )
 
 ### epoch 기반  runner ######
@@ -205,3 +211,17 @@ lr_config = dict(
     warmup_ratio=1.0 / 3,
     min_lr_ratio=1e-3,
 )
+
+# param_scheduler = [
+#     dict(
+#         type='OneCycleLR',
+#         eta_max=2e-4,
+#         total_steps=24 * 2813,  # 총 67,512 steps
+#         pct_start=0.3,
+#         div_factor=25,
+#         final_div_factor=1e4,
+#         anneal_strategy='cos',
+#         by_epoch=False,
+#         convert_to_iter_based=True
+#     )
+# ]

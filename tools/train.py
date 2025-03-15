@@ -291,4 +291,5 @@ def main():
 
 if __name__ == '__main__':
     mp.set_start_method('spawn', force=True)
+    torch.set_printoptions(precision=4, sci_mode=False)
     main()
