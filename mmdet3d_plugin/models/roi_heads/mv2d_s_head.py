@@ -497,11 +497,19 @@ class MV2DSHead(MV2DHead):
         
         ########### corr transformer sjmoon ###########
         selected_imgs, trimed_corrs ,original_camera_ids = process_queries(corrs_points,sbs_img)
-        query_input = trimed_corrs[...,2:5]
-        corr_target =trimed_corrs[...,5:]
-        
-        corrs_pred, cycle, corr_mask, enc_out = self.corr(selected_imgs, query_input)
-        corr_loss = self.corr_loss(corrs_pred, corr_target, cycle,query_input,corr_mask)
+        if trimed_corrs.numel() == 0:  # 텐서가 비어있는 경우
+            # zero loss 생성 (requires_grad=True 유지)
+            corr_loss = torch.tensor(0.0, 
+                                device=selected_imgs.device,
+                                dtype=selected_imgs.dtype,
+                                requires_grad=True)
+        else:
+            # 기존 처리 로직 유지
+            query_input = trimed_corrs[...,2:5]
+            corr_target = trimed_corrs[...,5:]
+            
+            corrs_pred, cycle, corr_mask, enc_out = self.corr(selected_imgs, query_input)
+            corr_loss = self.corr_loss(corrs_pred, corr_target, cycle, query_input, corr_mask)
 #         corr_loss = torch.nn.functional.mse_loss(corrs_pred, corr_target)
     
 #         if mask.sum() > 0:
