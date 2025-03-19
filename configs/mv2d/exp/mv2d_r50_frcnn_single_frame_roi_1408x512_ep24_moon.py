@@ -193,8 +193,8 @@ total_epochs = 24
 
 # 학습 재개를 위한 설정
 load_from = None #check point path
-# resume_from = 'work_dirs/mv2d_r50_frcnn_single_frame_roi_1408x512_ep24_moon/latest.pth'  # 같은 체크포인트 경로
-resume_from = None
+resume_from = 'work_dirs/mv2d_r50_frcnn_single_frame_roi_1408x512_ep24_moon/latest.pth'  # 같은 체크포인트 경로
+# resume_from = None
 runner = dict(type='EpochBasedRunner', max_epochs=total_epochs)
 evaluation = dict(interval=3, )
 # evaluation = dict(interval=1, by_epoch=False, start=0) # validation 만 실행

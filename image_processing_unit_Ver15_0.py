@@ -255,13 +255,72 @@ def trim_corrs(in_corrs, num_kp=100):
         mask = torch.randint(0, length, (num_kp - length,), device=device)
         return torch.cat([in_corrs, in_corrs[mask]], dim=0)
 
+# def process_queries(corrs, sbs_img, num_points=100):
+#     device = corrs.device
+    
+#     # 1. 고유 카메라 인덱스 추출 및 정렬
+#     unique_cams, counts = torch.unique(corrs[:, 0], 
+#                                      sorted=False, 
+#                                      return_counts=True)
+    
+#     # 2. 이미지 선택
+#     selected_imgs = sbs_img[unique_cams.long()]
+    
+#     # 3. 카메라별 쿼리 처리
+#     grouped_queries = []
+#     camera_indices = []
+    
+#     for cam_idx, cam in enumerate(unique_cams):
+#         # 현재 카메라 쿼리 추출
+#         mask = (corrs[:, 0] == cam)
+#         cam_queries = corrs[mask, 1:]  # [N, 4] (obj_id, u, v, z)
+        
+#         # 트리밍/패딩
+#         if cam_queries.size(0) >= num_points:
+#             idx = torch.randperm(cam_queries.size(0))[:num_points]
+#             selected = cam_queries[idx]
+#         else:
+#             idx = torch.randint(0, cam_queries.size(0), (num_points - cam_queries.size(0),))
+#             selected = torch.cat([cam_queries, cam_queries[idx]], dim=0)
+        
+#         # 카메라 인덱스 태깅 및 저장
+#         tagged_queries = torch.cat([
+#             torch.full((num_points, 1), cam_idx, device=device, dtype=torch.float),
+#             selected
+#         ], dim=1)  # [num_points, 5] (local_cam_idx,ob_id, u, v, z)
+        
+#         grouped_queries.append(tagged_queries)
+#         camera_indices.append(cam)  # 원본 카메라 인덱스 저장
+
+#     # 4. 배치 차원 생성 및 원본 카메라 인덱스 반환
+#     processed_queries = torch.stack(grouped_queries, dim=0)  # [B_sel, 100, 4]
+#     original_camera_ids = torch.stack(camera_indices)        # [B_sel]
+    
+#     return selected_imgs, processed_queries, original_camera_ids
+
 def process_queries(corrs, sbs_img, num_points=100):
     device = corrs.device
     
-    # 1. 고유 카메라 인덱스 추출 및 정렬
+    # 입력 데이터가 비어 있는 경우 빈 텐서 반환
+    if corrs.numel() == 0:
+        return (
+            torch.empty(0, *sbs_img.shape[1:], device=device),  # selected_imgs
+            torch.empty(0, num_points, 5, device=device),       # processed_queries
+            torch.empty(0, device=device)                       # original_camera_ids
+        )
+    
+    # 1. 고유 카메라 인덱스 추출
     unique_cams, counts = torch.unique(corrs[:, 0], 
                                      sorted=False, 
                                      return_counts=True)
+    
+    # unique_cams가 비어 있는 경우 처리
+    if len(unique_cams) == 0:
+        return (
+            torch.empty(0, *sbs_img.shape[1:], device=device),
+            torch.empty(0, num_points, 5, device=device),
+            torch.empty(0, device=device)
+        )
     
     # 2. 이미지 선택
     selected_imgs = sbs_img[unique_cams.long()]
@@ -271,30 +330,32 @@ def process_queries(corrs, sbs_img, num_points=100):
     camera_indices = []
     
     for cam_idx, cam in enumerate(unique_cams):
-        # 현재 카메라 쿼리 추출
         mask = (corrs[:, 0] == cam)
-        cam_queries = corrs[mask, 1:]  # [N, 4] (obj_id, u, v, z)
+        cam_queries = corrs[mask, 1:]  # [N, 4]
         
-        # 트리밍/패딩
+        # 데이터 트리밍/패딩
         if cam_queries.size(0) >= num_points:
             idx = torch.randperm(cam_queries.size(0))[:num_points]
             selected = cam_queries[idx]
         else:
-            idx = torch.randint(0, cam_queries.size(0), (num_points - cam_queries.size(0),))
-            selected = torch.cat([cam_queries, cam_queries[idx]], dim=0)
+            padding_size = num_points - cam_queries.size(0)
+            selected = torch.cat([
+                cam_queries,
+                cam_queries[torch.randint(0, cam_queries.size(0), (padding_size,))]
+            ], dim=0)
         
-        # 카메라 인덱스 태깅 및 저장
+        # 카메라 인덱스 추가
         tagged_queries = torch.cat([
-            torch.full((num_points, 1), cam_idx, device=device, dtype=torch.float),
+            torch.full((num_points, 1), cam_idx, device=device, dtype=corrs.dtype),
             selected
-        ], dim=1)  # [num_points, 5] (local_cam_idx,ob_id, u, v, z)
+        ], dim=1)
         
         grouped_queries.append(tagged_queries)
-        camera_indices.append(cam)  # 원본 카메라 인덱스 저장
-
-    # 4. 배치 차원 생성 및 원본 카메라 인덱스 반환
-    processed_queries = torch.stack(grouped_queries, dim=0)  # [B_sel, 100, 4]
-    original_camera_ids = torch.stack(camera_indices)        # [B_sel]
+        camera_indices.append(cam)
+    
+    # 4. 배치 차원 생성
+    processed_queries = torch.stack(grouped_queries, dim=0)
+    original_camera_ids = torch.stack(camera_indices)
     
     return selected_imgs, processed_queries, original_camera_ids
 
