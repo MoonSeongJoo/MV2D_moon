@@ -37,7 +37,7 @@ class MV2DHead(BaseRoIHead, BBoxTestMixin, MaskTestMixin):
             self.roi_size = [self.roi_size, self.roi_size]
 
         query_generator.update(dict(loss_cls=self.bbox_head.loss_cls))
-        self.query_generator = QueryGenerator(**query_generator)
+        # self.query_generator = QueryGenerator(**query_generator)
         self.position_encoding = PE(**pe)
         self.box_corr_module = BoxCorrelation(**box_correlation)
 
@@ -123,15 +123,15 @@ class MV2DHead(BaseRoIHead, BBoxTestMixin, MaskTestMixin):
             intrinsic=self.process_intrins_feat(rois, intrinsics)
         )
 
-        # query generator
-        reference_points, return_feats = self.query_generator(bbox_feats, intrinsics, extrinsics, extra_feats)
-        reference_points[..., 0:1] = (reference_points[..., 0:1] - self.pc_range[0]) / (
-                self.pc_range[3] - self.pc_range[0])
-        reference_points[..., 1:2] = (reference_points[..., 1:2] - self.pc_range[1]) / (
-                self.pc_range[4] - self.pc_range[1])
-        reference_points[..., 2:3] = (reference_points[..., 2:3] - self.pc_range[2]) / (
-                self.pc_range[5] - self.pc_range[2])
-        reference_points.clamp(min=0, max=1)
+        # # query generator
+        # reference_points, return_feats = self.query_generator(bbox_feats, intrinsics, extrinsics, extra_feats)
+        # reference_points[..., 0:1] = (reference_points[..., 0:1] - self.pc_range[0]) / (
+        #         self.pc_range[3] - self.pc_range[0])
+        # reference_points[..., 1:2] = (reference_points[..., 1:2] - self.pc_range[1]) / (
+        #         self.pc_range[4] - self.pc_range[1])
+        # reference_points[..., 2:3] = (reference_points[..., 2:3] - self.pc_range[2]) / (
+        #         self.pc_range[5] - self.pc_range[2])
+        # reference_points.clamp(min=0, max=1)
 
         # split image features and 3dpe
         feat, pe = x[self.feat_lvl].split([c // 2, c // 2], dim=1)  # [num_views, c, h, w]
