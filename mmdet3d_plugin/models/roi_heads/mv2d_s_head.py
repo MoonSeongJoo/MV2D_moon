@@ -12,7 +12,7 @@ import torch.nn.functional as F
 import math
 
 from mmdet.core import bbox2roi
-from mmdet.models.builder import HEADS #,CALIB_TRANSFORMER
+from mmdet.models.builder import HEADS 
 from .mv2d_head import MV2DHead
 from COTR.COTR_models.cotr_model_moon_Ver12_0 import build
 from torchvision.transforms import functional as tvtf
@@ -37,9 +37,10 @@ cotr_args = easydict.EasyDict({
                 "position_embedding" : "lin_sine"
                 
 })
-from torchvision.models import resnet50
+# from torchvision.models import resnet50
 from image_processing_unit_Ver15_0 import (find_all_depthmap_z_adv,find_rois_nonzero_z,find_rois_nonzero_z_adv,find_rois_nonzero_z_adv1,
-                                           find_rois_nonzero_z_adv2,find_rois_nonzero_z_adv3,find_rois_nonzero_z_adv4,find_rois_nonzero_z_adv5,find_rois_nonzero_z_adv6,
+                                           find_rois_nonzero_z_adv2,find_rois_nonzero_z_adv3,find_rois_nonzero_z_adv4,find_rois_nonzero_z_adv5,
+                                           find_rois_nonzero_z_adv6,find_rois_nonzero_z_adv7,
                                            image_to_lidar_global,image_to_lidar_global_modi,image_to_lidar_global_modi1,
                                            lidar_to_image_with_index,
                                            miscalib_transform, miscalib_transform1,miscalib_transform2,
@@ -349,19 +350,20 @@ class MV2DSHead(MV2DHead):
         # display_depth_maps(img,lidar_depth_mis,sbs_img)
         
         #### query generator
-        ref_points_uvz,reference_points,return_feats = self.query_generator(bbox_feats, intrinsics, extrinsics, extra_feats)
-        reference_points_raw = reference_points.clone().detach()
-        reference_points[..., 0:1] = (reference_points[..., 0:1] - self.pc_range[0]) / (
-                self.pc_range[3] - self.pc_range[0])
-        reference_points[..., 1:2] = (reference_points[..., 1:2] - self.pc_range[1]) / (
-                self.pc_range[4] - self.pc_range[1])
-        reference_points[..., 2:3] = (reference_points[..., 2:3] - self.pc_range[2]) / (
-                self.pc_range[5] - self.pc_range[2])
-        reference_points = reference_points.clamp(min=0, max=1)
+        # ref_points_uvz,reference_points,return_feats = self.query_generator(bbox_feats, intrinsics, extrinsics, extra_feats)
+        # reference_points_raw = reference_points.clone().detach()
+        # reference_points[..., 0:1] = (reference_points[..., 0:1] - self.pc_range[0]) / (
+        #         self.pc_range[3] - self.pc_range[0])
+        # reference_points[..., 1:2] = (reference_points[..., 1:2] - self.pc_range[1]) / (
+        #         self.pc_range[4] - self.pc_range[1])
+        # reference_points[..., 2:3] = (reference_points[..., 2:3] - self.pc_range[2]) / (
+        #         self.pc_range[5] - self.pc_range[2])
+        # reference_points = reference_points.clamp(min=0, max=1)
 
         # detection_nonzero_uvz , conf_scores = find_rois_nonzero_z_adv4(rois,uvz_gt,ref_points_uvz)
         # detection_nonzero_uvz = find_rois_nonzero_z_adv5(rois,uvz_gt,ref_points_uvz)
-        detection_nonzero_uvz_with_ObjectID = find_rois_nonzero_z_adv6(rois,uvz_gt,ref_points_uvz)
+        # detection_nonzero_uvz_with_ObjectID = find_rois_nonzero_z_adv6(rois,uvz_gt,ref_points_uvz)
+        detection_nonzero_uvz_with_ObjectID =find_rois_nonzero_z_adv7(rois,uvz_gt)
         # detection_nonzero_uvz = detection_nonzero_uvz_with_ObjectID[:,1:]
         # pixel_normal_uvz = pixel_to_normalized(detection_nonzero_uvz,intrinsics)
         # detection_xyz_adv ,lidar2img = center2lidar(pixel_normal_uvz[:,1:4],intrinsics,extrinsics)
@@ -369,10 +371,10 @@ class MV2DSHead(MV2DHead):
         # detection_nonzero_xyz = detection_xyz_adv_concat.float()
         detection_nonzero_xyz = image_to_lidar_global_modi1(detection_nonzero_uvz_with_ObjectID,gt_KT) # 교정되어진 lidar좌표계 pc
         detection_real_mask = (detection_nonzero_uvz_with_ObjectID[:,5] == 1.0) # | (detection_nonzero_xyz[:,4] == 0.8)
-        detection_pred_mask = (detection_nonzero_uvz_with_ObjectID[:,5] == 0.7)
+        # detection_pred_mask = (detection_nonzero_uvz_with_ObjectID[:,5] == 0.7)
         detection_uvz_lidar = detection_nonzero_uvz_with_ObjectID[detection_real_mask]
         detection_xyz_lidar = detection_nonzero_xyz[detection_real_mask]
-        detection_xyz_pred = detection_nonzero_xyz[detection_pred_mask]
+        # detection_xyz_pred = detection_nonzero_xyz[detection_pred_mask]
         
         gt_xyz = miscalib_transform2(detection_nonzero_xyz,mis_Rt)
         gt_xyz_lidar = gt_xyz[detection_real_mask]
@@ -585,7 +587,7 @@ class MV2DSHead(MV2DHead):
                 self.pc_range[5] - self.pc_range[2])
         detection_xyz_normal.clamp(min=0, max=1)
         pred_xyz = detection_xyz_normal.contiguous().view(-1, 3)
-        trimed_pred_xyz = trim_corrs(pred_xyz,num_kp=reference_points.shape[0]).clone()
+        trimed_pred_xyz = trim_corrs(pred_xyz,num_kp=rois.shape[0]).clone()
 
         # ## gt_xyz normalization : 의도한대로 mis-calibrated 해서 라온 라이다 xyz points
         # pts_lidar_mis_normal[..., 0:1] = (pts_lidar_mis_normal[..., 0:1] - self.pc_range[0]) / (

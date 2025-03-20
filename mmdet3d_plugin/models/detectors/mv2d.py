@@ -10,7 +10,6 @@ import cv2
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.transforms import functional as tvtf
-from torchvision.models import resnet50
 
 from mmcv.runner import auto_fp16
 
@@ -18,34 +17,6 @@ from mmdet.models.builder import DETECTORS, build_detector, build_head, build_ne
 from mmdet3d.core import (bbox3d2result, box3d_multiclass_nms)
 from mmdet3d.models.detectors.base import Base3DDetector
 from mmdet3d_plugin.models.utils.grid_mask import CustomGridMask
-# from mmdet3d_plugin.datasets.pipelines.image_display import (display_depth_maps, add_calibration, points2depthmap 
-#                                                              ,dense_map_gpu_optimized,add_mis_calibration)
-# from COTR.COTR_models.cotr_model_moon_Ver12_0 import build
-# from image_processing_unit_Ver15_0 import (two_images_side_by_side , find_depthmap_z ,find_all_depthmap_z,find_nonzero_depthmap_z,
-#                                            image_to_lidar_global,display_nonzero_depthmap,trim_corrs_torch,resize_points,draw_points_torch,
-#                                            normalize_point_cloud ,corrs_normalization,corrs_denormalization)
-
-# cotr_args = easydict.EasyDict({
-#                 "out_dir" : "general_config['out']",
-#                 # "load_weights" : "None",
-# #                 "load_weights_path" : './COTR/out/default/checkpoint.pth.tar' ,
-#                 # "load_weights_path" : "./models/200_checkpoint.pth.tar",
-#                 "load_weights_path" : None,
-#                 "load_weights_freeze" : False ,
-#                 "max_corrs" : 1000 ,
-#                 "dim_feedforward" : 1024 , 
-#                 "backbone" : "resnet50" ,
-#                 "hidden_dim" : 312 ,
-#                 "dilation" : False ,
-#                 "dropout" : 0.1 ,
-#                 "nheads" : 8 ,
-#                 "layer" : "layer3" ,
-#                 "enc_layers" : 6 ,
-#                 "dec_layers" : 6 ,
-#                 "position_embedding" : "lin_sine"
-                
-# })
-
 
 @DETECTORS.register_module()
 class MV2D(Base3DDetector):
@@ -76,37 +47,6 @@ class MV2D(Base3DDetector):
 
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
-
-        # self.num_kp= 100
-        # self.corr = COTR(self.num_kp)
-        # self.corr_loss = CorrelationCycleLoss(loss_weight=1.0)
-        
-        # self.embed_dims = 256
-        # self.lidar_depth_backbone = ResNet50Backbone()
-        # self.calib_cross_attn = build_calib_cross_attn(auto_calib_cross_attn)
-        # self.corr_loss = CorrelationCycleLoss(loss_weight=1.0)
-        # self.query_embedding = nn.Sequential(
-        #         nn.Linear(self.embed_dims*3//2, self.embed_dims),
-        #         nn.ReLU(),
-        #         nn.Linear(self.embed_dims, self.embed_dims),
-        #     )
-    
-    # @auto_fp16(apply_to=('img', 'points'))
-    # def forward(self, return_loss=True, **kwargs):
-    #     """Calls either forward_train or forward_test depending on whether
-    #     return_loss=True.
-
-    #     Note this setting will change the expected inputs. When
-    #     `return_loss=True`, img and img_metas are single-nested (i.e.
-    #     torch.Tensor and list[dict]), and when `resturn_loss=False`, img and
-    #     img_metas should be double nested (i.e.  list[torch.Tensor],
-    #     list[list[dict]]), with the outer list indicating test time
-    #     augmentations.
-    #     """
-    #     if return_loss:
-    #         return self.forward_train(**kwargs)
-    #     else:
-    #         return self.forward_test(**kwargs)
 
     def process_2d_gt(self, gt_bboxes, gt_labels, device):
         """
@@ -190,27 +130,6 @@ class MV2D(Base3DDetector):
             feat = detector_feat
         return feat
     
-    # @force_fp32(apply_to=('img', 'points'))
-    # def forward(self, return_loss=True, **kwargs):
-    #     """Calls either forward_train or forward_test depending on whether
-    #     return_loss=True.
-    #     Note this setting will change the expected inputs. When
-    #     `return_loss=True`, img and img_metas are single-nested (i.e.
-    #     torch.Tensor and list[dict]), and when `resturn_loss=False`, img and
-    #     img_metas should be double nested (i.e.  list[torch.Tensor],
-    #     list[list[dict]]), with the outer list indicating test time
-    #     augmentations.
-    #     """
-    #     # if 'return_loss' in kwargs:
-    #     #     return_loss = kwargs['return_loss']
-    #     # else:
-    #     #     return_loss = False  # 기본값을 False로 설정
-        
-    #     if return_loss:
-    #         return self.forward_train(**kwargs)
-    #     else:
-    #         return self.forward_test(**kwargs)
-
     def forward_train(self,
                       img,
                       img_metas,
@@ -310,13 +229,6 @@ class MV2D(Base3DDetector):
         # calculate losses for 3d detector
         feat = self.process_detector_feat(detector_feat)
         mis_depthmap_feat = self.process_detector_feat(mis_depth_feat)
-        # extracting mis-calibatated depthmap feature 
-        # calib_attn_feat = self.lidar_depth_backbone(lidar_depth_mis)
-        
-        # roi_losses = self.roi_head.forward_train(feat, img_metas, detections,gt_bboxes, gt_labels,
-        #                                          gt_bboxes_3d, gt_labels_3d,
-        #                                          ori_gt_bboxes_3d, ori_gt_labels_3d,
-        #                                          attr_labels, None)
         
         roi_losses , loss_corr = self.roi_head.forward_train(img_ori,img_metas,lidar_depth_mis, feat,mis_depthmap_feat, detections,lidar_depth_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4, gt_bboxes, gt_labels,
                                             gt_bboxes_3d, gt_labels_3d,

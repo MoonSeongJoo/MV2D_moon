@@ -1743,6 +1743,51 @@ def find_rois_nonzero_z_adv6(detections, depth_map, model_pred_z):
     
     return torch.cat(all_points, dim=0)
 
+def find_rois_nonzero_z_adv7(detections, depth_map):
+    device = depth_map.device
+    batch_size, num_cam, h, w = depth_map.shape
+    depth_map_re = depth_map.view(batch_size * num_cam, h, w)
+    
+    cam_indices = detections[:, 0].long().to(device)
+    obj_indices = torch.arange(len(detections), device=device).long()
+    bboxes = detections[:, 1:].to(device)
+    
+    x_min, y_min, x_max, y_max = bboxes.long().t()
+    
+    x_min = torch.clamp(x_min, 0, w-1)
+    y_min = torch.clamp(y_min, 0, h-1)
+    x_max = torch.clamp(x_max, 0, w-1)
+    y_max = torch.clamp(y_max, 0, h-1)
+    
+    all_points = []
+    
+    for i in range(len(detections)):
+        cid = cam_indices[i].item()
+        oid = obj_indices[i].item()
+        
+        bbox_area = depth_map_re[cid, y_min[i]:y_max[i]+1, x_min[i]:x_max[i]+1]
+        nonzero_indices = (bbox_area > 0).nonzero()
+        
+        if nonzero_indices.size(0) > 0:
+            global_x = x_min[i] + nonzero_indices[:, 1].float()
+            global_y = y_min[i] + nonzero_indices[:, 0].float()
+            z_values = bbox_area[nonzero_indices[:, 0], nonzero_indices[:, 1]]
+            conf = 1.0
+            
+            points = torch.stack([
+                torch.full_like(global_x, cid),
+                torch.full_like(global_x, oid),
+                global_x,
+                global_y,
+                z_values,
+                torch.full_like(global_x, conf)
+            ], dim=1)
+            
+            all_points.append(points)
+    
+    return torch.cat(all_points, dim=0) if all_points else torch.empty((0, 6), device=device)
+
+
 def image_to_lidar_global_modi(det_uvz, gt_KT):
     inverse_gt_kt = torch.inverse(gt_KT).float()
     
