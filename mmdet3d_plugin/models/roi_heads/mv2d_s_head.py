@@ -48,7 +48,7 @@ from image_processing_unit_Ver15_0 import (find_all_depthmap_z_adv,find_rois_non
                                            two_images_side_by_side,
                                            display_depth_maps,scale_uvz_points,normalize_uvz_points,
                                            inverse_scale_uvz_points,
-                                           trim_corrs,denormalize_points,process_queries,
+                                           trim_corrs,denormalize_points,process_queries,process_queries_adv,
                                            selected_image_to_lidar_global,
                                            pixel_to_normalized,center2lidar_batch,
                                            project_lidar_to_image,minmax_normalize_uvz,minmax_denormalize_uvz,
@@ -226,7 +226,7 @@ class MV2DSHead(MV2DHead):
         #     nn.ReLU(),
         #     nn.Linear(256, 3)
         # )
-        self.corr_loss = CorrelationCycleLoss(loss_weight=100.0)
+        self.corr_loss = CorrelationCycleLoss(loss_weight=200.0)
         
         self.num_kp = 100 
         self.corr = COTR(self.num_kp)
@@ -498,7 +498,8 @@ class MV2DSHead(MV2DHead):
         # corrs = torch.stack(list_trimed_corrs)
         
         ########### corr transformer sjmoon ###########
-        selected_imgs, trimed_corrs ,original_camera_ids = process_queries(corrs_points,sbs_img)
+        # selected_imgs, trimed_corrs ,original_camera_ids = process_queries(corrs_points,sbs_img)
+        selected_imgs, trimed_corrs ,original_camera_ids = process_queries_adv(corrs_points,sbs_img)
         if trimed_corrs.numel() == 0:  # 텐서가 비어있는 경우
             # zero loss 생성 (requires_grad=True 유지)
             corr_loss = torch.tensor(0.0, 

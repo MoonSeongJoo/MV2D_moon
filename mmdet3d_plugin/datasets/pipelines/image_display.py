@@ -203,7 +203,10 @@ def points2depthmap_gpu(points, height, width, downsample=1):
     ranks = coor[:, 0] + coor[:, 1] * width_tensor
     
     # argsort 연산은 이미 GPU에서 수행됨
-    sort = (ranks + depth / 100.).argsort()
+    # sort = (ranks + depth / 100.).argsort()
+    # 수정 코드 (Z값 정상화)
+    sort = (ranks - depth / 100.).argsort(descending=True)  # 내림차순 정렬
+    
     coor, depth, ranks = coor[sort], depth[sort], ranks[sort]
 
     # 벡터화된 연산으로 kept2 계산
@@ -664,49 +667,155 @@ def dense_map_gpu_optimized(Pts, n, m, grid):
     # return out.cpu()  # 최종 결과를 CPU로 이동
     return out # 최종 결과를 GPU
 
-def dense_map_cpu_optimized(Pts, n, m, grid):
-    ng = 2 * grid + 1  # grid=4 → ng=9
-    epsilon = 1e-8
+def distance_adaptive_depth_completion(pts, n, m, grid):
+    # Similar to original function but with distance-adaptive parameters
     
-    # 유효 영역 재정의 (핵심 수정)
-    h = m - ng  # 512 - 9 = 503
-    w = n - ng  # 1408 - 9 = 1399
-
-    # 초기화
-    mX = np.full((m, n), np.inf, dtype=np.float32)
-    mY = np.full((m, n), np.inf, dtype=np.float32)
-    mD = np.zeros((m, n), dtype=np.float32)
+    # Extract depth information
+    depths = pts[2]
     
-    # 인덱스 클리핑 (중요!)
-    mX_idx = np.clip(Pts[0].astype(int), 0, m-1)
-    mY_idx = np.clip(Pts[1].astype(int), 0, n-1)
-    mX[mX_idx, mY_idx] = Pts[0] - np.round(Pts[0])
-    mY[mX_idx, mY_idx] = Pts[1] - np.round(Pts[1])
-    mD[mX_idx, mY_idx] = Pts[2]
+    # Create multiple grid sizes based on distance
+    grid_sizes = torch.ones_like(depths, device=pts.device)
+    # Closer points use smaller grids for higher detail
+    grid_sizes[depths < 10] = grid // 4
+    # Further points use larger grids for better filling
+    grid_sizes[depths > 30] = grid
+    grid_sizes[depths > 50] = grid // 4
+    
+    # Process each distance zone separately
+    result = torch.zeros((m, n), dtype=torch.float32, device=pts.device)
+    
+    for g in torch.unique(grid_sizes):
+        mask = (grid_sizes == g)
+        pts_subset = pts[:, mask]
+        temp_result = dense_map_gpu_optimized(pts_subset, n, m, int(g))
+        # Combine results, prioritizing smaller grid results (higher detail)
+        valid_mask = (temp_result > 0)
+        result[valid_mask] = temp_result[valid_mask]
+    
+    return result
 
-    # 텐서 구조 조정 (차원 일치 보장)
-    KmX = np.zeros((ng, ng, h, w), dtype=np.float32)
-    KmY = np.zeros_like(KmX)
-    KmD = np.zeros_like(KmX)
+# 포인트 클라우드를 전처리하여 z값 반전
+def preprocess_points(pts):
+    # z값의 최대, 최소 확인
+    z_min = pts[2].min()
+    z_max = pts[2].max()
+    
+    # z값 반전 (최대값+최소값-z)
+    pts_normalized = pts.clone()
+    pts_normalized[2] = z_max + z_min - pts[2]
+    
+    return pts_normalized
 
-    # 슬라이싱 방식 개선 (오류 근본 해결)
+from skimage import feature
+def canny_edge_detection(rgb_img, sigma=1.0, low_threshold=0.1, high_threshold=0.3):
+    """
+    Perform Canny edge detection on an RGB image.
+
+    Parameters:
+        rgb_img (torch.Tensor): Input RGB image as a PyTorch tensor of shape (3, H, W).
+        sigma (float): Standard deviation of the Gaussian filter used in the Canny algorithm.
+        low_threshold (float): Lower bound for hysteresis thresholding.
+        high_threshold (float): Upper bound for hysteresis thresholding.
+
+    Returns:
+        torch.Tensor: Binary edge map as a PyTorch tensor of shape (H, W).
+    """
+    # Convert PyTorch tensor to NumPy array and grayscale
+    rgb_img_np = rgb_img.permute(1, 2, 0).cpu().numpy()  # Convert to (H, W, 3)
+    grayscale_img = np.dot(rgb_img_np[..., :3], [0.2989, 0.5870, 0.1140])  # Grayscale conversion
+
+    # Apply Canny edge detection
+    edges = feature.canny(
+        image=grayscale_img,
+        sigma=sigma,
+        low_threshold=low_threshold,
+        high_threshold=high_threshold
+    )
+
+    # Convert edge map back to PyTorch tensor
+    edges_tensor = torch.tensor(edges, dtype=torch.float32, device=rgb_img.device)
+
+    return edges_tensor
+
+
+def edge_aware_bilateral_filter(pts, rgb_img, n, m, grid):
+    """
+    Perform edge-aware bilateral filtering on a sparse depth map using RGB image edges.
+
+    Parameters:
+        pts (torch.Tensor): Input points as a tensor of shape (3, N), where N is the number of points.
+                            pts[0] = y-coordinates, pts[1] = x-coordinates, pts[2] = depth values.
+        rgb_img (torch.Tensor): Input RGB image as a PyTorch tensor of shape (3, H, W).
+        n (int): Width of the output depth map.
+        m (int): Height of the output depth map.
+        grid (int): Grid size for the bilateral filter.
+
+    Returns:
+        torch.Tensor: Densified depth map as a PyTorch tensor of shape (m, n).
+    """
+    device = pts.device
+    ng = 2 * grid + 1
+    epsilon = 1e-8  # Small value to avoid division by zero
+
+    # Initialize tensors on GPU
+    mX = torch.full((m, n), float('inf'), dtype=torch.float32, device=device)
+    mY = torch.full((m, n), float('inf'), dtype=torch.float32, device=device)
+    mD = torch.zeros((m, n), dtype=torch.float32, device=device)
+
+    mX_idx = pts[1].clone().detach().to(dtype=torch.int64)
+    mY_idx = pts[0].clone().detach().to(dtype=torch.int64)
+
+    mX[mX_idx, mY_idx] = pts[0] - torch.round(pts[0])
+    mY[mX_idx, mY_idx] = pts[1] - torch.round(pts[1])
+    mD[mX_idx, mY_idx] = pts[2]
+
+    KmX = torch.zeros((ng, ng, m - ng, n - ng), dtype=torch.float32, device=device)
+    KmY = torch.zeros((ng, ng, m - ng, n - ng), dtype=torch.float32, device=device)
+    KmD = torch.zeros((ng, ng, m - ng, n - ng), dtype=torch.float32, device=device)
+
     for i in range(ng):
         for j in range(ng):
-            row_slice = slice(i, i + h)  # 0 ≤ i ≤ 8 → 0~503, 1~504, ..., 8~511
-            col_slice = slice(j, j + w)  # 0 ≤ j ≤ 8 → 0~1399, 1~1400, ..., 8~1407
-            KmX[i,j] = mX[row_slice, col_slice] - (grid - i)
-            KmY[i,j] = mY[row_slice, col_slice] - (grid - j)
-            KmD[i,j] = mD[row_slice, col_slice]
+            KmX[i][j] = mX[i: (m - ng + i), j: (n - ng + j)] - grid - 1 + i
+            KmY[i][j] = mY[i: (m - ng + i), j: (n - ng + j)] - grid - 1 + j
+            KmD[i][j] = mD[i: (m - ng + i), j: (n - ng + j)]
 
-    # 역제곱 가중 평균
-    S = np.sum(1 / (KmX**2 + KmY**2 + epsilon), axis=(0,1))
-    Y = np.sum(KmD / (KmX**2 + KmY**2 + epsilon), axis=(0,1))
-    
-    out = np.zeros((m, n), dtype=np.float32)
-    out[ng//2 : ng//2 + h, ng//2 : ng//2 + w] = Y / np.where(S==0, 1, S)
-    
+    # Detect edges in the RGB image
+    edges = canny_edge_detection(rgb_img)
+
+    # Resize edges to match spatial dimensions of KmD
+    edges_resized = torch.nn.functional.interpolate(
+        edges.unsqueeze(0).unsqueeze(0), size=(m - ng, n - ng), mode='bilinear', align_corners=False
+    ).squeeze(0).squeeze(0)
+
+    S = torch.zeros_like(KmD[0][0], device=device)
+    Y = torch.zeros_like(KmD[0][0], device=device)
+
+    sigma_range = 0.1  # Range weight parameter
+    edge_weight = 10.0  # Weight boost for edges
+
+    for i in range(ng):
+        for j in range(ng):
+            # Calculate spatial weight based on distance
+            s_spatial = 1 / torch.sqrt(KmX[i][j] ** 2 + KmY[i][j] ** 2 + epsilon)
+
+            # Calculate range weight based on depth difference
+            center_depth = KmD[ng // 2][ng // 2]
+            s_range = torch.exp(-torch.abs(KmD[i][j] - center_depth) / sigma_range)
+
+            # Incorporate edge information into weights
+            s_edge = torch.ones_like(s_spatial)
+            s_edge[edges_resized > 0] *= edge_weight
+
+            # Combine weights
+            s = s_spatial * s_range * s_edge
+            Y += s * KmD[i][j]
+            S += s
+
+    S[S == 0] = 1  # Avoid division by zero
+    out = torch.zeros((m, n), dtype=torch.float32, device=device)
+    out[grid + 1: -grid, grid + 1: -grid] = Y / S
+
     return out
-
 
 def colormap(disp):
     """"Color mapping for disp -- [H, W] -> [3, H, W]"""
@@ -723,15 +832,6 @@ def colormap(disp):
     colormapped_tensor = torch.from_numpy(colormapped_im)
     return colormapped_tensor
 
-def colormap_cpu(disp):
-    """Color mapping for disp -- [H, W] -> [3, H, W]"""
-    disp_np = disp  # 이미 NumPy 배열이라고 가정
-    vmin = disp_np.min()
-    vmax = disp_np.max()
-    normalizer = plt.Normalize(vmin=vmin, vmax=vmax)
-    mapper = cm.ScalarMappable(norm=normalizer, cmap='magma')  # magma, plasma, etc.
-    colormapped_im = mapper.to_rgba(disp_np)[:, :, :3]
-    return colormapped_im
 
 def trim_corrs(points ,num_kp=30000):
     length = points.shape[0]

@@ -156,7 +156,7 @@ model = dict(
 )
 
 data = dict(
-    workers_per_gpu=8,
+    workers_per_gpu=10,
 )
 
 optimizer = dict(
@@ -184,7 +184,7 @@ total_epochs = 24
 
 # 학습 재개를 위한 설정
 load_from = None #check point path
-# resume_from = 'data/weights/mv2d_epoch_1.pth'  # 같은 체크포인트 경로
+# resume_from = 'data/weights/mv2d_epoch_3.pth'  # 같은 체크포인트 경로
 resume_from = None
 runner = dict(type='EpochBasedRunner', max_epochs=total_epochs)
 evaluation = dict(interval=3, )

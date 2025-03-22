@@ -14,8 +14,8 @@ import torch.nn.functional as F
 from mmdet3d_plugin.datasets.pipelines.image_display import (points2depthmap_cpu,points2depthmap_gpu,
                                                              add_calibration,add_calibration_adv,add_mis_calibration_ori,add_calibration_adv2,
                                                              add_mis_calibration,add_mis_calibration_cpu,add_mis_calibration_adv,
-                                                             dense_map_gpu_optimized,dense_map_cpu_optimized,
-                                                             colormap,colormap_cpu,
+                                                             dense_map_gpu_optimized,distance_adaptive_depth_completion,
+                                                             colormap,preprocess_points,edge_aware_bilateral_filter,
                                                              visualize_depth_maps)
 
 @PIPELINES.register_module()
@@ -336,9 +336,14 @@ class PointToMultiViewDepth(object):
 
             depth_mis, uv,z,valid_indices = points2depthmap_gpu(miscalibrated_points2img, results['img'][0].shape[0] ,results['img'][0].shape[1])
             lidarOnImage_mis = torch.cat((uv, z.unsqueeze(1)), dim=1)
-            dense_depth_img_mis = dense_map_gpu_optimized(lidarOnImage_mis.T , results['img'][0].shape[1], results['img'][0].shape[0], 4)
+            pts = preprocess_points(lidarOnImage_mis.T)
+            # dense_depth_img_mis = dense_map_gpu_optimized(pts , results['img'][0].shape[1], results['img'][0].shape[0], 6)
+            dense_depth_img_mis = distance_adaptive_depth_completion(pts , results['img'][0].shape[1], results['img'][0].shape[0], 4)
             dense_depth_img_mis = dense_depth_img_mis.to(dtype=torch.uint8)
             dense_depth_img_color_mis = colormap(dense_depth_img_mis)
+            # dense_depth_img_edge_mis = edge_aware_bilateral_filter(pts,dense_depth_img_color_mis_raw,results['img'][0].shape[1], results['img'][0].shape[0], 4)
+            # dense_depth_img_edge_mis = dense_depth_img_edge_mis.to(dtype=torch.uint8)
+            # dense_depth_img_color_mis = colormap(dense_depth_img_edge_mis)
 
             # lidar_depth_dense_gt.append(dense_depth_img_color_gt)
             lidar_depth_map_mis.append(dense_depth_img_color_mis)

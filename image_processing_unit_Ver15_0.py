@@ -359,6 +359,102 @@ def process_queries(corrs, sbs_img, num_points=100):
     
     return selected_imgs, processed_queries, original_camera_ids
 
+def process_queries_adv(corrs, sbs_img, num_points=100):
+    device = corrs.device
+    
+    # 입력 데이터가 비어 있는 경우 빈 텐서 반환
+    if corrs.numel() == 0:
+        return (
+            torch.empty(0, *sbs_img.shape[1:], device=device),
+            torch.empty(0, num_points, 5, device=device),
+            torch.empty(0, device=device)
+        )
+    
+    # 1. 고유 카메라 인덱스 추출
+    unique_cams, counts = torch.unique(corrs[:, 0], sorted=False, return_counts=True)
+    
+    # unique_cams가 비어 있는 경우 처리
+    if len(unique_cams) == 0:
+        return (
+            torch.empty(0, *sbs_img.shape[1:], device=device),
+            torch.empty(0, num_points, 5, device=device),
+            torch.empty(0, device=device)
+        )
+    
+    # 2. 이미지 선택
+    selected_imgs = sbs_img[unique_cams.long()]
+    
+    # 3. 카메라별 쿼리 처리
+    grouped_queries = []
+    camera_indices = []
+    
+    for cam_idx, cam in enumerate(unique_cams):
+        mask = (corrs[:, 0] == cam)
+        cam_queries = corrs[mask, 1:]  # [N, 4]
+        
+        # 객체별 샘플링 로직 (핵심 수정 부분)
+        if cam_queries.size(0) >= num_points:
+            # 객체 ID 추출 및 분포 계산
+            object_ids = cam_queries[:, 0]
+            unique_objs, obj_counts = torch.unique(object_ids, return_counts=True)
+            
+            # 객체 빈도순 정렬 (빈도 높은 객체 우선)
+            sorted_objs = unique_objs[torch.argsort(-obj_counts)]
+            
+            # 객체별 최소 1개 샘플링 보장
+            selected_indices = []
+            for obj in sorted_objs:
+                obj_mask = (object_ids == obj)
+                obj_indices = torch.where(obj_mask)[0]
+                if len(selected_indices) < num_points:
+                    idx = torch.randint(0, len(obj_indices), (1,))
+                    selected_indices.append(obj_indices[idx])
+            
+            # 남은 슬롯 채우기
+            remaining = num_points - len(selected_indices)
+            if remaining > 0:
+                all_indices = torch.arange(len(object_ids), device=device)
+                mask = torch.ones(len(object_ids), dtype=torch.bool, device=device)
+                
+                # Concatenate selected indices into a single tensor
+                if selected_indices:
+                    selected_indices = torch.cat(selected_indices).to(device)
+                else:
+                    selected_indices = torch.tensor([], dtype=torch.long, device=device)
+                
+                mask[selected_indices] = False
+
+                remaining_indices = all_indices[mask]
+                if len(remaining_indices) > 0:
+                    idx = torch.randperm(len(remaining_indices))[:remaining]
+                    selected_remaining = remaining_indices[idx]
+                    selected_indices = torch.cat([selected_indices, selected_remaining])
+            
+            # 최종 선택 및 충돌 방지
+            selected_indices = torch.tensor(selected_indices[:num_points], device=device)
+            selected = cam_queries[selected_indices]
+        else:
+            # 기존 패딩 로직 (객체 다양성 고려)
+            padding_size = num_points - cam_queries.size(0)
+            selected = torch.cat([
+                cam_queries,
+                cam_queries[torch.randint(0, cam_queries.size(0), (padding_size,))]
+            ], dim=0)
+        
+        # 카메라 인덱스 추가
+        tagged_queries = torch.cat([
+            torch.full((num_points, 1), cam_idx, device=device, dtype=corrs.dtype),
+            selected
+        ], dim=1)
+        
+        grouped_queries.append(tagged_queries)
+        camera_indices.append(cam)
+    
+    # 4. 배치 차원 생성
+    processed_queries = torch.stack(grouped_queries, dim=0)
+    original_camera_ids = torch.stack(camera_indices)
+    
+    return selected_imgs, processed_queries, original_camera_ids
 
 # def trim_corrs_torch(in_corrs, num_kp=100):
 #     length = in_corrs.shape[0]
