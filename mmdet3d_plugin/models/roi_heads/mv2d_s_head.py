@@ -155,24 +155,31 @@ class COTR(nn.Module):
             query_reverse[..., 0] = query_reverse[..., 0] - 0.5
             cycle,_ = self.corr(img_reverse_input, query_reverse)
             cycle[..., 0] = cycle[..., 0] - 0.5
-            mask = torch.norm(cycle - query_input, dim=-1) < 10 / 640
+            mask = torch.norm(cycle - query_input, dim=-1) < 40 / 640 # 40 pixel 거리에서는 마스크 
 
         return corrs_pred , cycle , mask , enc_out
 
 class CorrelationCycleLoss(nn.Module):
-    def __init__(self, loss_weight=1.0):
+    def __init__(self, corr_weight=1.0 , cycle_weight=1.0):
         super().__init__()
-        self.loss_weight = loss_weight
-        print ("corr weights=" , self.loss_weight )
+        # self.loss_weight = loss_weight
+        self.corr_weight = corr_weight
+        self.cycle_weight= cycle_weight
+        # print ("corr weights=" , self.loss_weight )
 
     def forward(self, corr_pred, corr_target, cycle, queries, mask):
-        corr_loss = torch.nn.functional.mse_loss(corr_pred, corr_target)
+        # corr_loss = torch.nn.functional.mse_loss(corr_pred, corr_target)
+        # Smooth L1 Loss 사용
+        corr_loss = torch.nn.functional.smooth_l1_loss(corr_pred, corr_target)
+        cycle_loss = torch.tensor(0.0, device=corr_loss.device)
         
         if mask.sum() > 0:
-            cycle_loss = torch.nn.functional.mse_loss(cycle[mask], queries[mask])
+            # cycle_loss = torch.nn.functional.mse_loss(cycle[mask], queries[mask])
+            cycle_loss = torch.nn.functional.smooth_l1_loss(cycle[mask], queries[mask])
             corr_loss += cycle_loss 
         
-        return self.loss_weight * corr_loss
+        # return self.loss_weight * corr_loss
+        return self.corr_weight * corr_loss + self.cycle_weight * cycle_loss
 
 
 @HEADS.register_module()
@@ -226,7 +233,7 @@ class MV2DSHead(MV2DHead):
         #     nn.ReLU(),
         #     nn.Linear(256, 3)
         # )
-        self.corr_loss = CorrelationCycleLoss(loss_weight=200.0)
+        self.corr_loss = CorrelationCycleLoss(corr_weight=200.0 , cycle_weight=100.0 )
         
         self.num_kp = 100 
         self.corr = COTR(self.num_kp)
