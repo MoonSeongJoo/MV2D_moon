@@ -520,23 +520,24 @@ class MV2DSHead(MV2DHead):
 #             cycle_loss = torch.nn.functional.mse_loss(cycle[mask], query_input[mask])
 #             corr_loss += cycle_loss       
         
-        # ##### 검증용 display ######
-        # from image_processing_unit_Ver15_0 import draw_correspondences
-        # pred_corrs = torch.cat([query_input,corrs_pred],dim=2)
-        # for cid in range(6) :
-        #     draw_correspondences(
-        #         trimed_corrs=trimed_corrs[cid][:,2:],  # 첫 번째 배치 선택
-        #         sbs_img=sbs_img,
-        #         camera_idx=cid,
-        #         save_path='correspondence_visualization_gt.jpg'
-        #     )
-        #     draw_correspondences(
-        #         trimed_corrs=pred_corrs[cid],  # 첫 번째 배치 선택
-        #         sbs_img=sbs_img,
-        #         camera_idx=cid,
-        #         save_path='correspondence_visualization_pred.jpg'
-        #     )
-        #     print ("end")
+        ##### 검증용 display ######
+        from image_processing_unit_Ver15_0 import draw_correspondences
+        pred_corrs = torch.cat([query_input,corrs_pred],dim=2)
+        int_ids = original_camera_ids.to(torch.long).cpu()
+        for cid in int_ids :
+            draw_correspondences(
+                trimed_corrs=trimed_corrs[cid][:,2:],  # 첫 번째 배치 선택
+                sbs_img=sbs_img,
+                camera_idx=cid,
+                save_path='correspondence_visualization_gt.jpg'
+            )
+            draw_correspondences(
+                trimed_corrs=pred_corrs[cid],  # 첫 번째 배치 선택
+                sbs_img=sbs_img,
+                camera_idx=cid,
+                save_path='correspondence_visualization_pred.jpg'
+            )
+            print ("end")
 
         # denormal_pred_uvz = minmax_denormalize_uvz(corrs_pred,mis_min_vals,mis_max_vals)
         denormal_pred_uvz = denormalize_points(corrs_pred)
