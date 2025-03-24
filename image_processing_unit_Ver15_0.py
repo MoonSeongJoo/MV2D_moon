@@ -106,11 +106,11 @@ def inverse_scale_uvz_points(scaled_uvz, original_size=(512, 1408), target_size=
     """
     스케일링된 UVZ 좌표를 원본 크기로 역변환
     Args:
-        scaled_uvz: (N, 3) 형태의 텐서 [scaled_u, scaled_v, z]
+        scaled_uvz: (N, number of query , 3) 형태의 텐서 [scaled_u, scaled_v, z]
         original_size: (H, W) 원본 이미지 크기 (스케일링 전)
         target_size: (H, W) 타겟 이미지 크기 (스케일링 후)
     Returns:
-        역변환된 (N, 3) UVZ 텐서
+        역변환된 (N,number of query, 3) UVZ 텐서
     """
     # 역스케일링 계수 계산 (높이, 너비)
     inv_scale_h = original_size[0] / target_size[0]  # 512/192 ≈ 2.6667
@@ -118,8 +118,8 @@ def inverse_scale_uvz_points(scaled_uvz, original_size=(512, 1408), target_size=
     
     # 좌표 복원
     original_uvz = scaled_uvz.clone()
-    original_uvz[:, 0] *= inv_scale_w  # u 좌표 복원
-    original_uvz[:, 1] *= inv_scale_h  # v 좌표 복원
+    original_uvz[... , 0] *= inv_scale_w  # u 좌표 복원
+    original_uvz[... , 1] *= inv_scale_h  # v 좌표 복원
     
     return original_uvz
 

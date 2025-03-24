@@ -521,9 +521,10 @@ class MV2DSHead(MV2DHead):
         if trimed_corrs.numel() == 0:  # 텐서가 비어있는 경우
             # EMA 통계 기반 샘플링 (검색 결과[1][7] 참조)
             corrs_pred = torch.randn(
-                (selected_imgs.size(0), 1, 3), 
+                (selected_imgs.size(0), 100, 3), 
                 device=selected_imgs.device
             ) * self.corr_std + self.corr_mean  # 핵심 변경 부분
+            corrs_pred[... , 0] += 0.5
             # zero loss 생성 (requires_grad=True 유지)
             corr_loss = torch.tensor(0.0, 
                                 device=selected_imgs.device,
