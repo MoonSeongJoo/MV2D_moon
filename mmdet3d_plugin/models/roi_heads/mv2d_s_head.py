@@ -238,6 +238,11 @@ class MV2DSHead(MV2DHead):
         self.num_kp = 100 
         self.corr = COTR(self.num_kp)
 
+        # 분포 추적 버퍼 초기화 (모델 클래스 내부에 선언)
+        if not hasattr(self, 'corr_stats'):
+            self.register_buffer('corr_mean', torch.zeros(3))
+            self.register_buffer('corr_std', torch.ones(3))
+
     def prepare_for_dn(self, batch_size, reference_points, img_metas, ref_num, eps=1e-4):
         if self.training:
             targets = [
@@ -507,7 +512,18 @@ class MV2DSHead(MV2DHead):
         ########### corr transformer sjmoon ###########
         # selected_imgs, trimed_corrs ,original_camera_ids = process_queries(corrs_points,sbs_img)
         selected_imgs, trimed_corrs ,original_camera_ids = process_queries_adv(corrs_points,sbs_img)
+
+        # # 분포 추적 버퍼 초기화 (모델 클래스 내부에 선언)
+        # if not hasattr(self, 'corr_stats'):
+        #     self.register_buffer('corr_mean', torch.zeros(3))
+        #     self.register_buffer('corr_std', torch.ones(3))
+        
         if trimed_corrs.numel() == 0:  # 텐서가 비어있는 경우
+            # EMA 통계 기반 샘플링 (검색 결과[1][7] 참조)
+            corrs_pred = torch.randn(
+                (selected_imgs.size(0), 1, 3), 
+                device=selected_imgs.device
+            ) * self.corr_std + self.corr_mean  # 핵심 변경 부분
             # zero loss 생성 (requires_grad=True 유지)
             corr_loss = torch.tensor(0.0, 
                                 device=selected_imgs.device,
@@ -520,6 +536,11 @@ class MV2DSHead(MV2DHead):
             
             corrs_pred, cycle, corr_mask, enc_out = self.corr(selected_imgs, query_input)
             corr_loss = self.corr_loss(corrs_pred, corr_target, cycle, query_input, corr_mask)
+
+            # 분포 통계 업데이트 (EMA 적용)
+            self.corr_mean = 0.9 * self.corr_mean + 0.1 * corrs_pred.mean(dim=(0,1))
+            self.corr_std = 0.9 * self.corr_std + 0.1 * corrs_pred.std(dim=(0,1))
+
 #         corr_loss = torch.nn.functional.mse_loss(corrs_pred, corr_target)
     
 #         if mask.sum() > 0:
@@ -527,24 +548,24 @@ class MV2DSHead(MV2DHead):
 #             cycle_loss = torch.nn.functional.mse_loss(cycle[mask], query_input[mask])
 #             corr_loss += cycle_loss       
         
-        ##### 검증용 display ######
-        from image_processing_unit_Ver15_0 import draw_correspondences
-        pred_corrs = torch.cat([query_input,corrs_pred],dim=2)
-        int_ids = original_camera_ids.to(torch.long).cpu()
-        for cid in int_ids :
-            draw_correspondences(
-                trimed_corrs=trimed_corrs[cid][:,2:],  # 첫 번째 배치 선택
-                sbs_img=sbs_img,
-                camera_idx=cid,
-                save_path='correspondence_visualization_gt.jpg'
-            )
-            draw_correspondences(
-                trimed_corrs=pred_corrs[cid],  # 첫 번째 배치 선택
-                sbs_img=sbs_img,
-                camera_idx=cid,
-                save_path='correspondence_visualization_pred.jpg'
-            )
-            print ("end")
+        # ##### 검증용 display ######
+        # from image_processing_unit_Ver15_0 import draw_correspondences
+        # pred_corrs = torch.cat([query_input,corrs_pred],dim=2)
+        # int_ids = original_camera_ids.to(torch.long).cpu()
+        # for cid in int_ids :
+        #     draw_correspondences(
+        #         trimed_corrs=trimed_corrs[cid][:,2:],  # 첫 번째 배치 선택
+        #         sbs_img=sbs_img,
+        #         camera_idx=cid,
+        #         save_path='correspondence_visualization_gt.jpg'
+        #     )
+        #     draw_correspondences(
+        #         trimed_corrs=pred_corrs[cid],  # 첫 번째 배치 선택
+        #         sbs_img=sbs_img,
+        #         camera_idx=cid,
+        #         save_path='correspondence_visualization_pred.jpg'
+        #     )
+        #     print ("end")
 
         # denormal_pred_uvz = minmax_denormalize_uvz(corrs_pred,mis_min_vals,mis_max_vals)
         denormal_pred_uvz = denormalize_points(corrs_pred)
