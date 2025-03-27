@@ -247,9 +247,9 @@ def trim_corrs(in_corrs, num_kp=100):
         # 무작위 선택 (비복원 추출)
         mask = torch.randperm(length, device=device)[:num_kp]
         return in_corrs[mask]
-    # elif length == 0:
-    #     # 0~1 범위 랜덤 텐서 생성 [num_kp, 6]
-    #     return torch.rand(num_kp, 6, device=device)
+    elif length == 0:
+        # 0~1 범위 랜덤 텐서 생성 [num_kp, 6]
+        return torch.rand(num_kp, 3, device=device)
     else:
         # 부족분 채우기 (복원 추출)
         mask = torch.randint(0, length, (num_kp - length,), device=device)

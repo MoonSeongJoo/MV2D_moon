@@ -233,15 +233,18 @@ class MV2DSHead(MV2DHead):
         #     nn.ReLU(),
         #     nn.Linear(256, 3)
         # )
-        self.corr_loss = CorrelationCycleLoss(corr_weight=200.0 , cycle_weight=100.0 )
+        self.corr_loss = CorrelationCycleLoss(corr_weight=200.0 , cycle_weight=100.0)
         
         self.num_kp = 100 
         self.corr = COTR(self.num_kp)
 
-        # 분포 추적 버퍼 초기화 (모델 클래스 내부에 선언)
-        if not hasattr(self, 'corr_stats'):
-            self.register_buffer('corr_mean', torch.zeros(3))
-            self.register_buffer('corr_std', torch.ones(3))
+        # # 분포 추적 버퍼 초기화 (모델 클래스 내부에 선언)
+        # if not hasattr(self, 'corr_stats'):
+        #     self.register_buffer('corr_mean', torch.zeros(3))
+        #     self.register_buffer('corr_std', torch.ones(3))
+
+        self.empty_count = 0  # 빈 텐서 카운터 초기화
+        self.total_iter = 0   # 전체 이터레이션 카운터
 
     def prepare_for_dn(self, batch_size, reference_points, img_metas, ref_num, eps=1e-4):
         if self.training:
@@ -361,16 +364,16 @@ class MV2DSHead(MV2DHead):
         ############## input display ##########################
         # display_depth_maps(img,lidar_depth_mis,sbs_img)
         
-        #### query generator
-        # ref_points_uvz,reference_points,return_feats = self.query_generator(bbox_feats, intrinsics, extrinsics, extra_feats)
-        # reference_points_raw = reference_points.clone().detach()
-        # reference_points[..., 0:1] = (reference_points[..., 0:1] - self.pc_range[0]) / (
-        #         self.pc_range[3] - self.pc_range[0])
-        # reference_points[..., 1:2] = (reference_points[..., 1:2] - self.pc_range[1]) / (
-        #         self.pc_range[4] - self.pc_range[1])
-        # reference_points[..., 2:3] = (reference_points[..., 2:3] - self.pc_range[2]) / (
-        #         self.pc_range[5] - self.pc_range[2])
-        # reference_points = reference_points.clamp(min=0, max=1)
+        ### query generator
+        ref_points_uvz,reference_points,return_feats = self.query_generator(bbox_feats, intrinsics, extrinsics, extra_feats)
+        reference_points_raw = reference_points.clone().detach()
+        reference_points[..., 0:1] = (reference_points[..., 0:1] - self.pc_range[0]) / (
+                self.pc_range[3] - self.pc_range[0])
+        reference_points[..., 1:2] = (reference_points[..., 1:2] - self.pc_range[1]) / (
+                self.pc_range[4] - self.pc_range[1])
+        reference_points[..., 2:3] = (reference_points[..., 2:3] - self.pc_range[2]) / (
+                self.pc_range[5] - self.pc_range[2])
+        reference_points = reference_points.clamp(min=0, max=1)
 
         # detection_nonzero_uvz , conf_scores = find_rois_nonzero_z_adv4(rois,uvz_gt,ref_points_uvz)
         # detection_nonzero_uvz = find_rois_nonzero_z_adv5(rois,uvz_gt,ref_points_uvz)
@@ -520,16 +523,19 @@ class MV2DSHead(MV2DHead):
         
         if trimed_corrs.numel() == 0:  # 텐서가 비어있는 경우
             # EMA 통계 기반 샘플링 (검색 결과[1][7] 참조)
-            corrs_pred = torch.randn(
-                (selected_imgs.size(0), 100, 3), 
-                device=selected_imgs.device
-            ) * self.corr_std + self.corr_mean  # 핵심 변경 부분
+            # corrs_pred = torch.randn(
+            #     (selected_imgs.size(0), 100, 3), 
+            #     device=selected_imgs.device
+            # ) * self.corr_std + self.corr_mean  # 핵심 변경 부분
+            self.empty_count += 1  # 빈 텐서 발생 시 카운트 증가
+            corrs_pred = ref_points_uvz
             corrs_pred[... , 0] += 0.5
-            # zero loss 생성 (requires_grad=True 유지)
-            corr_loss = torch.tensor(0.0, 
-                                device=selected_imgs.device,
-                                dtype=selected_imgs.dtype,
-                                requires_grad=True)
+            
+            # # zero loss 생성 (requires_grad=True 유지)
+            # corr_loss = torch.tensor(0.0, 
+            #                     device=selected_imgs.device,
+            #                     dtype=selected_imgs.dtype,
+            #                     requires_grad=True)
         else:
             # 기존 처리 로직 유지
             query_input = trimed_corrs[...,2:5]
@@ -537,10 +543,19 @@ class MV2DSHead(MV2DHead):
             
             corrs_pred, cycle, corr_mask, enc_out = self.corr(selected_imgs, query_input)
             corr_loss = self.corr_loss(corrs_pred, corr_target, cycle, query_input, corr_mask)
+            dummy_loss = 0.001 * ref_points_uvz.mean()
+            corr_loss = corr_loss + dummy_loss if 'corr_loss' in locals() else dummy_loss
+        
+        self.total_iter += 1  # 모든 이터레이션에서 카운트 증가
+        # 매 100회 이터레이션마다 로깅
+        if self.total_iter % 50 == 0:
+            empty_ratio = self.empty_count / self.total_iter
+            print(f"[Iter {self.total_iter}] Empty count: {self.empty_count:.2%}")
+            print(f"[Iter {self.total_iter}] Empty ratio: {empty_ratio:.2%}")
 
-            # 분포 통계 업데이트 (EMA 적용)
-            self.corr_mean = 0.9 * self.corr_mean + 0.1 * corrs_pred.mean(dim=(0,1))
-            self.corr_std = 0.9 * self.corr_std + 0.1 * corrs_pred.std(dim=(0,1))
+            # # 분포 통계 업데이트 (EMA 적용)
+            # self.corr_mean = 0.9 * self.corr_mean + 0.1 * corrs_pred.mean(dim=(0,1))
+            # self.corr_std = 0.9 * self.corr_std + 0.1 * corrs_pred.std(dim=(0,1))
 
 #         corr_loss = torch.nn.functional.mse_loss(corrs_pred, corr_target)
     
