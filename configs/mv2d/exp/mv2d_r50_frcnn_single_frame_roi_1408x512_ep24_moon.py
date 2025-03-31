@@ -27,7 +27,7 @@ model = dict(
             with_cp=False,
             dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False),
             stage_with_dcn=(False, False, True, True),
-            # frozen_stages=4, # Freeze all stages of the backbone
+            frozen_stages=4, # Freeze all stages of the backbone
         ),
     ),
     neck=dict(
@@ -162,7 +162,7 @@ data = dict(
 optimizer = dict(
     _delete_=True,
     type='AdamW',
-    lr=2e-4,
+    lr=1e-4,
     paramwise_cfg=dict(
         custom_keys={
             'base_detector.backbone': dict(lr_mult=0.25),
@@ -174,7 +174,7 @@ optimizer = dict(
 
 optimizer_config = dict(
     _delete_=True,
-    grad_clip=dict(max_norm=10, norm_type=2)
+    grad_clip=dict(max_norm=5, norm_type=2)
     # 수정 제안 (검색 결과[5][6] 참조)
     # grad_clip=dict(max_norm=5.0, norm_type=2)
 )
@@ -184,7 +184,7 @@ total_epochs = 24
 
 # 학습 재개를 위한 설정
 load_from = None #check point path
-# resume_from = 'data/work_dirs/latest.pth'  # 같은 체크포인트 경로
+# resume_from = 'data/work_dirs/epoch_1.pth'  # 같은 체크포인트 경로
 resume_from = None
 runner = dict(type='EpochBasedRunner', max_epochs=total_epochs)
 evaluation = dict(interval=3, )
@@ -194,13 +194,23 @@ evaluation = dict(interval=3, )
 checkpoint_config = dict(interval=1)  # 매 epoch마다 저장
 find_unused_parameters = False
 log_config = dict(interval=50)
+# lr_config = dict(
+#     _delete_=True,
+#     policy='CosineAnnealing',
+#     warmup='linear',
+#     warmup_iters=500,
+#     warmup_ratio=1.0 / 3,
+#     min_lr_ratio=1e-3,
+# )
+
 lr_config = dict(
     _delete_=True,
-    policy='CosineAnnealing',
+    policy='Step',
+    step=[1,3,9,16],  # 8번째와 16번째 에포크에서 학습률 감소
+    gamma=0.5,  # 각 스텝에서 학습률을 0.1배로 감소
     warmup='linear',
     warmup_iters=500,
     warmup_ratio=1.0 / 3,
-    min_lr_ratio=1e-3,
 )
 
 # param_scheduler = [

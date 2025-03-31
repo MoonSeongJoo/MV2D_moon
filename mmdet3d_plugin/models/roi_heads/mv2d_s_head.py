@@ -142,12 +142,20 @@ class COTR(nn.Module):
         self.num_kp = num_kp
         ##### CORR network #######
         self.corr = build(cotr_args)
+        # 배치 정규화 레이어 추가 (최종 출력 차원 기준)
+        self.final_bn = nn.BatchNorm1d(3)  # corrs_pred의 마지막 차원이 3인 경우
     
     def forward(self, sbs_img , query_input):
 
         for i in range(6) :
             # multi camera batch cotr 필요
             corrs_pred , enc_out = self.corr(sbs_img, query_input)
+
+            # 최종 출력 직전 배치 정규화 적용 (3D → 2D 변환)
+            B, N, C = corrs_pred.shape
+            corrs_pred = self.final_bn(
+                corrs_pred.view(-1, C)  # (B*N, C) 형태로 평탄화
+            ).view(B, N, C)  # 원래 차원 복원
             
             img_reverse_input = torch.cat([sbs_img[..., 640:], sbs_img[..., :640]], axis=-1)
             ##cyclic loss pre-processing
@@ -155,7 +163,7 @@ class COTR(nn.Module):
             query_reverse[..., 0] = query_reverse[..., 0] - 0.5
             cycle,_ = self.corr(img_reverse_input, query_reverse)
             cycle[..., 0] = cycle[..., 0] - 0.5
-            mask = torch.norm(cycle - query_input, dim=-1) < 40 / 640 # 40 pixel 거리에서는 마스크 
+            mask = torch.norm(cycle - query_input, dim=-1) < 50 / 640 # 40 pixel 거리에서는 마스크 
 
         return corrs_pred , cycle , mask , enc_out
 
@@ -543,9 +551,14 @@ class MV2DSHead(MV2DHead):
             
             corrs_pred, cycle, corr_mask, enc_out = self.corr(selected_imgs, query_input)
             corr_loss = self.corr_loss(corrs_pred, corr_target, cycle, query_input, corr_mask)
-            dummy_loss = 0.001 * ref_points_uvz.mean()
-            corr_loss = corr_loss + dummy_loss if 'corr_loss' in locals() else dummy_loss
         
+        # # 그래디언트 노름 출력 코드 삽입
+        # for name, param in self.named_parameters():
+        #     if param.grad is not None:
+        #         print(f"{name}: {param.grad.norm()}")
+        # 그래디언트 클리핑 적용
+        torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=5)
+
         self.total_iter += 1  # 모든 이터레이션에서 카운트 증가
         # 매 100회 이터레이션마다 로깅
         if self.total_iter % 50 == 0:
@@ -817,6 +830,7 @@ class MV2DSHead(MV2DHead):
                                                             attn_mask=None,
                                                             cross_attn_mask=None,
                                                             force_fp32=self.force_fp32, )
+            # torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=10)
 
         if mask_dict and mask_dict['pad_size'] > 0:
             output_known_class = all_cls_scores[:, :, :mask_dict['pad_size'], :]
@@ -830,7 +844,7 @@ class MV2DSHead(MV2DHead):
             cls_scores.append(c.flatten(0, 1))
             bbox_preds.append(b.flatten(0, 1))
         
-        return_feats = {} ### 검증용
+        # return_feats = {} ### 검증용
         bbox_results = dict(
             cls_scores=cls_scores, bbox_preds=bbox_preds, bbox_feats=bbox_feats, return_feats=return_feats,
             intrinsics=intrinsics, extrinsics=extrinsics, rois=rois, dn_mask_dict=mask_dict,

@@ -236,6 +236,8 @@ class MV2D(Base3DDetector):
                                             attr_labels, None)
         losses['loss_corr'] = loss_corr
         losses.update(roi_losses)
+        # 그래디언트 클리핑 적용
+        torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=35)
         return losses
 
     def forward_test(self, 
