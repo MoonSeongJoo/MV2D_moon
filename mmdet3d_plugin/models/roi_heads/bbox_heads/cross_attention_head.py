@@ -23,6 +23,7 @@ from mmdet3d_plugin.models.utils import PETRTransformer
 class MV2DTransformer(PETRTransformer):
     def forward(self, x, mask, query_embed, pos_embed,
                 attn_mask=None, cross_attn_mask=None, **kwargs):
+        
         # x: [bs, n, c, h, w], mask: [bs, n, h, w], query_embed: [bs, n_query, c]
         bs, n, c, h, w = x.shape
         memory = x.permute(1, 3, 4, 0, 2).reshape(n * h * w, bs, c) # [bs, n, c, h, w] -> [n*h*w, bs, c]
@@ -32,7 +33,7 @@ class MV2DTransformer(PETRTransformer):
         target = torch.zeros_like(query_embed)
         if cross_attn_mask is not None:
             cross_attn_mask = cross_attn_mask.flatten(1, 3)   # [n_query, n, h, w] -> [n_query, n * h * w]
-
+        
         # out_dec: [num_layers, num_query, bs, dim]
         out_dec = self.decoder(
             query=target,

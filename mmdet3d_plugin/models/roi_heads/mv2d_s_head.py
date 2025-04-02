@@ -4,6 +4,7 @@
 # ------------------------------------------------------------------------
 # Copyright (c) OpenMMLab. All rights reserved.
 import copy
+import sys
 
 import numpy as np
 import torch
@@ -143,7 +144,7 @@ class COTR(nn.Module):
         ##### CORR network #######
         self.corr = build(cotr_args)
         # 배치 정규화 레이어 추가 (최종 출력 차원 기준)
-        self.final_bn = nn.BatchNorm1d(3)  # corrs_pred의 마지막 차원이 3인 경우
+        # self.final_bn = nn.BatchNorm1d(3)  # corrs_pred의 마지막 차원이 3인 경우
     
     def forward(self, sbs_img , query_input):
 
@@ -151,19 +152,19 @@ class COTR(nn.Module):
             # multi camera batch cotr 필요
             corrs_pred , enc_out = self.corr(sbs_img, query_input)
 
-            # 최종 출력 직전 배치 정규화 적용 (3D → 2D 변환)
-            B, N, C = corrs_pred.shape
-            corrs_pred = self.final_bn(
-                corrs_pred.view(-1, C)  # (B*N, C) 형태로 평탄화
-            ).view(B, N, C)  # 원래 차원 복원
-            
+            # # 최종 출력 직전 배치 정규화 적용 (3D → 2D 변환)
+            # B, N, C = corrs_pred.shape
+            # corrs_pred = self.final_bn(
+            #     corrs_pred.view(-1, C)  # (B*N, C) 형태로 평탄화
+            # ).view(B, N, C)  # 원래 차원 복원
+
             img_reverse_input = torch.cat([sbs_img[..., 640:], sbs_img[..., :640]], axis=-1)
             ##cyclic loss pre-processing
             query_reverse = corrs_pred
             query_reverse[..., 0] = query_reverse[..., 0] - 0.5
             cycle,_ = self.corr(img_reverse_input, query_reverse)
             cycle[..., 0] = cycle[..., 0] - 0.5
-            mask = torch.norm(cycle - query_input, dim=-1) < 50 / 640 # 40 pixel 거리에서는 마스크 
+            mask = torch.norm(cycle - query_input, dim=-1) < 40 / 640 # 40 pixel 거리에서는 마스크 
 
         return corrs_pred , cycle , mask , enc_out
 
@@ -245,14 +246,17 @@ class MV2DSHead(MV2DHead):
         
         self.num_kp = 100 
         self.corr = COTR(self.num_kp)
+        # 레이어 정규화 적용 (각 포인트 독립 정규화)
+        self.final_ln = nn.LayerNorm(3)  # C: 특징 차원 (x,y,z 등)
+        # self.final_ln_sparse_cross_attn = nn.LayerNorm(3)  # C: 특징 차원 (x,y,z 등)
 
         # # 분포 추적 버퍼 초기화 (모델 클래스 내부에 선언)
         # if not hasattr(self, 'corr_stats'):
         #     self.register_buffer('corr_mean', torch.zeros(3))
         #     self.register_buffer('corr_std', torch.ones(3))
 
-        self.empty_count = 0  # 빈 텐서 카운터 초기화
-        self.total_iter = 0   # 전체 이터레이션 카운터
+        # self.empty_count = 0  # 빈 텐서 카운터 초기화
+        # self.total_iter = 0   # 전체 이터레이션 카운터
 
     def prepare_for_dn(self, batch_size, reference_points, img_metas, ref_num, eps=1e-4):
         if self.training:
@@ -336,6 +340,9 @@ class MV2DSHead(MV2DHead):
             mask_dict = None
 
         return padded_reference_points, attn_mask, mask_dict
+    
+    def inverse_layer_norm(self, normalized, ln_layer):
+        return (normalized - ln_layer.bias) / ln_layer.weight
 
     def _bbox_forward_denoise(self, img,img_metas,lidar_depth_mis,x, depth_x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4): # for SJMOON
     # def _bbox_forward_denoise(self, x, proposal_list, img_metas): # for original 
@@ -372,16 +379,16 @@ class MV2DSHead(MV2DHead):
         ############## input display ##########################
         # display_depth_maps(img,lidar_depth_mis,sbs_img)
         
-        ### query generator
-        ref_points_uvz,reference_points,return_feats = self.query_generator(bbox_feats, intrinsics, extrinsics, extra_feats)
-        reference_points_raw = reference_points.clone().detach()
-        reference_points[..., 0:1] = (reference_points[..., 0:1] - self.pc_range[0]) / (
-                self.pc_range[3] - self.pc_range[0])
-        reference_points[..., 1:2] = (reference_points[..., 1:2] - self.pc_range[1]) / (
-                self.pc_range[4] - self.pc_range[1])
-        reference_points[..., 2:3] = (reference_points[..., 2:3] - self.pc_range[2]) / (
-                self.pc_range[5] - self.pc_range[2])
-        reference_points = reference_points.clamp(min=0, max=1)
+        # ### query generator
+        # ref_points_uvz,reference_points,return_feats = self.query_generator(bbox_feats, intrinsics, extrinsics, extra_feats)
+        # reference_points_raw = reference_points.clone().detach()
+        # reference_points[..., 0:1] = (reference_points[..., 0:1] - self.pc_range[0]) / (
+        #         self.pc_range[3] - self.pc_range[0])
+        # reference_points[..., 1:2] = (reference_points[..., 1:2] - self.pc_range[1]) / (
+        #         self.pc_range[4] - self.pc_range[1])
+        # reference_points[..., 2:3] = (reference_points[..., 2:3] - self.pc_range[2]) / (
+        #         self.pc_range[5] - self.pc_range[2])
+        # reference_points = reference_points.clamp(min=0, max=1)
 
         # detection_nonzero_uvz , conf_scores = find_rois_nonzero_z_adv4(rois,uvz_gt,ref_points_uvz)
         # detection_nonzero_uvz = find_rois_nonzero_z_adv5(rois,uvz_gt,ref_points_uvz)
@@ -529,54 +536,65 @@ class MV2DSHead(MV2DHead):
         #     self.register_buffer('corr_mean', torch.zeros(3))
         #     self.register_buffer('corr_std', torch.ones(3))
         
-        if trimed_corrs.numel() == 0:  # 텐서가 비어있는 경우
-            # EMA 통계 기반 샘플링 (검색 결과[1][7] 참조)
-            # corrs_pred = torch.randn(
-            #     (selected_imgs.size(0), 100, 3), 
-            #     device=selected_imgs.device
-            # ) * self.corr_std + self.corr_mean  # 핵심 변경 부분
-            self.empty_count += 1  # 빈 텐서 발생 시 카운트 증가
-            corrs_pred = ref_points_uvz
-            corrs_pred[... , 0] += 0.5
+        # if trimed_corrs.numel() == 0:  # 텐서가 비어있는 경우
+        #     # EMA 통계 기반 샘플링 (검색 결과[1][7] 참조)
+        #     # corrs_pred = torch.randn(
+        #     #     (selected_imgs.size(0), 100, 3), 
+        #     #     device=selected_imgs.device
+        #     # ) * self.corr_std + self.corr_mean  # 핵심 변경 부분
+        #     self.empty_count += 1  # 빈 텐서 발생 시 카운트 증가
+        #     corrs_pred = ref_points_uvz
+        #     corrs_pred[... , 0] += 0.5
             
-            # # zero loss 생성 (requires_grad=True 유지)
-            # corr_loss = torch.tensor(0.0, 
-            #                     device=selected_imgs.device,
-            #                     dtype=selected_imgs.dtype,
-            #                     requires_grad=True)
-        else:
-            # 기존 처리 로직 유지
-            query_input = trimed_corrs[...,2:5]
-            corr_target = trimed_corrs[...,5:]
-            
-            corrs_pred, cycle, corr_mask, enc_out = self.corr(selected_imgs, query_input)
-            corr_loss = self.corr_loss(corrs_pred, corr_target, cycle, query_input, corr_mask)
+        #     # # zero loss 생성 (requires_grad=True 유지)
+        #     # corr_loss = torch.tensor(0.0, 
+        #     #                     device=selected_imgs.device,
+        #     #                     dtype=selected_imgs.dtype,
+        #     #                     requires_grad=True)
+        
+        try:
+            assert trimed_corrs.numel() != 0, "Empty correspondence tensor"
+        except AssertionError as e:
+            print(f"FATAL ERROR: {e}")
+            sys.exit(1)  # 종료 코드 1 반환
+        
+        query_input = trimed_corrs[...,2:5]
+        corr_target = trimed_corrs[...,5:]
+       
+        corrs_pred, cycle, corr_mask, enc_out = self.corr(selected_imgs, query_input)
+        corrs_pred = self.final_ln(corrs_pred)  # (B, N, C) 형태 유지
+
+        # LayerNorm 파라미터 추출
+        ln_weight = self.final_ln.weight.detach()  # (3,)
+        ln_bias = self.final_ln.bias.detach()      # (3,)
+
+        # corr_target 정규화 (수동 계산)
+        mean = corr_target.mean(dim=-1, keepdim=True)
+        var = corr_target.var(dim=-1, keepdim=True, unbiased=False)
+        corr_target_normalized = (corr_target - mean) / torch.sqrt(var + 1e-5)
+        corr_target_normalized = corr_target_normalized * ln_weight + ln_bias
+         
+        corr_loss = self.corr_loss(corrs_pred, corr_target_normalized, cycle, query_input, corr_mask)
         
         # # 그래디언트 노름 출력 코드 삽입
         # for name, param in self.named_parameters():
         #     if param.grad is not None:
         #         print(f"{name}: {param.grad.norm()}")
+        
         # 그래디언트 클리핑 적용
-        torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=5)
+        torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=3)
 
-        self.total_iter += 1  # 모든 이터레이션에서 카운트 증가
-        # 매 100회 이터레이션마다 로깅
-        if self.total_iter % 50 == 0:
-            empty_ratio = self.empty_count / self.total_iter
-            print(f"[Iter {self.total_iter}] Empty count: {self.empty_count:.2%}")
-            print(f"[Iter {self.total_iter}] Empty ratio: {empty_ratio:.2%}")
+        # self.total_iter += 1  # 모든 이터레이션에서 카운트 증가
+        # # 매 100회 이터레이션마다 로깅
+        # if self.total_iter % 50 == 0:
+        #     empty_ratio = self.empty_count / self.total_iter
+        #     print(f"[Iter {self.total_iter}] Empty count: {self.empty_count:.2%}")
+        #     print(f"[Iter {self.total_iter}] Empty ratio: {empty_ratio:.2%}")
 
             # # 분포 통계 업데이트 (EMA 적용)
             # self.corr_mean = 0.9 * self.corr_mean + 0.1 * corrs_pred.mean(dim=(0,1))
             # self.corr_std = 0.9 * self.corr_std + 0.1 * corrs_pred.std(dim=(0,1))
-
-#         corr_loss = torch.nn.functional.mse_loss(corrs_pred, corr_target)
-    
-#         if mask.sum() > 0:
-# #             print('enter cyclic loss sum')
-#             cycle_loss = torch.nn.functional.mse_loss(cycle[mask], query_input[mask])
-#             corr_loss += cycle_loss       
-        
+         
         # ##### 검증용 display ######
         # from image_processing_unit_Ver15_0 import draw_correspondences
         # pred_corrs = torch.cat([query_input,corrs_pred],dim=2)
@@ -597,7 +615,7 @@ class MV2DSHead(MV2DHead):
         #     print ("end")
 
         # denormal_pred_uvz = minmax_denormalize_uvz(corrs_pred,mis_min_vals,mis_max_vals)
-        denormal_pred_uvz = denormalize_points(corrs_pred)
+        denormal_pred_uvz = denormalize_points(self.inverse_layer_norm(corrs_pred, self.final_ln))
         descale_pre_uvz = inverse_scale_uvz_points(denormal_pred_uvz)
         descale_pre_uvz_with_index = torch.cat([trimed_corrs[...,0:2],descale_pre_uvz],dim=2)
         pixel_normal_uvz = pixel_to_normalized(descale_pre_uvz_with_index,intrinsics)
@@ -647,6 +665,7 @@ class MV2DSHead(MV2DHead):
         detection_xyz_normal.clamp(min=0, max=1)
         pred_xyz = detection_xyz_normal.contiguous().view(-1, 3)
         trimed_pred_xyz = trim_corrs(pred_xyz,num_kp=rois.shape[0]).clone()
+        # trimed_pred_xyz = self.final_ln_sparse_cross_attn(trimed_pred_xyz)
 
         # ## gt_xyz normalization : 의도한대로 mis-calibrated 해서 라온 라이다 xyz points
         # pts_lidar_mis_normal[..., 0:1] = (pts_lidar_mis_normal[..., 0:1] - self.pc_range[0]) / (
@@ -844,7 +863,7 @@ class MV2DSHead(MV2DHead):
             cls_scores.append(c.flatten(0, 1))
             bbox_preds.append(b.flatten(0, 1))
         
-        # return_feats = {} ### 검증용
+        return_feats = {} ### 검증용
         bbox_results = dict(
             cls_scores=cls_scores, bbox_preds=bbox_preds, bbox_feats=bbox_feats, return_feats=return_feats,
             intrinsics=intrinsics, extrinsics=extrinsics, rois=rois, dn_mask_dict=mask_dict,
