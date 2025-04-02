@@ -142,20 +142,12 @@ class COTR(nn.Module):
         self.num_kp = num_kp
         ##### CORR network #######
         self.corr = build(cotr_args)
-        # 배치 정규화 레이어 추가 (최종 출력 차원 기준)
-        self.final_bn = nn.BatchNorm1d(3)  # corrs_pred의 마지막 차원이 3인 경우
     
     def forward(self, sbs_img , query_input):
 
         for i in range(6) :
             # multi camera batch cotr 필요
             corrs_pred , enc_out = self.corr(sbs_img, query_input)
-
-            # 최종 출력 직전 배치 정규화 적용 (3D → 2D 변환)
-            B, N, C = corrs_pred.shape
-            corrs_pred = self.final_bn(
-                corrs_pred.view(-1, C)  # (B*N, C) 형태로 평탄화
-            ).view(B, N, C)  # 원래 차원 복원
             
             img_reverse_input = torch.cat([sbs_img[..., 640:], sbs_img[..., :640]], axis=-1)
             ##cyclic loss pre-processing
@@ -245,6 +237,9 @@ class MV2DSHead(MV2DHead):
         
         self.num_kp = 100 
         self.corr = COTR(self.num_kp)
+
+        # 레이어 정규화 적용 (각 포인트 독립 정규화)
+        self.final_ln = nn.LayerNorm(3)  # C: 특징 차원 (x,y,z 등)
 
         # # 분포 추적 버퍼 초기화 (모델 클래스 내부에 선언)
         # if not hasattr(self, 'corr_stats'):
@@ -336,6 +331,9 @@ class MV2DSHead(MV2DHead):
             mask_dict = None
 
         return padded_reference_points, attn_mask, mask_dict
+    
+    def inverse_layer_norm(self, normalized, ln_layer):
+        return (normalized - ln_layer.bias) / ln_layer.weight
 
     def _bbox_forward_denoise(self, img,img_metas,lidar_depth_mis,x, depth_x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4): # for SJMOON
     # def _bbox_forward_denoise(self, x, proposal_list, img_metas): # for original 
@@ -557,6 +555,8 @@ class MV2DSHead(MV2DHead):
         #     if param.grad is not None:
         #         print(f"{name}: {param.grad.norm()}")
         # 그래디언트 클리핑 적용
+        corrs_pred = self.final_ln(corrs_pred)  # (B, N, C) 형태 유지
+
         torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=5)
 
         self.total_iter += 1  # 모든 이터레이션에서 카운트 증가
@@ -597,7 +597,7 @@ class MV2DSHead(MV2DHead):
         #     print ("end")
 
         # denormal_pred_uvz = minmax_denormalize_uvz(corrs_pred,mis_min_vals,mis_max_vals)
-        denormal_pred_uvz = denormalize_points(corrs_pred)
+        denormal_pred_uvz = denormalize_points(self.inverse_layer_norm(corrs_pred, self.final_ln))
         descale_pre_uvz = inverse_scale_uvz_points(denormal_pred_uvz)
         descale_pre_uvz_with_index = torch.cat([trimed_corrs[...,0:2],descale_pre_uvz],dim=2)
         pixel_normal_uvz = pixel_to_normalized(descale_pre_uvz_with_index,intrinsics)

@@ -27,7 +27,7 @@ model = dict(
             with_cp=False,
             dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False),
             stage_with_dcn=(False, False, True, True),
-            frozen_stages=4, # Freeze all stages of the backbone
+            # frozen_stages=4, # Freeze all stages of the backbone
         ),
     ),
     neck=dict(

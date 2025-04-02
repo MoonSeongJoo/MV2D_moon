@@ -2,7 +2,7 @@ model = dict(
     base_detector=dict(
         type='TwoStageDetBase',
         # init_cfg=dict(type='Pretrained', checkpoint='./weights/mask_rcnn_r50_fpn_1x_nuim_20201008_195238-e99f5182.pth'),
-        init_cfg=dict(type='Pretrained', checkpoint='/workspace/MV2D_moon/data/weights/mask_rcnn_r50_fpn_1x_nuim_20201008_195238-e99f5182.pth'),
+        init_cfg=dict(type='Pretrained', checkpoint='/workspace/MV2D/data/weights/mask_rcnn_r50_fpn_1x_nuim_20201008_195238-e99f5182.pth'),
         backbone=dict(
             type='ResNet',
             depth=50,
