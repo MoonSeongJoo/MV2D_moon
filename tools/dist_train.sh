@@ -18,5 +18,5 @@ python -m torch.distributed.launch \
     $CONFIG \
     --seed 0 \
     --launcher pytorch \
-    --work-dir data/work_dirs/20240402_multigpu_02 \
+    --work-dir data/work_dirs/20240402_multigpu_03 \
     ${@:3}
