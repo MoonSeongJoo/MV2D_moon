@@ -162,7 +162,7 @@ data = dict(
 optimizer = dict(
     _delete_=True,
     type='AdamW',
-    lr=1e-4,
+    lr=2e-4,
     paramwise_cfg=dict(
         custom_keys={
             'base_detector.backbone': dict(lr_mult=0.25),
@@ -187,31 +187,31 @@ load_from = None #check point path
 # resume_from = 'data/work_dirs/20250401_gpu03_1/epoch_1.pth'  # 같은 체크포인트 경로
 resume_from = None
 runner = dict(type='EpochBasedRunner', max_epochs=total_epochs)
-evaluation = dict(interval=3, )
+evaluation = dict(interval=5, )
 # evaluation = dict(interval=1, by_epoch=False, start=0) # validation 만 실행
 
 # checkpoint_config 추가
 checkpoint_config = dict(interval=1)  # 매 epoch마다 저장
 find_unused_parameters = False
 log_config = dict(interval=50)
-# lr_config = dict(
-#     _delete_=True,
-#     policy='CosineAnnealing',
-#     warmup='linear',
-#     warmup_iters=500,
-#     warmup_ratio=1.0 / 3,
-#     min_lr_ratio=1e-3,
-# )
-
 lr_config = dict(
     _delete_=True,
-    policy='Step',
-    step=[1,2,3,4,5,9,16],  # 8번째와 16번째 에포크에서 학습률 감소
-    gamma=0.5,  # 각 스텝에서 학습률을 0.1배로 감소
+    policy='CosineAnnealing',
     warmup='linear',
     warmup_iters=500,
     warmup_ratio=1.0 / 3,
+    min_lr_ratio=1e-3,
 )
+
+# lr_config = dict(
+#     _delete_=True,
+#     policy='Step',
+#     step=[1,2,3,4,5,9,16],  # 8번째와 16번째 에포크에서 학습률 감소
+#     gamma=0.5,  # 각 스텝에서 학습률을 0.1배로 감소
+#     warmup='linear',
+#     warmup_iters=500,
+#     warmup_ratio=1.0 / 3,
+# )
 
 # param_scheduler = [
 #     dict(
