@@ -164,31 +164,71 @@ class COTR(nn.Module):
             query_reverse[..., 0] = query_reverse[..., 0] - 0.5
             cycle,_ = self.corr(img_reverse_input, query_reverse)
             cycle[..., 0] = cycle[..., 0] - 0.5
-            mask = torch.norm(cycle - query_input, dim=-1) < 40 / 640 # 40 pixel 거리에서는 마스크 
+            mask = torch.norm(cycle - query_input, dim=-1) < 10 / 640 # 40 pixel 거리에서는 마스크 
 
         return corrs_pred , cycle , mask , enc_out
+    
 
 class CorrelationCycleLoss(nn.Module):
     def __init__(self, corr_weight=1.0 , cycle_weight=1.0):
         super().__init__()
         # self.loss_weight = loss_weight
-        self.corr_weight = corr_weight
+        # self.corr_weight = corr_weight
         self.cycle_weight= cycle_weight
+        self.chamfer_weight = corr_weight
         # print ("corr weights=" , self.loss_weight )
 
+    # def forward(self, corr_pred, corr_target, cycle, queries, mask):
+    #     # corr_loss = torch.nn.functional.mse_loss(corr_pred, corr_target)
+    #     # Smooth L1 Loss 사용
+    #     corr_loss = torch.nn.functional.smooth_l1_loss(corr_pred, corr_target)
+    #     cycle_loss = torch.tensor(0.0, device=corr_loss.device)
+        
+    #     if mask.sum() > 0:
+    #         # cycle_loss = torch.nn.functional.mse_loss(cycle[mask], queries[mask])
+    #         cycle_loss = torch.nn.functional.smooth_l1_loss(cycle[mask], queries[mask])
+    #         corr_loss += cycle_loss 
+        
+    #     # return self.loss_weight * corr_loss
+    #     return self.corr_weight * corr_loss + self.cycle_weight * cycle_loss
+    
     def forward(self, corr_pred, corr_target, cycle, queries, mask):
-        # corr_loss = torch.nn.functional.mse_loss(corr_pred, corr_target)
-        # Smooth L1 Loss 사용
-        corr_loss = torch.nn.functional.smooth_l1_loss(corr_pred, corr_target)
-        cycle_loss = torch.tensor(0.0, device=corr_loss.device)
+        # Learnable Chamfer Distance 구현
+        def chamfer_distance(x, y):
+            # x, y: 배치 단위 포인트 클라우드 (B, N, D)
+            x_size = x.size(1)
+            y_size = y.size(1)
+            
+            # 효율적인 거리 계산을 위한 방식
+            x = x.unsqueeze(2).expand(-1, -1, y_size, -1)  # (B, N, M, D)
+            y = y.unsqueeze(1).expand(-1, x_size, -1, -1)  # (B, N, M, D)
+            
+            # L2 거리 계산
+            dist = torch.pow(x - y, 2).sum(3)  # (B, N, M)
+            
+            # 양방향 최소 거리 계산
+            min_dist_xy = dist.min(2)[0]  # (B, N)
+            min_dist_yx = dist.min(1)[0]  # (B, M)
+            
+            # 가중치 네트워크를 통한 적응형 가중치 부여
+            # 간단한 구현을 위해 일반 가중치 사용
+            chamfer_loss = min_dist_xy.mean() + min_dist_yx.mean()
+            
+            return chamfer_loss
+    
+        # 기본 Chamfer 손실
+        chamfer_loss = chamfer_distance(corr_pred, corr_target)
         
+        # Cycle Consistency 손실
+        cycle_loss = torch.tensor(0.0, device=chamfer_loss.device)
         if mask.sum() > 0:
-            # cycle_loss = torch.nn.functional.mse_loss(cycle[mask], queries[mask])
             cycle_loss = torch.nn.functional.smooth_l1_loss(cycle[mask], queries[mask])
-            corr_loss += cycle_loss 
         
-        # return self.loss_weight * corr_loss
-        return self.corr_weight * corr_loss + self.cycle_weight * cycle_loss
+        # 추가적인 Point Cloud Distance 손실 (선택적)
+        # point_dist_loss = point_distance_loss(corr_pred, corr_target)
+        corr_loss = self.chamfer_weight * chamfer_loss + self.cycle_weight * cycle_loss
+    
+        return corr_loss
 
 
 @HEADS.register_module()
@@ -242,12 +282,12 @@ class MV2DSHead(MV2DHead):
         #     nn.ReLU(),
         #     nn.Linear(256, 3)
         # )
-        self.corr_loss = CorrelationCycleLoss(corr_weight=200.0 , cycle_weight=100.0)
+        self.corr_loss = CorrelationCycleLoss(corr_weight=100.0 , cycle_weight=50.0)
         
         self.num_kp = 100 
         self.corr = COTR(self.num_kp)
         # 레이어 정규화 적용 (각 포인트 독립 정규화)
-        self.final_ln = nn.LayerNorm(3)  # C: 특징 차원 (x,y,z 등)
+        # self.final_ln = nn.LayerNorm(3)  # C: 특징 차원 (x,y,z 등)
         # self.final_ln_sparse_cross_attn = nn.LayerNorm(3)  # C: 특징 차원 (x,y,z 등)
 
         # # 분포 추적 버퍼 초기화 (모델 클래스 내부에 선언)
