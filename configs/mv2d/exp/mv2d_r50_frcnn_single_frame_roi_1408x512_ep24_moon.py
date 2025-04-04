@@ -184,8 +184,8 @@ total_epochs = 24
 
 # 학습 재개를 위한 설정
 load_from = None #check point path
-# resume_from = 'data/work_dirs/20250401_gpu03_1/epoch_1.pth'  # 같은 체크포인트 경로
-resume_from = None
+resume_from = 'data/work_dirs/20250403_gpu01/latest.pth'  # 같은 체크포인트 경로
+# resume_from = None
 runner = dict(type='EpochBasedRunner', max_epochs=total_epochs)
 evaluation = dict(interval=5, )
 # evaluation = dict(interval=1, by_epoch=False, start=0) # validation 만 실행

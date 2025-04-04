@@ -562,19 +562,19 @@ class MV2DSHead(MV2DHead):
         corr_target = trimed_corrs[...,5:]
        
         corrs_pred, cycle, corr_mask, enc_out = self.corr(selected_imgs, query_input)
-        corrs_pred = self.final_ln(corrs_pred)  # (B, N, C) 형태 유지
+        # corrs_pred = self.final_ln(corrs_pred)  # (B, N, C) 형태 유지
 
-        # LayerNorm 파라미터 추출
-        ln_weight = self.final_ln.weight.detach()  # (3,)
-        ln_bias = self.final_ln.bias.detach()      # (3,)
+        # # LayerNorm 파라미터 추출
+        # ln_weight = self.final_ln.weight.detach()  # (3,)
+        # ln_bias = self.final_ln.bias.detach()      # (3,)
 
-        # corr_target 정규화 (수동 계산)
-        mean = corr_target.mean(dim=-1, keepdim=True)
-        var = corr_target.var(dim=-1, keepdim=True, unbiased=False)
-        corr_target_normalized = (corr_target - mean) / torch.sqrt(var + 1e-5)
-        corr_target_normalized = corr_target_normalized * ln_weight + ln_bias
+        # # corr_target 정규화 (수동 계산)
+        # mean = corr_target.mean(dim=-1, keepdim=True)
+        # var = corr_target.var(dim=-1, keepdim=True, unbiased=False)
+        # corr_target_normalized = (corr_target - mean) / torch.sqrt(var + 1e-5)
+        # corr_target_normalized = corr_target_normalized * ln_weight + ln_bias
          
-        corr_loss = self.corr_loss(corrs_pred, corr_target_normalized, cycle, query_input, corr_mask)
+        corr_loss = self.corr_loss(corrs_pred, corr_target, cycle, query_input, corr_mask)
         
         # # 그래디언트 노름 출력 코드 삽입
         # for name, param in self.named_parameters():
@@ -616,7 +616,7 @@ class MV2DSHead(MV2DHead):
         #     print ("end")
 
         # denormal_pred_uvz = minmax_denormalize_uvz(corrs_pred,mis_min_vals,mis_max_vals)
-        denormal_pred_uvz = denormalize_points(self.inverse_layer_norm(corrs_pred, self.final_ln))
+        denormal_pred_uvz = denormalize_points(corrs_pred)
         descale_pre_uvz = inverse_scale_uvz_points(denormal_pred_uvz)
         descale_pre_uvz_with_index = torch.cat([trimed_corrs[...,0:2],descale_pre_uvz],dim=2)
         pixel_normal_uvz = pixel_to_normalized(descale_pre_uvz_with_index,intrinsics)
