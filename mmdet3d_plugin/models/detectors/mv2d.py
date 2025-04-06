@@ -48,6 +48,26 @@ class MV2D(Base3DDetector):
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
 
+        # 초기 학습 시 나머지 네트워크 freeze
+        freeze_backbone = True
+        if freeze_backbone:
+            self._freeze_backbone_modules()
+    
+    def _freeze_backbone_modules(self):
+        """corr 네트워크 제외한 모든 모듈 동결"""
+        # # 1. Base Detector 동결
+        # for param in self.base_detector.parameters():
+        #     param.requires_grad = False
+            
+        # # 2. Neck 동결
+        # for param in self.neck.parameters():
+        #     param.requires_grad = False
+            
+        # 3. ROI Head 내 corr 제외 동결
+        for name, param in self.roi_head.named_parameters():
+            if 'corr' not in name:  # ← 핵심 변경점
+                param.requires_grad = False 
+
     def process_2d_gt(self, gt_bboxes, gt_labels, device):
         """
         :param gt_bboxes:
@@ -235,9 +255,9 @@ class MV2D(Base3DDetector):
                                             ori_gt_bboxes_3d, ori_gt_labels_3d,
                                             attr_labels, None)
         losses['loss_corr'] = loss_corr
-        losses.update(roi_losses)
+        # losses.update(roi_losses)
         # 그래디언트 클리핑 적용
-        torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=35)
+        # torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=20)
         return losses
 
     def forward_test(self, 

@@ -336,7 +336,8 @@ class PointToMultiViewDepth(object):
 
             depth_mis, uv,z,valid_indices = points2depthmap_gpu(miscalibrated_points2img, results['img'][0].shape[0] ,results['img'][0].shape[1])
             lidarOnImage_mis = torch.cat((uv, z.unsqueeze(1)), dim=1)
-            pts = preprocess_points(lidarOnImage_mis.T)
+            # pts = preprocess_points(lidarOnImage_mis.T)
+            pts = lidarOnImage_mis.T
             # dense_depth_img_mis = dense_map_gpu_optimized(pts , results['img'][0].shape[1], results['img'][0].shape[0], 6)
             dense_depth_img_mis = distance_adaptive_depth_completion(pts , results['img'][0].shape[1], results['img'][0].shape[0], 4)
             dense_depth_img_mis = dense_depth_img_mis.to(dtype=torch.uint8)

@@ -17,7 +17,9 @@ from mmdet.models.builder import HEADS
 from .mv2d_head import MV2DHead
 from COTR.COTR_models.cotr_model_moon_Ver12_0 import build
 from torchvision.transforms import functional as tvtf
+from torchvision.ops import DeformConv2d
 import easydict
+
 cotr_args = easydict.EasyDict({
                 "out_dir" : "general_config['out']",
                 # "load_weights" : "None",
@@ -173,63 +175,77 @@ class CorrelationCycleLoss(nn.Module):
     def __init__(self, corr_weight=1.0 , cycle_weight=1.0):
         super().__init__()
         # self.loss_weight = loss_weight
-        # self.corr_weight = corr_weight
+        self.corr_weight = corr_weight
         self.cycle_weight= cycle_weight
-        self.chamfer_weight = corr_weight
+        # self.chamfer_weight = corr_weight
         # print ("corr weights=" , self.loss_weight )
 
-    # def forward(self, corr_pred, corr_target, cycle, queries, mask):
-    #     # corr_loss = torch.nn.functional.mse_loss(corr_pred, corr_target)
-    #     # Smooth L1 Loss 사용
-    #     corr_loss = torch.nn.functional.smooth_l1_loss(corr_pred, corr_target)
-    #     cycle_loss = torch.tensor(0.0, device=corr_loss.device)
-        
-    #     if mask.sum() > 0:
-    #         # cycle_loss = torch.nn.functional.mse_loss(cycle[mask], queries[mask])
-    #         cycle_loss = torch.nn.functional.smooth_l1_loss(cycle[mask], queries[mask])
-    #         corr_loss += cycle_loss 
-        
-    #     # return self.loss_weight * corr_loss
-    #     return self.corr_weight * corr_loss + self.cycle_weight * cycle_loss
-    
     def forward(self, corr_pred, corr_target, cycle, queries, mask):
-        # Learnable Chamfer Distance 구현
-        def chamfer_distance(x, y):
-            # x, y: 배치 단위 포인트 클라우드 (B, N, D)
-            x_size = x.size(1)
-            y_size = y.size(1)
-            
-            # 효율적인 거리 계산을 위한 방식
-            x = x.unsqueeze(2).expand(-1, -1, y_size, -1)  # (B, N, M, D)
-            y = y.unsqueeze(1).expand(-1, x_size, -1, -1)  # (B, N, M, D)
-            
-            # L2 거리 계산
-            dist = torch.pow(x - y, 2).sum(3)  # (B, N, M)
-            
-            # 양방향 최소 거리 계산
-            min_dist_xy = dist.min(2)[0]  # (B, N)
-            min_dist_yx = dist.min(1)[0]  # (B, M)
-            
-            # 가중치 네트워크를 통한 적응형 가중치 부여
-            # 간단한 구현을 위해 일반 가중치 사용
-            chamfer_loss = min_dist_xy.mean() + min_dist_yx.mean()
-            
-            return chamfer_loss
-    
-        # 기본 Chamfer 손실
-        chamfer_loss = chamfer_distance(corr_pred, corr_target)
+        corr_loss = torch.nn.functional.mse_loss(corr_pred, corr_target)
+        # Smooth L1 Loss 사용
+        # corr_loss = torch.nn.functional.smooth_l1_loss(corr_pred, corr_target)
+        cycle_loss = torch.tensor(0.0, device=corr_loss.device)
         
-        # Cycle Consistency 손실
-        cycle_loss = torch.tensor(0.0, device=chamfer_loss.device)
         if mask.sum() > 0:
-            cycle_loss = torch.nn.functional.smooth_l1_loss(cycle[mask], queries[mask])
+            cycle_loss = torch.nn.functional.mse_loss(cycle[mask], queries[mask])
+            # cycle_loss = torch.nn.functional.smooth_l1_loss(cycle[mask], queries[mask])
+            corr_loss += cycle_loss 
         
-        # 추가적인 Point Cloud Distance 손실 (선택적)
-        # point_dist_loss = point_distance_loss(corr_pred, corr_target)
-        corr_loss = self.chamfer_weight * chamfer_loss + self.cycle_weight * cycle_loss
+        # return self.loss_weight * corr_loss
+        return self.corr_weight * corr_loss + self.cycle_weight * cycle_loss
     
-        return corr_loss
+    # def forward(self, corr_pred, corr_target, cycle, queries, mask):
+    #     # Learnable Chamfer Distance 구현
+    #     def chamfer_distance(x, y):
+    #         # x, y: 배치 단위 포인트 클라우드 (B, N, D)
+    #         x_size = x.size(1)
+    #         y_size = y.size(1)
+            
+    #         # 효율적인 거리 계산을 위한 방식
+    #         x = x.unsqueeze(2).expand(-1, -1, y_size, -1)  # (B, N, M, D)
+    #         y = y.unsqueeze(1).expand(-1, x_size, -1, -1)  # (B, N, M, D)
+            
+    #         # L2 거리 계산
+    #         dist = torch.pow(x - y, 2).sum(3)  # (B, N, M)
+            
+    #         # 양방향 최소 거리 계산
+    #         min_dist_xy = dist.min(2)[0]  # (B, N)
+    #         min_dist_yx = dist.min(1)[0]  # (B, M)
+            
+    #         # 가중치 네트워크를 통한 적응형 가중치 부여
+    #         # 간단한 구현을 위해 일반 가중치 사용
+    #         chamfer_loss = min_dist_xy.mean() + min_dist_yx.mean()
+            
+    #         return chamfer_loss
+    
+    #     # 기본 Chamfer 손실
+    #     chamfer_loss = chamfer_distance(corr_pred, corr_target)
+        
+    #     # Cycle Consistency 손실
+    #     cycle_loss = torch.tensor(0.0, device=chamfer_loss.device)
+    #     if mask.sum() > 0:
+    #         cycle_loss = torch.nn.functional.smooth_l1_loss(cycle[mask], queries[mask])
+        
+    #     # 추가적인 Point Cloud Distance 손실 (선택적)
+    #     # point_dist_loss = point_distance_loss(corr_pred, corr_target)
+    #     corr_loss = self.chamfer_weight * chamfer_loss + self.cycle_weight * cycle_loss
+    
+    #     return corr_loss
 
+# Deformable SPN 모듈 정의
+class DeformableSPN(nn.Module):
+    def __init__(self, in_channels=3, out_channels=3):
+        super().__init__()
+        self.offset_conv = nn.Sequential(
+            nn.Conv2d(in_channels, 64, 3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 18, 3, padding=1)  # 3x3 커널 기준 2*9 offset
+        )
+        self.dcn = DeformConv2d(in_channels, out_channels, 3, padding=1)
+
+    def forward(self, x):
+        offsets = self.offset_conv(x)
+        return self.dcn(x, offsets)
 
 @HEADS.register_module()
 class MV2DSHead(MV2DHead):
@@ -282,10 +298,12 @@ class MV2DSHead(MV2DHead):
         #     nn.ReLU(),
         #     nn.Linear(256, 3)
         # )
-        self.corr_loss = CorrelationCycleLoss(corr_weight=100.0 , cycle_weight=50.0)
+        self.corr_loss = CorrelationCycleLoss(corr_weight=2.0 , cycle_weight=1.0)
         
         self.num_kp = 100 
         self.corr = COTR(self.num_kp)
+
+
         # 레이어 정규화 적용 (각 포인트 독립 정규화)
         # self.final_ln = nn.LayerNorm(3)  # C: 특징 차원 (x,y,z 등)
         # self.final_ln_sparse_cross_attn = nn.LayerNorm(3)  # C: 특징 차원 (x,y,z 등)
@@ -298,6 +316,10 @@ class MV2DSHead(MV2DHead):
         # self.empty_count = 0  # 빈 텐서 카운터 초기화
         # self.total_iter = 0   # 전체 이터레이션 카운터
 
+        # Deformable SPN 레이어 추가
+        self.deform_spn = DeformableSPN()
+
+      
     def prepare_for_dn(self, batch_size, reference_points, img_metas, ref_num, eps=1e-4):
         if self.training:
             targets = [
@@ -413,7 +435,10 @@ class MV2DSHead(MV2DHead):
         lidar_depth_mis_resized = F.interpolate(lidar_depth_mis, size=[192, 640], mode="bilinear")
         # lidar_depth_mis_resized = F.interpolate(lidar_depth_mis, size=[h, w], mode="bilinear")
 
-        sbs_img = two_images_side_by_side(img_resized, lidar_depth_mis_resized)
+        # Deformable SPN 적용 (주요 수정 부분)
+        dense_depth = self.deform_spn(lidar_depth_mis_resized)
+
+        sbs_img = two_images_side_by_side(img_resized, dense_depth)
         sbs_img = torch.from_numpy(sbs_img).permute(0,3,1,2).to('cuda')
         sbs_img = tvtf.normalize(sbs_img, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
         ############## input display ##########################
@@ -622,7 +647,7 @@ class MV2DSHead(MV2DHead):
         #         print(f"{name}: {param.grad.norm()}")
         
         # 그래디언트 클리핑 적용
-        torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=3)
+        # torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=5)
 
         # self.total_iter += 1  # 모든 이터레이션에서 카운트 증가
         # # 매 100회 이터레이션마다 로깅
@@ -637,8 +662,8 @@ class MV2DSHead(MV2DHead):
          
         # ##### 검증용 display ######
         # from image_processing_unit_Ver15_0 import draw_correspondences
-        # corrs_pred_norm = self.inverse_layer_norm(corrs_pred, self.final_ln)
-        # pred_corrs = torch.cat([query_input,corrs_pred_norm],dim=2)
+        # # corrs_pred_norm = self.inverse_layer_norm(corrs_pred, self.final_ln)
+        # pred_corrs = torch.cat([query_input,corrs_pred],dim=2)
         # int_ids = original_camera_ids.to(torch.long).cpu()
         # for cid in int_ids :
         #     draw_correspondences(

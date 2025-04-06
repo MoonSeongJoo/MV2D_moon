@@ -236,6 +236,10 @@ def main():
         test_cfg=cfg.get('test_cfg'))
     model.init_weights()
 
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print(f"학습 가능: {name}")
+
     # pytorch 2.0 신규 수정 
     # Compile the model using torch.compile
     # model = torch.compile(model, mode="reduce-overhead")
