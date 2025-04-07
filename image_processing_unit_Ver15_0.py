@@ -2690,3 +2690,19 @@ def draw_correspondences(trimed_corrs, sbs_img, camera_idx=0, save_path='corresp
     print(f"Correspondence image saved to {save_path}")
 
 
+def geometric_propagation(depth_map, iterations=3):
+    """
+    깊이 맵의 기하학적 일관성을 보존하는 전파 알고리즘
+    """
+    for _ in range(iterations):
+        # x축 방향 전파
+        depth_diff = torch.abs(depth_map[:,:,1:] - depth_map[:,:,:-1])
+        valid_mask = (depth_diff < 1.0).float()  # 1m 이내 차이만 허용
+        depth_map[:,:,1:] = depth_map[:,:,:-1]*valid_mask + depth_map[:,:,1:]*(1-valid_mask)
+        
+        # y축 방향 전파
+        depth_diff = torch.abs(depth_map[:,1:,:] - depth_map[:,:-1,:])
+        valid_mask = (depth_diff < 1.0).float()
+        depth_map[:,1:,:] = depth_map[:,:-1,:]*valid_mask + depth_map[:,1:,:]*(1-valid_mask)
+        
+    return depth_map

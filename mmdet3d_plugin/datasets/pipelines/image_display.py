@@ -181,7 +181,8 @@ def points2depthmap_gpu(points, height, width, downsample=1):
         'x': [-51.2, 51.2, 0.8],
         'y': [-51.2, 51.2, 0.8],
         'z': [-5, 3, 8],
-        'depth': [1.0, 60.0, 0.5],
+        # 'depth': [1.0, 60.0, 0.5],
+        'depth': [0.0, 60.0, 0.5],
     }
     height, width = height // downsample, width // downsample
     depth_map = torch.zeros((height, width), dtype=torch.float32, device=device)
@@ -205,7 +206,8 @@ def points2depthmap_gpu(points, height, width, downsample=1):
     # argsort 연산은 이미 GPU에서 수행됨
     # sort = (ranks + depth / 100.).argsort()
     # 수정 코드 (Z값 정상화)
-    sort = (ranks - depth / 100.).argsort(descending=True)  # 내림차순 정렬
+    # sort = (ranks - depth / 100.).argsort(descending=True)  # 내림차순 정렬
+    sort = (ranks - depth).argsort(descending=True)
     
     coor, depth, ranks = coor[sort], depth[sort], ranks[sort]
 
@@ -845,3 +847,185 @@ def trim_corrs(points ,num_kp=30000):
         mask = torch.randint(0, length, (num_kp - length,))
         # return np.concatenate([points, points[mask]], axis=0)
         return torch.cat([points, points[mask]], dim=0)
+
+def enhanced_geometric_propagation(depth_map, iterations=10, base_threshold=1.0):
+    """
+    다방향 전파와 적응형 임계값을 사용한 고밀도 깊이 맵 생성 알고리즘
+    """
+    # 입력 차원 처리
+    orig_dim = len(depth_map.shape)
+    if orig_dim == 2:
+        depth_map = depth_map.unsqueeze(0).unsqueeze(0)  # [H,W] → [1,1,H,W]
+    elif orig_dim == 3:
+        depth_map = depth_map.unsqueeze(1)  # [B,H,W] → [B,1,H,W]
+    
+    # 결과 복사본 생성 및 원본 값 보존
+    result = depth_map.clone()
+    original_valid = (depth_map > 0).float()
+    
+    # 8방향 전파 정의 (4개 직교 + 4개 대각선)
+    directions = [
+        (0, 1),    # 오른쪽
+        (0, -1),   # 왼쪽
+        (1, 0),    # 아래
+        (-1, 0),   # 위
+        (1, 1),    # 오른쪽-아래
+        (-1, -1),  # 왼쪽-위
+        (1, -1),   # 왼쪽-아래
+        (-1, 1)    # 오른쪽-위
+    ]
+    
+    for iter_idx in range(iterations):
+        # 반복이 진행됨에 따라 임계값 점진적 감소 (첫 반복 = 관대, 마지막 반복 = 엄격)
+        current_threshold = base_threshold * (1.0 - 0.5 * iter_idx / iterations)
+        
+        # 각 방향 처리
+        for dy, dx in directions:
+            # 대각선 방향은 약간 높은 임계값 사용
+            dir_threshold = current_threshold * (1.4 if abs(dy) + abs(dx) > 1 else 1.0)
+            
+            # 소스와 대상 픽셀의 슬라이스 인덱스 계산
+            if dx > 0:
+                x_src, x_tgt = slice(0, -1), slice(1, None)
+            elif dx < 0:
+                x_src, x_tgt = slice(1, None), slice(0, -1)
+            else:
+                x_src = x_tgt = slice(None)
+                
+            if dy > 0:
+                y_src, y_tgt = slice(0, -1), slice(1, None)
+            elif dy < 0:
+                y_src, y_tgt = slice(1, None), slice(0, -1)
+            else:
+                y_src = y_tgt = slice(None)
+            
+            # 이동이 없는 방향은 건너뛰기
+            if y_src == slice(None) and x_src == slice(None):
+                continue
+            
+            # 소스 및 대상 값 추출
+            src_depth = result[..., y_src, x_src]
+            tgt_depth = result[..., y_tgt, x_tgt]
+            
+            # 유효한 픽셀 결정
+            src_valid = (src_depth > 0).float()
+            tgt_valid = (tgt_depth > 0).float()
+            
+            # 깊이 차이 계산
+            depth_diff = torch.abs(src_depth - tgt_depth)
+            
+            # 전파 마스크 생성:
+            # 1. 유효한 이웃에서 빈 픽셀 채우기
+            # 2. 차이가 임계값 미만인 경우 업데이트
+            update_mask = ((tgt_valid == 0) & (src_valid > 0)) | \
+                          ((tgt_valid > 0) & (src_valid > 0) & (depth_diff < dir_threshold))
+            
+            # 전파 적용
+            result[..., y_tgt, x_tgt] = torch.where(
+                update_mask, 
+                src_depth,
+                result[..., y_tgt, x_tgt]
+            )
+    
+    # 원본 유효 측정값 보존
+    result = torch.where(original_valid > 0, depth_map, result)
+    
+    # 원래 차원으로 반환
+    if orig_dim == 2:
+        return result.squeeze()
+    elif orig_dim == 3:
+        return result.squeeze(1)
+    else:
+        return result
+
+def direction_aware_completion(sparse_depth, num_directions=8, max_radius=50):
+    result = sparse_depth.clone()
+    h, w = sparse_depth.shape
+    device = sparse_depth.device
+    
+    # 방향 벡터 정의
+    angles = torch.linspace(0, 2*np.pi, num_directions+1)[:-1]
+    directions = torch.stack([torch.cos(angles), torch.sin(angles)], dim=1).to(device)
+    
+    # 각 픽셀에 대해
+    for y in range(h):
+        for x in range(w):
+            if result[y, x] > 0:  # 이미 값이 있으면 건너뜀
+                continue
+                
+            valid_values = []
+            weights = []
+            
+            # 각 방향으로 탐색
+            for dir_vec in directions:
+                dx, dy = dir_vec
+                for r in range(1, max_radius+1):
+                    nx, ny = int(x + dx*r), int(y + dy*r)
+                    
+                    # 경계 체크
+                    if nx < 0 or nx >= w or ny < 0 or ny >= h:
+                        break
+                        
+                    # 유효한 값 찾음
+                    if result[ny, nx] > 0:
+                        valid_values.append(result[ny, nx])
+                        # 거리 기반 가중치 (거리 제곱의 역수)
+                        weights.append(1/(r*r))
+                        break
+            
+            # 가중 평균 계산
+            if valid_values:
+                weights = torch.tensor(weights, device=device)
+                valid_values = torch.tensor(valid_values, device=device)
+                result[y, x] = torch.sum(weights * valid_values) / torch.sum(weights)
+    
+    return result
+
+def direction_aware_bilateral_filter(Pts, n, m, grid):
+    device = Pts.device
+    ng = 2 * grid + 1
+    epsilon = 1e-8
+    
+    # Initialize sparse depth map
+    sparse_depth = torch.zeros((m, n), dtype=torch.float32, device=device)
+    x_indices = Pts[1].to(dtype=torch.int64)
+    y_indices = Pts[0].to(dtype=torch.int64)
+    sparse_depth[x_indices, y_indices] = Pts[2]
+    
+    # Create kernel tensors
+    KmD = torch.zeros((ng, ng, m - ng, n - ng), dtype=torch.float32, device=device)
+    
+    for i in range(ng):
+        for j in range(ng):
+            KmD[i, j] = sparse_depth[i: (m - ng + i), j: (n - ng + j)]
+    
+    # Output accumulators
+    Y = torch.zeros_like(KmD[0, 0], device=device)
+    S = torch.zeros_like(KmD[0, 0], device=device)
+    
+    # Parameters for anisotropic filtering
+    sigma_horizontal = grid / 1.0  # Larger sigma for horizontal direction
+    sigma_vertical = grid / 3.0    # Smaller sigma for vertical direction
+    
+    for i in range(ng):
+        for j in range(ng):
+            # Anisotropic spatial weight - emphasizes horizontal connections
+            y_diff = (i - grid)**2 / (2 * sigma_vertical**2)
+            x_diff = (j - grid)**2 / (2 * sigma_horizontal**2)
+            
+            # Convert scalar to tensor before using torch.exp
+            diff_tensor = torch.tensor(y_diff + x_diff, device=device)
+            spatial_weight = torch.exp(-diff_tensor)
+            
+            # Only consider pixels with positive depth
+            valid_mask = KmD[i, j] > 0
+            Y[valid_mask] += spatial_weight * KmD[i, j][valid_mask]
+            S[valid_mask] += spatial_weight
+    
+    # Normalize
+    output_depth = torch.zeros((m, n), dtype=torch.float32, device=device)
+    valid_S = S > epsilon
+    output_depth[grid + 1: -grid, grid + 1: -grid][valid_S] = Y[valid_S] / S[valid_S]
+    
+    return output_depth
+

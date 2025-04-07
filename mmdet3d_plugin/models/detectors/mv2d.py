@@ -55,13 +55,13 @@ class MV2D(Base3DDetector):
     
     def _freeze_backbone_modules(self):
         """corr 네트워크 제외한 모든 모듈 동결"""
-        # # 1. Base Detector 동결
-        # for param in self.base_detector.parameters():
-        #     param.requires_grad = False
+        # 1. Base Detector 동결
+        for param in self.base_detector.parameters():
+            param.requires_grad = False
             
-        # # 2. Neck 동결
-        # for param in self.neck.parameters():
-        #     param.requires_grad = False
+        # 2. Neck 동결
+        for param in self.neck.parameters():
+            param.requires_grad = False
             
         # 3. ROI Head 내 corr 제외 동결
         for name, param in self.roi_head.named_parameters():

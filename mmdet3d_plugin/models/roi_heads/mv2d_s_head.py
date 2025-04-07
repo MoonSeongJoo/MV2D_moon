@@ -55,7 +55,8 @@ from image_processing_unit_Ver15_0 import (find_all_depthmap_z_adv,find_rois_non
                                            selected_image_to_lidar_global,
                                            pixel_to_normalized,center2lidar_batch,
                                            project_lidar_to_image,minmax_normalize_uvz,minmax_denormalize_uvz,
-                                           draw_corrs , lidar_to_image_no_filter)
+                                           draw_corrs , lidar_to_image_no_filter,
+                                           geometric_propagation)
 
 # @CALIB_TRANSFORMER.register_module()
 # class CalibTransformer(PETRTransformer):
@@ -436,9 +437,10 @@ class MV2DSHead(MV2DHead):
         # lidar_depth_mis_resized = F.interpolate(lidar_depth_mis, size=[h, w], mode="bilinear")
 
         # Deformable SPN 적용 (주요 수정 부분)
-        dense_depth = self.deform_spn(lidar_depth_mis_resized)
+        # dense_depth = self.deform_spn(lidar_depth_mis_resized)
+        # dense_depth = geometric_propagation(lidar_depth_mis_resized)
 
-        sbs_img = two_images_side_by_side(img_resized, dense_depth)
+        sbs_img = two_images_side_by_side(img_resized, lidar_depth_mis_resized)
         sbs_img = torch.from_numpy(sbs_img).permute(0,3,1,2).to('cuda')
         sbs_img = tvtf.normalize(sbs_img, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
         ############## input display ##########################

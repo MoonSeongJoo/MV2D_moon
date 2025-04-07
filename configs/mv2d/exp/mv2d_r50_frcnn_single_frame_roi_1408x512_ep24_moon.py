@@ -27,7 +27,7 @@ model = dict(
             with_cp=False,
             dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False),
             stage_with_dcn=(False, False, True, True),
-            # frozen_stages=4, # Freeze all stages of the backbone
+            frozen_stages=4, # Freeze all stages of the backbone
         ),
     ),
     neck=dict(
@@ -156,7 +156,7 @@ model = dict(
 )
 
 data = dict(
-    workers_per_gpu=8,
+    workers_per_gpu=1,
 )
 
 optimizer = dict(
@@ -184,8 +184,8 @@ total_epochs = 24
 
 # 학습 재개를 위한 설정
 load_from = None #check point path
-resume_from = 'data/work_dirs/20250403_gpu01/latest.pth'  # 같은 체크포인트 경로
-# resume_from = None
+# resume_from = 'data/work_dirs/20250404_gpu01/latest.pth'  # 같은 체크포인트 경로
+resume_from = None
 runner = dict(type='EpochBasedRunner', max_epochs=total_epochs)
 evaluation = dict(interval=5, )
 # evaluation = dict(interval=1, by_epoch=False, start=0) # validation 만 실행
