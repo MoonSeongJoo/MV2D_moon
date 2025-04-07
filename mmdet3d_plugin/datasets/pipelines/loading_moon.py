@@ -333,79 +333,79 @@ class PointToMultiViewDepth(object):
             
             ####### depth image display ######
             depth_gt, gt_uv,gt_z, valid_indices_gt= points2depthmap_gpu(points2img, img_height ,img_width)
-            lidarOnImage_gt = torch.cat((gt_uv, gt_z.unsqueeze(1)), dim=1)
-            pts = lidarOnImage_gt.T
-            dense_depth_img_gt = dense_map_gpu_optimized(lidarOnImage_gt.T , img_width, img_height, 4)
-            dense_depth_img_gt = dense_depth_img_gt.to(dtype=torch.uint8)
-            dense_depth_img_color_gt = colormap(dense_depth_img_gt)
+            # lidarOnImage_gt = torch.cat((gt_uv, gt_z.unsqueeze(1)), dim=1)
+            # pts = lidarOnImage_gt.T
+            # dense_depth_img_gt = dense_map_gpu_optimized(lidarOnImage_gt.T , img_width, img_height, 4)
+            # dense_depth_img_gt = dense_depth_img_gt.to(dtype=torch.uint8)
+            # dense_depth_img_color_gt = colormap(dense_depth_img_gt)
 
             depth_mis, uv,z,valid_indices = points2depthmap_gpu(miscalibrated_points2img, img_height ,img_width)
-            lidarOnImage_mis = torch.cat((uv, z.unsqueeze(1)), dim=1)
-            # pts = preprocess_points(lidarOnImage_mis.T)
-            pts_mis = lidarOnImage_mis.T
-            dense_depth_img_mis = dense_map_gpu_optimized(pts , img_width, img_height, 12)
-            # dense_depth_img_mis = distance_adaptive_depth_completion(pts , results['img'][0].shape[1], results['img'][0].shape[0], 4)
-            dense_depth_img_mis = dense_depth_img_mis.to(dtype=torch.uint8)
-            dense_depth_img_color_mis = colormap(dense_depth_img_mis)
+            # lidarOnImage_mis = torch.cat((uv, z.unsqueeze(1)), dim=1)
+            # # pts = preprocess_points(lidarOnImage_mis.T)
+            # pts_mis = lidarOnImage_mis.T
+            # dense_depth_img_mis = dense_map_gpu_optimized(pts_mis , img_width, img_height, 1)
+            # # dense_depth_img_mis = distance_adaptive_depth_completion(pts , results['img'][0].shape[1], results['img'][0].shape[0], 4)
+            # dense_depth_img_mis = dense_depth_img_mis.to(dtype=torch.uint8)
+            # dense_depth_img_color_mis = colormap(dense_depth_img_mis)
             # dense_depth_img_edge_mis = edge_aware_bilateral_filter(pts,dense_depth_img_color_mis_raw,results['img'][0].shape[1], results['img'][0].shape[0], 4)
             # dense_depth_img_edge_mis = dense_depth_img_edge_mis.to(dtype=torch.uint8)
             # dense_depth_img_color_mis = colormap(dense_depth_img_edge_mis)
 
-            dense_depth_img_mis_adv = enhanced_geometric_propagation(depth_gt)
+            dense_depth_img_mis_adv = enhanced_geometric_propagation(depth_mis)
             dense_depth_img_mis_adv = dense_depth_img_mis_adv.to(dtype=torch.uint8)
             dense_depth_img_color_mis_adv = colormap(dense_depth_img_mis_adv)
 
             # lidar_depth_dense_gt.append(dense_depth_img_color_gt)
-            lidar_depth_map_mis.append(dense_depth_img_color_mis)
+            lidar_depth_map_mis.append(dense_depth_img_color_mis_adv)
             # gt_uvz.append(dense_depth_img_gt)
             lidar_depth_map_gt.append(depth_gt)
             # uvz.append(dense_depth_img_mis)
             
-            ###### input display ######
-            img = results['img'][cid]
-            # 이미지 데이터가 float 타입인 경우 0과 1 사이로 정규화
-            if img.dtype == np.float32 or img.dtype == np.float64:
-                img = (img - img.min()) / (img.max() - img.min())
-            plt.figure(figsize=(20, 20))
-            plt.subplot(5,1,1)
-            plt.imshow(img)
-            plt.scatter(gt_uv[:, 0], gt_uv[:, 1], c=gt_z, s=0.5)
-            plt.title("input calibrated display", fontsize=10)
+            # ###### input display ######
+            # img = results['img'][cid]
+            # # 이미지 데이터가 float 타입인 경우 0과 1 사이로 정규화
+            # if img.dtype == np.float32 or img.dtype == np.float64:
+            #     img = (img - img.min()) / (img.max() - img.min())
+            # plt.figure(figsize=(20, 20))
+            # plt.subplot(5,1,1)
+            # plt.imshow(img)
+            # plt.scatter(gt_uv[:, 0], gt_uv[:, 1], c=gt_z, s=0.5)
+            # plt.title("input calibrated display", fontsize=10)
 
-            plt.subplot(5,1,2)
-            plt.imshow(img)
-            plt.scatter(uv[:, 0], uv[:, 1], c=z, s=0.5)
-            plt.title("input mis-calibrated display", fontsize=10)
+            # plt.subplot(5,1,2)
+            # plt.imshow(img)
+            # plt.scatter(uv[:, 0], uv[:, 1], c=z, s=0.5)
+            # plt.title("input mis-calibrated display", fontsize=10)
 
-            disp_gt2 = dense_depth_img_color_gt.detach().cpu().numpy()
-            plt.subplot(5,1,3)
-            plt.imshow(disp_gt2, cmap='magma_r')
-            plt.title("gt display", fontsize=10)
-            plt.axis('off')
-
-            disp_mis2 = dense_depth_img_color_mis.detach().cpu().numpy()
-            plt.subplot(5,1,4)
-            plt.imshow(disp_mis2, cmap='magma')
-            plt.title("mis display", fontsize=10)
-            plt.axis('off')
-
-            gt_gray = dense_depth_img_color_mis_adv.detach().cpu().numpy()
-            plt.subplot(5,1,5)
-            plt.imshow(gt_gray, cmap='magma_r')
-            plt.title("other mis display", fontsize=10)
-            plt.axis('off')
-
-            # mis_gray = dense_depth_img_mis.detach().cpu().numpy()
-            # plt.subplot(3,2,6)
-            # plt.imshow(mis_gray, cmap='magma_r')
-            # plt.title("mis gray display", fontsize=10)
+            # disp_gt2 = dense_depth_img_color_gt.detach().cpu().numpy()
+            # plt.subplot(5,1,3)
+            # plt.imshow(disp_gt2, cmap='magma_r')
+            # plt.title("gt display", fontsize=10)
             # plt.axis('off')
+
+            # disp_mis2 = dense_depth_img_color_mis.detach().cpu().numpy()
+            # plt.subplot(5,1,4)
+            # plt.imshow(disp_mis2, cmap='magma')
+            # plt.title("mis display", fontsize=10)
+            # plt.axis('off')
+
+            # gt_gray = dense_depth_img_color_mis_adv.detach().cpu().numpy()
+            # plt.subplot(5,1,5)
+            # plt.imshow(gt_gray, cmap='magma_r')
+            # plt.title("other mis display", fontsize=10)
+            # plt.axis('off')
+
+            # # mis_gray = dense_depth_img_mis.detach().cpu().numpy()
+            # # plt.subplot(3,2,6)
+            # # plt.imshow(mis_gray, cmap='magma_r')
+            # # plt.title("mis gray display", fontsize=10)
+            # # plt.axis('off')
             
-            # 전체 그림 저장
-            plt.tight_layout()
-            plt.savefig('load_pipeline.jpg', dpi=300, bbox_inches='tight')
-            plt.close()
-            print ("end of print")
+            # # 전체 그림 저장
+            # plt.tight_layout()
+            # plt.savefig('load_pipeline.jpg', dpi=300, bbox_inches='tight')
+            # plt.close()
+            # print ("end of print")
         
         gt_KT = torch.stack(list_gt_KT)
         gt_KT_3by4 = torch.stack(list_gt_KT_3by4)
