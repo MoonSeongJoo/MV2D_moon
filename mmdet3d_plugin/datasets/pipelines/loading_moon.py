@@ -292,7 +292,341 @@ class LoadMultiViewImageFromMultiSweepsFiles(object):
         repr_str = self.__class__.__name__
         repr_str += f'(to_float32={self.to_float32}, '
         repr_str += f"color_type='{self.color_type}')"
- 
+
+import cv2
+
+class DepthCompletionPipeline:
+    def __init__(self, max_iter=100, tol=1e-5):
+        # Motion estimation parameters
+        self.max_iter = max_iter
+        self.tol = tol
+        self.prev_features = None
+        self.prev_points = None
+        self.orb = cv2.ORB_create(nfeatures=1000)
+    
+    def extract_features(self, img_tensor):
+        """이미지에서 ORB 특징점 추출"""
+        # 차원 재구성 [H,W,C] → [C,H,W]
+        if img_tensor.shape[-1] == 3:  # 채널이 마지막 차원인 경우
+            img_tensor = img_tensor.permute(2, 0, 1)  # [C,H,W]
+        
+        # 1/2 해상도로 다운샘플링
+        small_img = F.avg_pool2d(img_tensor.unsqueeze(0), 2).squeeze(0)  # [C,H/2,W/2]
+        
+        # 그레이스케일 변환
+        gray = 0.299 * small_img[0] + 0.587 * small_img[1] + 0.114 * small_img[2]
+        
+        # 정규화 및 타입 변환 (0~255 uint8)
+        gray = (gray * 255).clamp(0, 255).to(torch.uint8)
+        
+        # CPU로 이동 및 차원 압축
+        gray_np = gray.cpu().squeeze().numpy()  # [H/2,W/2]
+        
+        # 특징점 검출
+        fast = cv2.FastFeatureDetector_create(threshold=50)
+        keypoints = fast.detect(gray_np, None)
+        
+        # 원본 해상도 좌표 복원 (2배 스케일링)
+        kp_coords = torch.tensor(
+            [[kp.pt[0]*2, kp.pt[1]*2] for kp in keypoints],
+            dtype=torch.float32,
+            device=img_tensor.device
+        )
+        
+        return kp_coords
+
+    def motion_based_calibration(self, current_features, current_points):
+        """
+        움직임 기반 미스캘리브레이션 보정
+        """
+        if self.prev_features is None:
+            self.prev_features = current_features
+            self.prev_points = current_points
+            return None
+
+        # 특징점 기반 상대 운동 추정
+        transform, _ = cv2.estimateAffinePartial2D(
+            self.prev_features.cpu().numpy(),
+            current_features.cpu().numpy()
+        )
+        
+        # LiDAR 포인트 기반 운동 추정
+        lidar_transform = self.estimate_relative_motion(
+            self.prev_points, current_points
+        )
+
+        # 캘리브레이션 오차 계산
+        calibration_error = self.calculate_calibration_error(
+            transform, lidar_transform
+        )
+
+        # 보정 행렬 계산
+        correction_matrix = self.compute_correction_matrix(calibration_error)
+        
+        self.prev_features = current_features
+        self.prev_points = current_points
+        
+        return correction_matrix
+
+    def depth_completion(self, sparse_depth, rgb_image, superpixel_size=100):
+        """
+        결정론적 가이드 depth completion
+        """
+        # RGB 이미지 과분할
+        superpixels = self.slic_segmentation(rgb_image, superpixel_size)
+        
+        # 슈퍼픽셀 평면 근사화
+        planar_depth = self.approximate_planar_surfaces(
+            sparse_depth, superpixels
+        )
+        
+        # Joint Bilateral Upsampling
+        dense_depth = self.joint_bilateral_upsampling(
+            planar_depth, rgb_image
+        )
+        
+        return dense_depth
+
+    def post_processing(self, depth_map, kernel_size=5):
+        """
+        미스얼라인먼트 강건 필터링
+        """
+        # Median 필터링으로 아티팩트 제거
+        filtered_depth = cv2.medianBlur(depth_map.numpy(), kernel_size)
+        return torch.from_numpy(filtered_depth)
+
+    # Helper methods ----------------------------------------------------------
+    def slic_segmentation(self, image, n_segments=100):
+        from skimage.segmentation import slic
+        
+        # 차원 재구성 (H,W,C) → (C,H,W) → (1,C,H,W)
+        if image.shape[-1] == 3:
+            image = image.permute(2, 0, 1).unsqueeze(0)  # [1,3,512,1408]
+        
+        # 1/4 해상도 처리 (H:512→128, W:1408→352)
+        small_img = F.avg_pool2d(image.float(), kernel_size=4, stride=4)  # [1,3,128,352]
+        
+        # NumPy 변환 (H,W,C) 형태로 조정
+        small_img_np = small_img.squeeze(0).permute(1,2,0).cpu().numpy()  # [128,352,3]
+        
+        # SLIC 분할
+        segments = slic(small_img_np, 
+                    n_segments=n_segments//4,
+                    compactness=10,
+                    sigma=1)
+        
+        # 텐서 변환 및 고해상도 복원
+        segments_tensor = torch.from_numpy(segments).float().to(image.device)
+        segments_upsampled = F.interpolate(segments_tensor.unsqueeze(0).unsqueeze(0), 
+                                        scale_factor=4, 
+                                        mode='nearest').squeeze()  # [512,1408]
+        
+        return segments_upsampled
+
+    def approximate_planar_surfaces(self, depth, superpixels):
+        planar_depth = torch.zeros_like(depth)
+        h, w = depth.shape
+        
+        yy, xx = torch.meshgrid(torch.arange(h, device=depth.device), 
+                            torch.arange(w, device=depth.device),
+                            indexing='ij')
+        coords = torch.stack([xx, yy], dim=-1).float()
+        
+        processed_segments = 0
+        
+        for seg_id in torch.unique(superpixels):
+            mask = (superpixels == seg_id)
+            valid_coords = coords[mask]
+            z_values = depth[mask]
+            
+            # 유효 포인트 필터링
+            valid_mask = z_values > 0
+            if valid_mask.sum() < 3:
+                planar_depth[mask] = 0
+                continue
+                
+            valid_coords = valid_coords[valid_mask]
+            z_values = z_values[valid_mask]
+            
+            # 좌표 정규화
+            mean_xy = valid_coords.mean(dim=0)
+            mean_z = z_values.mean()
+            std_xy = valid_coords.std(dim=0) + 1e-6
+            std_z = z_values.std() + 1e-6
+            
+            points_norm = torch.cat([
+                (valid_coords - mean_xy)/std_xy,
+                (z_values - mean_z).unsqueeze(-1)/std_z
+            ], dim=1)
+            
+            # RANSAC 평면 적합
+            plane_norm = self.ransac_plane_fitting(points_norm)
+            if plane_norm is None:
+                continue
+                
+            # 좌표계 변환
+            a_p, b_p, c_p, d_p = plane_norm
+            A = a_p * std_xy[1] * std_z
+            B = b_p * std_xy[0] * std_z
+            C = c_p * std_xy[0] * std_xy[1]
+            D = -a_p*std_xy[1]*std_z*mean_xy[0] - b_p*std_xy[0]*std_z*mean_xy[1] - c_p*std_xy[0]*std_xy[1]*mean_z + d_p*std_xy[0]*std_xy[1]*std_z
+            
+            # 깊이 계산
+            x = coords[mask][:, 0]
+            y = coords[mask][:, 1]
+            planar_z = (-A*x - B*y - D) / (C + 1e-6)
+            planar_z = torch.clamp(planar_z, min=0.0)
+            
+            # MAD 기반 클램핑
+            z_median = torch.median(planar_z)
+            z_mad = 1.4826 * torch.median(torch.abs(planar_z - z_median))
+            planar_z = torch.clamp(planar_z, 
+                                max=z_median + 3*z_mad, 
+                                min=z_median - 3*z_mad)
+            
+            planar_depth[mask] = planar_z
+            processed_segments += 1
+
+        print(f"처리된 세그먼트 수: {processed_segments}")
+        print(f"최종 깊이 범위: {torch.min(planar_depth)} ~ {torch.max(planar_depth)}")
+        return planar_depth
+
+    def _core_jbu(self, low_res, guide, kernel_size, sigma_range):
+        """JBU 핵심 연산 (저해상도 입력 전용)"""
+        # 입력 차원 검증
+        assert low_res.dim() == 2 and guide.dim() == 3, "Input must be [H,W] and [C,H,W]"
+        
+        # 가이드 이미지 그레이스케일 변환
+        guide_gray = 0.299*guide[0] + 0.587*guide[1] + 0.114*guide[2]
+        
+        # 패딩 계산
+        pad = kernel_size // 2
+        h, w = low_res.shape
+        
+        # 공간 커널 생성
+        grid = torch.arange(-pad, pad+1, device=low_res.device)
+        y, x = torch.meshgrid(grid, grid)
+        spatial_kernel = torch.exp(-(x**2 + y**2)/(2*(kernel_size/3)**2))
+        
+        # Unfold 연산
+        guide_unfold = F.unfold(guide_gray.unsqueeze(0).unsqueeze(0), 
+                            kernel_size=kernel_size, 
+                            padding=pad).squeeze(0)  # [k*k, H*W]
+        
+        low_res_unfold = F.unfold(low_res.unsqueeze(0).unsqueeze(0), 
+                                kernel_size=kernel_size, 
+                                padding=pad).squeeze(0)  # [k*k, H*W]
+        
+        # 범위 커널 계산
+        center_idx = (kernel_size**2) // 2
+        center_values = guide_unfold[center_idx:center_idx+1]  # [1, H*W]
+        range_kernel = torch.exp(-(guide_unfold - center_values)**2/(2*sigma_range**2))
+        
+        # 결합 가중치 계산
+        combined_weights = spatial_kernel.view(-1,1) * range_kernel  # [k*k, H*W]
+        norm = combined_weights.sum(dim=0) + 1e-8
+        
+        # 가중 평균 계산
+        weighted_sum = (low_res_unfold * combined_weights).sum(dim=0)
+        output = weighted_sum / norm
+        
+        return output.view(h, w)  # [H,W]
+
+    def joint_bilateral_upsampling(self, low_res, guide, sigma_spatial=5, sigma_range=0.1):
+        """최적화된 JBU (1/2 해상도 처리 + 고속 복원)"""
+        # 차원 보정
+        if low_res.dim() == 2:
+            low_res = low_res.unsqueeze(0)  # [1,H,W]
+        if guide.dim() == 3 and guide.shape[0] == 3:
+            guide = guide.permute(1,2,0)    # [H,W,C]
+        
+        # 1/2 해상도 다운샘플링
+        low_res_small = F.avg_pool2d(low_res, 2).squeeze(0)  # [H/2,W/2]
+        guide_small = F.avg_pool2d(guide.permute(2,0,1), 2).permute(1,2,0)  # [H/2,W/2,C]
+        
+        # 저해상도 JBU 실행
+        kernel_size = int(3*sigma_spatial)
+        output_small = self._core_jbu(low_res_small, 
+                                    guide_small.permute(2,0,1), 
+                                    kernel_size, 
+                                    sigma_range)
+        
+        # 고해상도 복원
+        return F.interpolate(output_small.unsqueeze(0).unsqueeze(0), 
+                        scale_factor=2, 
+                        mode='bilinear').squeeze()
+    
+    def ransac_plane_fitting(self, points, max_iters=100, threshold=0.3):
+        best_plane = None
+        best_inliers = 0
+        best_dists = None
+        
+        for _ in range(max_iters):
+            # 3개 포인트 샘플링
+            sample_indices = torch.randperm(len(points))[:3]
+            p1, p2, p3 = points[sample_indices]
+            
+            # 평면 방정식 계산
+            v1 = p2 - p1
+            v2 = p3 - p1
+            normal = torch.cross(v1, v2)
+            norm = torch.norm(normal)
+            if norm < 1e-6: continue
+            
+            normal /= norm
+            d = -torch.dot(normal, p1)
+            
+            # 인라이어 계산
+            dists = torch.abs(points @ normal + d)
+            inliers = torch.sum(dists < threshold)
+            
+            if inliers > best_inliers:
+                best_inliers = inliers
+                best_plane = torch.tensor([*normal, d], device=points.device)
+                best_dists = dists  # dists 저장
+        
+        # 최종 인라이어 포인트 재계산
+        if best_plane is not None:
+            final_dists = torch.abs(points @ best_plane[:3] + best_plane[3])
+            inlier_mask = final_dists < threshold
+            return self.fit_plane_svd(points[inlier_mask])
+        return best_plane
+        
+    def fit_plane_svd(self, points):
+        """
+        SVD를 사용하여 포인트 클라우드에 가장 잘 맞는 평면을 찾습니다.
+        
+        Args:
+            points (Tensor): 포인트 클라우드 [N, 3]
+            
+        Returns:
+            Tensor: 평면 방정식 계수 [a, b, c, d], ax + by + cz + d = 0
+        """
+        # 중심점 계산
+        centroid = torch.mean(points, dim=0)
+        
+        # 중심으로 이동
+        centered_points = points - centroid
+        
+        # 공분산 행렬 계산
+        cov = torch.matmul(centered_points.T, centered_points)
+        
+        # SVD 수행
+        try:
+            U, S, Vh = torch.linalg.svd(cov)
+            # 가장 작은 고유값에 해당하는 고유벡터가 법선 벡터
+            normal = U[:, 2]
+        except:
+            # SVD 실패 시 Z축 방향 법선 사용
+            normal = torch.tensor([0., 0., 1.], device=points.device)
+        
+        # 평면 방정식 계수
+        a, b, c = normal
+        d = -torch.dot(normal, centroid)
+        
+        return torch.tensor([a, b, c, d], device=points.device)
+
+
 @PIPELINES.register_module()
 class PointToMultiViewDepth(object):
 
@@ -304,7 +638,6 @@ class PointToMultiViewDepth(object):
     
     def __call__(self, results):
         raw_points_lidar = results['points']
-        
         # points_lidar = image_display.trim_corrs(raw_points_lidar)
         points_lidar = raw_points_lidar.clone()
 
@@ -317,6 +650,7 @@ class PointToMultiViewDepth(object):
             lidar2img = torch.from_numpy(results['lidar2img'][cid]).to(torch.float32)
             lidar2cam = torch.from_numpy(results['extrinsics'][cid]).to(torch.float32)
             cam2img = torch.from_numpy(results['intrinsics'][cid]).to(torch.float32)
+            img = torch.from_numpy(results['img'][cid]).to(torch.float32)
             img_height = results['img'][0].shape[0]
             img_width  =  results['img'][0].shape[1]
            
@@ -333,26 +667,48 @@ class PointToMultiViewDepth(object):
             
             ####### depth image display ######
             depth_gt, gt_uv,gt_z, valid_indices_gt= points2depthmap_gpu(points2img, img_height ,img_width)
-            # lidarOnImage_gt = torch.cat((gt_uv, gt_z.unsqueeze(1)), dim=1)
-            # pts = lidarOnImage_gt.T
-            # dense_depth_img_gt = dense_map_gpu_optimized(lidarOnImage_gt.T , img_width, img_height, 4)
-            # dense_depth_img_gt = dense_depth_img_gt.to(dtype=torch.uint8)
-            # dense_depth_img_color_gt = colormap(dense_depth_img_gt)
+            lidarOnImage_gt = torch.cat((gt_uv, gt_z.unsqueeze(1)), dim=1)
+            pts = lidarOnImage_gt.T
+            dense_depth_img_gt = dense_map_gpu_optimized(pts , img_width, img_height, 4)
+            dense_depth_img_gt = dense_depth_img_gt.to(dtype=torch.uint8)
+            dense_depth_img_color_gt = colormap(dense_depth_img_gt)
 
             depth_mis, uv,z,valid_indices = points2depthmap_gpu(miscalibrated_points2img, img_height ,img_width)
-            # lidarOnImage_mis = torch.cat((uv, z.unsqueeze(1)), dim=1)
-            # # pts = preprocess_points(lidarOnImage_mis.T)
-            # pts_mis = lidarOnImage_mis.T
-            # dense_depth_img_mis = dense_map_gpu_optimized(pts_mis , img_width, img_height, 1)
-            # # dense_depth_img_mis = distance_adaptive_depth_completion(pts , results['img'][0].shape[1], results['img'][0].shape[0], 4)
-            # dense_depth_img_mis = dense_depth_img_mis.to(dtype=torch.uint8)
-            # dense_depth_img_color_mis = colormap(dense_depth_img_mis)
+            lidarOnImage_mis = torch.cat((uv, z.unsqueeze(1)), dim=1)
+            # pts = preprocess_points(lidarOnImage_mis.T)
+            pts_mis = lidarOnImage_mis.T
+            dense_depth_img_mis = dense_map_gpu_optimized(pts_mis , img_width, img_height, 1)
+            # dense_depth_img_mis = distance_adaptive_depth_completion(pts , results['img'][0].shape[1], results['img'][0].shape[0], 4)
+            dense_depth_img_mis = dense_depth_img_mis.to(dtype=torch.uint8)
+            dense_depth_img_color_mis = colormap(dense_depth_img_mis)
             # dense_depth_img_edge_mis = edge_aware_bilateral_filter(pts,dense_depth_img_color_mis_raw,results['img'][0].shape[1], results['img'][0].shape[0], 4)
             # dense_depth_img_edge_mis = dense_depth_img_edge_mis.to(dtype=torch.uint8)
             # dense_depth_img_color_mis = colormap(dense_depth_img_edge_mis)
 
-            dense_depth_img_mis_adv = enhanced_geometric_propagation(depth_mis)
-            dense_depth_img_mis_adv = dense_depth_img_mis_adv.to(dtype=torch.uint8)
+            # 미스캘리브레이션 보정
+            calibration_pipeline = DepthCompletionPipeline()
+            features = calibration_pipeline.extract_features(img)
+            correction_matrix = calibration_pipeline.motion_based_calibration(
+                features, points_lidar[:,:3]
+            )
+            
+            if correction_matrix is not None:
+                # LiDAR 데이터 보정
+                points_lidar = self.apply_correction(
+                    points_lidar, correction_matrix
+                )
+            
+            # Depth Completion
+            dense_depth = calibration_pipeline.depth_completion(
+                depth_mis, 
+                img
+            )
+            
+            # 후처리
+            final_depth = calibration_pipeline.post_processing(dense_depth)
+
+            # dense_depth_img_mis_adv = enhanced_geometric_propagation(depth_mis)
+            dense_depth_img_mis_adv = final_depth.to(dtype=torch.uint8)
             dense_depth_img_color_mis_adv = colormap(dense_depth_img_mis_adv)
 
             # lidar_depth_dense_gt.append(dense_depth_img_color_gt)
@@ -361,51 +717,51 @@ class PointToMultiViewDepth(object):
             lidar_depth_map_gt.append(depth_gt)
             # uvz.append(dense_depth_img_mis)
             
-            # ###### input display ######
-            # img = results['img'][cid]
-            # # 이미지 데이터가 float 타입인 경우 0과 1 사이로 정규화
-            # if img.dtype == np.float32 or img.dtype == np.float64:
-            #     img = (img - img.min()) / (img.max() - img.min())
-            # plt.figure(figsize=(20, 20))
-            # plt.subplot(5,1,1)
-            # plt.imshow(img)
-            # plt.scatter(gt_uv[:, 0], gt_uv[:, 1], c=gt_z, s=0.5)
-            # plt.title("input calibrated display", fontsize=10)
+            ###### input display ######
+            img = results['img'][cid]
+            # 이미지 데이터가 float 타입인 경우 0과 1 사이로 정규화
+            if img.dtype == np.float32 or img.dtype == np.float64:
+                img = (img - img.min()) / (img.max() - img.min())
+            plt.figure(figsize=(20, 20))
+            plt.subplot(5,1,1)
+            plt.imshow(img)
+            plt.scatter(gt_uv[:, 0], gt_uv[:, 1], c=gt_z, s=0.5)
+            plt.title("input calibrated display", fontsize=10)
 
-            # plt.subplot(5,1,2)
-            # plt.imshow(img)
-            # plt.scatter(uv[:, 0], uv[:, 1], c=z, s=0.5)
-            # plt.title("input mis-calibrated display", fontsize=10)
+            plt.subplot(5,1,2)
+            plt.imshow(img)
+            plt.scatter(uv[:, 0], uv[:, 1], c=z, s=0.5)
+            plt.title("input mis-calibrated display", fontsize=10)
 
-            # disp_gt2 = dense_depth_img_color_gt.detach().cpu().numpy()
-            # plt.subplot(5,1,3)
-            # plt.imshow(disp_gt2, cmap='magma_r')
-            # plt.title("gt display", fontsize=10)
+            disp_gt2 = dense_depth_img_color_gt.detach().cpu().numpy()
+            plt.subplot(5,1,3)
+            plt.imshow(disp_gt2, cmap='magma_r')
+            plt.title("gt display", fontsize=10)
+            plt.axis('off')
+
+            disp_mis2 = dense_depth_img_color_mis.detach().cpu().numpy()
+            plt.subplot(5,1,4)
+            plt.imshow(disp_mis2, cmap='magma')
+            plt.title("mis display", fontsize=10)
+            plt.axis('off')
+
+            gt_gray = dense_depth_img_color_mis_adv.detach().cpu().numpy()
+            plt.subplot(5,1,5)
+            plt.imshow(gt_gray, cmap='magma_r')
+            plt.title("other mis display", fontsize=10)
+            plt.axis('off')
+
+            # mis_gray = dense_depth_img_mis.detach().cpu().numpy()
+            # plt.subplot(3,2,6)
+            # plt.imshow(mis_gray, cmap='magma_r')
+            # plt.title("mis gray display", fontsize=10)
             # plt.axis('off')
-
-            # disp_mis2 = dense_depth_img_color_mis.detach().cpu().numpy()
-            # plt.subplot(5,1,4)
-            # plt.imshow(disp_mis2, cmap='magma')
-            # plt.title("mis display", fontsize=10)
-            # plt.axis('off')
-
-            # gt_gray = dense_depth_img_color_mis_adv.detach().cpu().numpy()
-            # plt.subplot(5,1,5)
-            # plt.imshow(gt_gray, cmap='magma_r')
-            # plt.title("other mis display", fontsize=10)
-            # plt.axis('off')
-
-            # # mis_gray = dense_depth_img_mis.detach().cpu().numpy()
-            # # plt.subplot(3,2,6)
-            # # plt.imshow(mis_gray, cmap='magma_r')
-            # # plt.title("mis gray display", fontsize=10)
-            # # plt.axis('off')
             
-            # # 전체 그림 저장
-            # plt.tight_layout()
-            # plt.savefig('load_pipeline.jpg', dpi=300, bbox_inches='tight')
-            # plt.close()
-            # print ("end of print")
+            # 전체 그림 저장
+            plt.tight_layout()
+            plt.savefig('load_pipeline.jpg', dpi=300, bbox_inches='tight')
+            plt.close()
+            print ("end of print")
         
         gt_KT = torch.stack(list_gt_KT)
         gt_KT_3by4 = torch.stack(list_gt_KT_3by4)
@@ -425,6 +781,13 @@ class PointToMultiViewDepth(object):
         results['gt_KT_3by4'] = gt_KT_3by4
 
         return results
+    
+    def apply_correction(self, points, matrix):
+        """보정 행렬 적용"""
+        homog_points = torch.cat([points[:,:3], 
+                                torch.ones(points.size(0),1)], dim=1)
+        corrected = homog_points @ matrix.T
+        return torch.cat([corrected[:,:3], points[:,3:]], dim=1)
     
     # def __call__(self, results):
     #     # CPU에서 처리
