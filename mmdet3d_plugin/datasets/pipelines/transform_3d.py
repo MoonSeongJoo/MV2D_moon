@@ -571,6 +571,10 @@ class ResizeCropFlipImageMono(ResizeCropFlipImage):
         N = len(imgs)
         new_imgs = []
         resize, resize_dims, crop, flip, rotate = self._sample_augmentation()
+
+        # intrinsics_ori 초기화 추가 (이 부분이 핵심)
+        results['intrinsics_ori'] = [intrin.copy() for intrin in results['intrinsics']]  # 추가된 코드
+        
         for i in range(N):
             img = Image.fromarray(np.uint8(imgs[i]))
             # augmentation (resize, crop, horizontal flip, rotate)
@@ -584,11 +588,15 @@ class ResizeCropFlipImageMono(ResizeCropFlipImage):
                 rotate=rotate,
             )
             new_imgs.append(np.array(img).astype(np.float32))
+            results['intrinsics_ori'][i][:3, :3] = results['intrinsics'][i][:3, :3].copy()
             results['intrinsics'][i][:3, :3] = ida_mat @ results['intrinsics'][i][:3, :3]
 
         results["img"] = new_imgs
         results['lidar2img'] = [results['intrinsics'][i] @ results['extrinsics'][i].T for i in
                                 range(len(results['extrinsics']))]
+        results['lidar2img_ori'] = [intrin.copy() for intrin in results['lidar2img']]  # 추가된 코드
+        results['lidar2img_ori'] = [results['intrinsics_ori'][i] @ results['extrinsics'][i].T for i in
+                        range(len(results['extrinsics']))]
 
         if self.with_bbox_2d:
             gt_bboxes_2d = results['gt_bboxes_2d']

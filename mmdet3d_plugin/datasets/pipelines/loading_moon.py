@@ -113,6 +113,43 @@ class LoadMultiViewImageFromFiles_moon(object):
             mean=np.zeros(num_channels, dtype=np.float32),
             std=np.ones(num_channels, dtype=np.float32),
             to_rgb=False)
+        
+        # 수정된 코드 (float64 변환 추가)
+        results['img_ori'] = [arr.astype(np.float64) for arr in results['img']]
+
+        # ############ input image display ###############
+        # plt.figure(figsize=(20, 20))
+        # plt.subplot(1,1,1)
+
+        # # Get the image data
+        # img_to_display = results['img_ori'][0].copy()  # Make a copy to avoid modifying original
+        # img_to_display = img_to_display[:, :, ::-1] 
+
+        # # Print debug info (optional)
+        # print(f"Image shape: {img_to_display.shape}, dtype: {img_to_display.dtype}")
+        # print(f"Image min: {img_to_display.min()}, max: {img_to_display.max()}")
+
+        # # Properly normalize the float32 image for display
+        # if img_to_display.max() > 1.0:
+        #     # Likely in range 0-255, normalize to 0-1
+        #     img_to_display = img_to_display / 255.0
+        # else:
+        #     # If already in 0-1 range or has negative values, normalize properly
+        #     img_to_display = (img_to_display - img_to_display.min()) / (img_to_display.max() - img_to_display.min() + 1e-8)
+
+        # # Ensure values are clipped to valid range
+        # img_to_display = np.clip(img_to_display, 0, 1)
+
+        # # Use explicit parameters for reliable display
+        # plt.imshow(img_to_display)
+        # plt.title("image only", fontsize=10)
+
+        # plt.tight_layout()
+        # plt.savefig('load_pipeline_image_only.jpg', dpi=300, bbox_inches='tight')
+        # plt.close()
+        # print("end of print")
+        # ###################################################
+        
         return results
 
     def __repr__(self):
@@ -639,20 +676,40 @@ class PointToMultiViewDepth(object):
     def __call__(self, results):
         raw_points_lidar = results['points']
         # points_lidar = image_display.trim_corrs(raw_points_lidar)
-        points_lidar = raw_points_lidar.clone()
+        points_lidar = raw_points_lidar.tensor[:, :3].clone().to(dtype=torch.float32)
 
         point2img_gt =[]
         lidar_depth_map_mis=[]
         lidar_depth_map_gt =[]
         list_gt_KT ,list_mis_RT ,list_mis_KT = [] ,[] ,[]
         list_gt_KT_3by4 =[]
+        img_ori =[]
         for cid in range(len(results['lidar2img'])):
-            lidar2img = torch.from_numpy(results['lidar2img'][cid]).to(torch.float32)
-            lidar2cam = torch.from_numpy(results['extrinsics'][cid]).to(torch.float32)
-            cam2img = torch.from_numpy(results['intrinsics'][cid]).to(torch.float32)
-            img = torch.from_numpy(results['img'][cid]).to(torch.float32)
-            img_height = results['img'][0].shape[0]
-            img_width  =  results['img'][0].shape[1]
+            lidar2img = torch.from_numpy(results['lidar2img'][cid]).to(dtype=torch.float32)
+            lidar2cam = torch.from_numpy(results['extrinsics'][cid]).to(dtype=torch.float32)
+            cam2img = torch.from_numpy(results['intrinsics'][cid]).to(dtype=torch.float32)
+            
+            raw_img_np = results['img_ori'][cid]
+            img_bgrtorgb = raw_img_np[:, :, ::-1].copy()
+
+            aug_img_np = results['img'][cid]
+            aug_img_bgrtorgb = aug_img_np[:, :, ::-1].copy()
+                         
+            img_height = results['img_ori'][0].shape[0]
+            img_width  = results['img_ori'][0].shape[1]
+
+            img_height_aug = results['img'][0].shape[0]
+            img_width_aug  = results['img'][0].shape[1]
+            # resized_img = cv2.resize(
+            #     img_bgrtorgb, 
+            #     (img_width, img_height),  # (width, height) 순서
+            #     interpolation=cv2.INTER_LINEAR  # 기본값
+            # )
+            img_to_display = img_bgrtorgb / 255.0
+            aug_img_to_display = aug_img_bgrtorgb / 255.0
+            
+            img = torch.from_numpy(img_to_display).to(dtype=torch.float32)
+            aug_img = torch.from_numpy(aug_img_to_display).to(dtype=torch.float32)
            
             # points2img = add_calibration_adv(lidar2img , points_lidar)
             points2img , KT_ori  = add_calibration_adv2(lidar2cam ,cam2img, points_lidar)
@@ -664,6 +721,7 @@ class PointToMultiViewDepth(object):
             list_gt_KT.append(lidar2img)
             list_gt_KT_3by4.append(lidar2img_original)
             list_mis_KT.append(lidar2img_mis)
+            img_ori.append(img)
             
             ####### depth image display ######
             depth_gt, gt_uv,gt_z, valid_indices_gt= points2depthmap_gpu(points2img, img_height ,img_width)
@@ -677,7 +735,7 @@ class PointToMultiViewDepth(object):
             lidarOnImage_mis = torch.cat((uv, z.unsqueeze(1)), dim=1)
             # pts = preprocess_points(lidarOnImage_mis.T)
             pts_mis = lidarOnImage_mis.T
-            dense_depth_img_mis = dense_map_gpu_optimized(pts_mis , img_width, img_height, 1)
+            dense_depth_img_mis = dense_map_gpu_optimized(pts_mis , img_width, img_height, 2)
             # dense_depth_img_mis = distance_adaptive_depth_completion(pts , results['img'][0].shape[1], results['img'][0].shape[0], 4)
             dense_depth_img_mis = dense_depth_img_mis.to(dtype=torch.uint8)
             dense_depth_img_color_mis = colormap(dense_depth_img_mis)
@@ -685,84 +743,86 @@ class PointToMultiViewDepth(object):
             # dense_depth_img_edge_mis = dense_depth_img_edge_mis.to(dtype=torch.uint8)
             # dense_depth_img_color_mis = colormap(dense_depth_img_edge_mis)
 
-            # 미스캘리브레이션 보정
-            calibration_pipeline = DepthCompletionPipeline()
-            features = calibration_pipeline.extract_features(img)
-            correction_matrix = calibration_pipeline.motion_based_calibration(
-                features, points_lidar[:,:3]
-            )
+            # # 미스캘리브레이션 보정
+            # calibration_pipeline = DepthCompletionPipeline()
+            # features = calibration_pipeline.extract_features(img)
+            # correction_matrix = calibration_pipeline.motion_based_calibration(
+            #     features, points_lidar[:,:3]
+            # )
             
-            if correction_matrix is not None:
-                # LiDAR 데이터 보정
-                points_lidar = self.apply_correction(
-                    points_lidar, correction_matrix
-                )
+            # if correction_matrix is not None:
+            #     # LiDAR 데이터 보정
+            #     points_lidar = self.apply_correction(
+            #         points_lidar, correction_matrix
+            #     )
             
-            # Depth Completion
-            dense_depth = calibration_pipeline.depth_completion(
-                depth_mis, 
-                img
-            )
+            # # Depth Completion
+            # dense_depth = calibration_pipeline.depth_completion(
+            #     depth_mis, 
+            #     img
+            # )
             
-            # 후처리
-            final_depth = calibration_pipeline.post_processing(dense_depth)
+            # # 후처리
+            # final_depth = calibration_pipeline.post_processing(dense_depth)
 
-            # dense_depth_img_mis_adv = enhanced_geometric_propagation(depth_mis)
-            dense_depth_img_mis_adv = final_depth.to(dtype=torch.uint8)
-            dense_depth_img_color_mis_adv = colormap(dense_depth_img_mis_adv)
+            # # dense_depth_img_mis_adv = enhanced_geometric_propagation(depth_mis)
+            # dense_depth_img_mis_adv = final_depth.to(dtype=torch.uint8)
+            # dense_depth_img_color_mis_adv = colormap(dense_depth_img_mis_adv)
 
             # lidar_depth_dense_gt.append(dense_depth_img_color_gt)
-            lidar_depth_map_mis.append(dense_depth_img_color_mis_adv)
+            lidar_depth_map_mis.append(dense_depth_img_color_mis)
             # gt_uvz.append(dense_depth_img_gt)
             lidar_depth_map_gt.append(depth_gt)
             # uvz.append(dense_depth_img_mis)
             
-            ###### input display ######
-            img = results['img'][cid]
-            # 이미지 데이터가 float 타입인 경우 0과 1 사이로 정규화
-            if img.dtype == np.float32 or img.dtype == np.float64:
-                img = (img - img.min()) / (img.max() - img.min())
-            plt.figure(figsize=(20, 20))
-            plt.subplot(5,1,1)
-            plt.imshow(img)
-            plt.scatter(gt_uv[:, 0], gt_uv[:, 1], c=gt_z, s=0.5)
-            plt.title("input calibrated display", fontsize=10)
+            # ###### input display ######
+            # img_np = img.detach().cpu().numpy()
+            # aug_img_np = img.detach().cpu().numpy()
+            # # 이미지 데이터가 float 타입인 경우 0과 1 사이로 정규화
+            # # if img.dtype == np.float32 or img.dtype == np.float64:
+            # #     img = (img - img.min()) / (img.max() - img.min())
+            # plt.figure(figsize=(20, 20))
+            # plt.subplot(4,1,1)
+            # plt.imshow(img_np)
+            # plt.scatter(gt_uv[:, 0], gt_uv[:, 1], c=gt_z, s=0.5)
+            # plt.title("input calibrated display", fontsize=10)
 
-            plt.subplot(5,1,2)
-            plt.imshow(img)
-            plt.scatter(uv[:, 0], uv[:, 1], c=z, s=0.5)
-            plt.title("input mis-calibrated display", fontsize=10)
+            # plt.subplot(4,1,2)
+            # plt.imshow(aug_img_np)
+            # plt.scatter(uv[:, 0], uv[:, 1], c=z, s=0.5)
+            # plt.title("input mis-calibrated display", fontsize=10)
 
-            disp_gt2 = dense_depth_img_color_gt.detach().cpu().numpy()
-            plt.subplot(5,1,3)
-            plt.imshow(disp_gt2, cmap='magma_r')
-            plt.title("gt display", fontsize=10)
-            plt.axis('off')
-
-            disp_mis2 = dense_depth_img_color_mis.detach().cpu().numpy()
-            plt.subplot(5,1,4)
-            plt.imshow(disp_mis2, cmap='magma')
-            plt.title("mis display", fontsize=10)
-            plt.axis('off')
-
-            gt_gray = dense_depth_img_color_mis_adv.detach().cpu().numpy()
-            plt.subplot(5,1,5)
-            plt.imshow(gt_gray, cmap='magma_r')
-            plt.title("other mis display", fontsize=10)
-            plt.axis('off')
-
-            # mis_gray = dense_depth_img_mis.detach().cpu().numpy()
-            # plt.subplot(3,2,6)
-            # plt.imshow(mis_gray, cmap='magma_r')
-            # plt.title("mis gray display", fontsize=10)
+            # disp_gt2 = dense_depth_img_color_gt.detach().cpu().numpy()
+            # plt.subplot(4,1,3)
+            # plt.imshow(disp_gt2, cmap='magma_r')
+            # plt.title("gt display", fontsize=10)
             # plt.axis('off')
+
+            # disp_mis2 = dense_depth_img_color_mis.detach().cpu().numpy()
+            # plt.subplot(4,1,4)
+            # plt.imshow(disp_mis2, cmap='magma')
+            # plt.title("mis display", fontsize=10)
+            # plt.axis('off')
+
+            # # gt_gray = dense_depth_img_color_mis_adv.detach().cpu().numpy()
+            # # plt.subplot(5,1,5)
+            # # plt.imshow(gt_gray, cmap='magma_r')
+            # # plt.title("other mis display", fontsize=10)
+            # # plt.axis('off')
+
+            # # # mis_gray = dense_depth_img_mis.detach().cpu().numpy()
+            # # # plt.subplot(3,2,6)
+            # # # plt.imshow(mis_gray, cmap='magma_r')
+            # # # plt.title("mis gray display", fontsize=10)
+            # # # plt.axis('off')
             
-            # 전체 그림 저장
-            plt.tight_layout()
-            plt.savefig('load_pipeline.jpg', dpi=300, bbox_inches='tight')
-            plt.close()
-            print ("end of print")
+            # # 전체 그림 저장
+            # plt.tight_layout()
+            # plt.savefig('load_pipeline.jpg', dpi=300, bbox_inches='tight')
+            # plt.close()
+            # print ("end of print")
         
+        img_original = torch.stack(img_ori)
         gt_KT = torch.stack(list_gt_KT)
         gt_KT_3by4 = torch.stack(list_gt_KT_3by4)
         mis_RT = torch.stack(list_mis_RT)
@@ -770,9 +830,12 @@ class PointToMultiViewDepth(object):
         lidar_depth_mis = torch.stack(lidar_depth_map_mis)
         lidar_depth_gt = torch.stack(lidar_depth_map_gt)
         lidar_depth_mis = lidar_depth_mis.permute(0, 3, 1, 2)
+        img_original = img_original.permute(0,3,1,2)
         # lidar_depth_gt = F.interpolate(lidar_depth_gt, size=[192, 640], mode="bilinear") # lidar 2d depth map input [192,640,1]
         # lidar_depth_mis = F.interpolate(lidar_depth_mis, size=[192, 640], mode="bilinear") 
+        # img_original = F.interpolate(img_original, size=[img_height_aug, img_width_aug], mode="bilinear") 
 
+        results['img_original']  = img_original
         results['lidar_depth_gt']  = lidar_depth_gt
         results['lidar_depth_mis'] = lidar_depth_mis
         results['mis_KT'] = mis_KT

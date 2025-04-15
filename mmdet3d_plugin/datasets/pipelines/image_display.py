@@ -244,7 +244,8 @@ def add_calibration_adv(lidar2img, points_lidar):
     return points_img
 
 def add_calibration_adv2 (extrinsic, intrinsic, points_lidar) :
-    lidar_points = points_lidar.tensor[:, :3]
+    # lidar_points = points_lidar.tensor[:, :3]
+    lidar_points = points_lidar
     lidar_points_homo = torch.cat([lidar_points, torch.ones_like(lidar_points[:, :1])], dim=1)
     KT = intrinsic @ extrinsic.T 
     points_img = (KT @ lidar_points_homo.T).T
@@ -302,7 +303,8 @@ def add_mis_calibration_adv(lidar2img ,extrinsic, homo_intrinsic, points_lidar, 
     RT_mis = extrinsic @ extrinsic_perturb
 
     # 라이다 포인트 동차 좌표 변환 및 투영
-    points_tensor = points_lidar.tensor[:, :3]
+    # points_tensor = points_lidar.tensor[:, :3]
+    points_tensor = points_lidar
     # 라이다 축 반전 (테스트용)
     # points_tensor = points_tensor[:, [1, 2, 0]]  # x ↔ z 교환
     # points_tensor[:, 1] *= -1                  # y축 반전
@@ -632,8 +634,8 @@ def dense_map_gpu_optimized(Pts, n, m, grid):
     mY = torch.full((m, n), float('inf'), dtype=torch.float32, device=device)
     mD = torch.zeros((m, n), dtype=torch.float32, device=device)
 
-    mX_idx = Pts[1].clone().detach().to(dtype=torch.int64, device=device)
-    mY_idx = Pts[0].clone().detach().to(dtype=torch.int64, device=device)
+    mX_idx = Pts[1].clone().detach().to(dtype=torch.int32, device=device)
+    mY_idx = Pts[0].clone().detach().to(dtype=torch.int32, device=device)
 
     mX[mX_idx, mY_idx] = Pts[0] - torch.round(Pts[0])
     mY[mX_idx, mY_idx] = Pts[1] - torch.round(Pts[1])
@@ -831,7 +833,7 @@ def colormap(disp):
     colormapped_im = (mapper.to_rgba(disp_np)[:, :, :3])
     # return colormapped_im.transpose(2, 0, 1)
     # colormapped_tensor = torch.from_numpy(colormapped_im).permute(2, 0, 1).to(dtype=torch.float32)
-    colormapped_tensor = torch.from_numpy(colormapped_im)
+    colormapped_tensor = torch.from_numpy(colormapped_im).to(dtype=torch.float32)
     return colormapped_tensor
 
 

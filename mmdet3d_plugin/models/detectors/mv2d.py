@@ -152,6 +152,7 @@ class MV2D(Base3DDetector):
     
     def forward_train(self,
                       img,
+                      img_original,
                       img_metas,
                       lidar_depth_gt,
                       lidar_depth_mis,
@@ -172,18 +173,18 @@ class MV2D(Base3DDetector):
         img = img.view(batch_size * num_views, *img.shape[2:])
         assert batch_size == 1, 'only support batch_size 1 now'
         
-        img_ori = img
+        img_ori = img_original.view(batch_size * num_views, *img_original.shape[2:])
         mis_KT = mis_KT.view(batch_size * num_views, *mis_KT.shape[2:])
         mis_Rt = mis_Rt.view(batch_size * num_views, *mis_Rt.shape[2:])
         gt_KT = gt_KT.view(batch_size * num_views, *gt_KT.shape[2:])
         gt_KT_3by4 = gt_KT_3by4.view(batch_size * num_views, *gt_KT_3by4.shape[2:])
     
         # lidar_depth_gt = lidar_depth_gt.view(batch_size * num_views, *lidar_depth_gt.shape[2:]).to(torch.float32) # uvz_gt
-        lidar_depth_mis = lidar_depth_mis.view(batch_size * num_views, *lidar_depth_mis.shape[2:]).to(torch.float32)
+        lidar_depth_mis = lidar_depth_mis.view(batch_size * num_views, *lidar_depth_mis.shape[2:])
         
         if self.use_grid_mask:
             img = self.grid_mask(img)
-            lidar_depth_mis_resized = self.grid_mask(lidar_depth_mis)
+            lidar_depth_mis_resized = self.grid_mask(lidar_depth_mis.to(torch.float32))
             # img_resized = self.grid_mask(img_resized)
 
         # get pseudo monocular input

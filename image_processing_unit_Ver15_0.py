@@ -16,6 +16,51 @@ from nuscenes.nuscenes import NuScenes
 from nuscenes.utils.data_classes import LidarPointCloud
 from nuscenes.utils.geometry_utils import view_points
 
+def visualize_bboxes(img_tensor, proposal_list, output_path='output.png', dpi=150):
+    """
+    6개 카메라 뷰에 2D 바운딩 박스 시각화 후 PNG 저장
+    
+    Args:
+        img_tensor (Tensor): [6, 3, H, W] 형태의 이미지 텐서
+        proposal_list (list): 카메라별 바운딩 박스 리스트
+        output_path (str): 출력 파일 경로
+        dpi (int): 이미지 해상도 (기본 150)
+    """
+    num_cams = img_tensor.shape[0]
+    fig, axs = plt.subplots(2, 3, figsize=(24, 12), dpi=dpi)
+    
+    for cam_idx in range(num_cams):
+        row = cam_idx // 3
+        col = cam_idx % 3
+        
+        # 이미지 텐서 처리
+        img = img_tensor[cam_idx].permute(1, 2, 0).cpu().numpy()
+        if img.max() <= 1.0:  # 정규화 여부 확인
+            img = (img * 255).astype(np.uint8)
+        
+        # 서브플롯 설정
+        ax = axs[row, col]
+        ax.imshow(img)
+        ax.set_title(f'Camera {cam_idx}', fontsize=8)
+        ax.axis('off')
+        
+        # 바운딩 박스 그리기
+        if cam_idx < len(proposal_list):
+            for bbox in proposal_list[cam_idx]:
+                x1, y1, x2, y2 ,_,_ = bbox.cpu()
+                width = x2 - x1
+                height = y2 - y1
+                rect = plt.Rectangle(
+                    (x1, y1), width, height,
+                    linewidth=1.5, edgecolor='lime', facecolor='none'
+                )
+                ax.add_patch(rect)
+    
+    plt.tight_layout()
+    plt.savefig(output_path, bbox_inches='tight', pad_inches=0.1)
+    plt.close()  # 메모리 해제
+
+
 def display_depth_maps(imgs, mis_calibrated_depth_map, sbs_img):
     # """
     # 이미지 위에 depth map과 mis_calibrated depth map을 오버레이하여 디스플레이하는 함수
@@ -31,32 +76,32 @@ def display_depth_maps(imgs, mis_calibrated_depth_map, sbs_img):
         # depth_gt_np = np.transpose(depth_gt_np,(1,2,0))
         depth_mis_np = np.transpose(depth_mis_np,(1,2,0))
         sbs_img_np = np.transpose(sbs_img_np,(1,2,0))
-        # 이미지 데이터가 float 타입인 경우 0과 1 사이로 정규화
-        if img_np.dtype == np.float32 or img_np.dtype == np.float64:
-            img_np = (img_np - img_np.min()) / (img_np.max() - img_np.min())
-            # depth_gt_np = (depth_gt_np - depth_gt_np.min()) / (depth_gt_np.max() - depth_gt_np.min())
-            depth_mis_np = (depth_mis_np - depth_mis_np.min()) / (depth_mis_np.max() - depth_mis_np.min())
-            sbs_img_np = (sbs_img_np - sbs_img_np.min()) / (sbs_img_np.max() - sbs_img_np.min())
+        # # 이미지 데이터가 float 타입인 경우 0과 1 사이로 정규화
+        # if img_np.dtype == np.float32 or img_np.dtype == np.float64:
+        #     img_np = (img_np - img_np.min()) / (img_np.max() - img_np.min())
+        #     # depth_gt_np = (depth_gt_np - depth_gt_np.min()) / (depth_gt_np.max() - depth_gt_np.min())
+        #     depth_mis_np = (depth_mis_np - depth_mis_np.min()) / (depth_mis_np.max() - depth_mis_np.min())
+        #     sbs_img_np = (sbs_img_np - sbs_img_np.min()) / (sbs_img_np.max() - sbs_img_np.min())
 
         # input display
         ####### display input signal #########        
-        plt.figure(figsize=(20, 20))
-        plt.subplot(311)
-        plt.imshow(img_np)
-        plt.title("camera_input", fontsize=15)
-        plt.axis('off')
+        # plt.figure(figsize=(20, 20))
+        # plt.subplot(311)
+        # plt.imshow(img_np)
+        # plt.title("camera_input", fontsize=15)
+        # plt.axis('off')
 
         # plt.subplot(312)
         # plt.imshow( depth_gt_np, cmap='magma')
         # plt.title("calibrated_lidar_input", fontsize=15)
         # plt.axis('off') 
 
-        plt.subplot(312)
-        plt.imshow( depth_mis_np, cmap='magma')
-        plt.title("mis-calibrated_lidar_input", fontsize=15)
-        plt.axis('off')
+        # plt.subplot(312)
+        # plt.imshow( depth_mis_np, cmap='magma')
+        # plt.title("mis-calibrated_lidar_input", fontsize=15)
+        # plt.axis('off')
 
-        plt.subplot(313)
+        plt.subplot(111)
         plt.imshow( sbs_img_np)
         plt.title("sbs_img_input", fontsize=15)
         plt.axis('off')
@@ -2534,17 +2579,17 @@ def denormalize_points(normal_points, z_min=None, z_max=None):
     denorm_points = normal_points.clone()
     
     # U 좌표 복원: [0.5~1.5) → [0~640)
-    denorm_points[:,:, 0] = (denorm_points[:,:, 0] - 0.5) * 1280
+    denorm_points[... , 0] = (denorm_points[..., 0] - 0.5) * 1280
     
     # V 좌표 복원: [0~1) → [0~192)
-    denorm_points[:,:, 1] = denorm_points[:,:, 1] * 192
+    denorm_points[..., 1] = denorm_points[..., 1] * 192
     
     # Z 좌표 복원
     if z_min is not None and z_max is not None:
         z_range = z_max - z_min
-        denorm_points[:,:, 2] = denorm_points[:,:, 2] * z_range + z_min
+        denorm_points[..., 2] = denorm_points[..., 2] * z_range + z_min
     else:  # 기본 범위 사용 (0~80)
-        denorm_points[:,:, 2] = denorm_points[:,:, 2] * 80
+        denorm_points[..., 2] = denorm_points[..., 2] * 80
         
     return denorm_points
 

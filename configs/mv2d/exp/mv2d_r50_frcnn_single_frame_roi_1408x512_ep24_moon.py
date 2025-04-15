@@ -156,7 +156,7 @@ model = dict(
 )
 
 data = dict(
-    workers_per_gpu=1,
+    workers_per_gpu=8,
 )
 
 optimizer = dict(
