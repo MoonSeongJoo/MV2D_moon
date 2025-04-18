@@ -114,8 +114,8 @@ class LoadMultiViewImageFromFiles_moon(object):
             std=np.ones(num_channels, dtype=np.float32),
             to_rgb=False)
         
-        # 수정된 코드 (float64 변환 추가)
-        results['img_ori'] = [arr.astype(np.float64) for arr in results['img']]
+        # # 수정된 코드 (float32 변환 추가)
+        # results['img_ori'] = [arr.astype(np.float32) for arr in results['img']]
 
         # ############ input image display ###############
         # plt.figure(figsize=(20, 20))
@@ -689,27 +689,27 @@ class PointToMultiViewDepth(object):
             lidar2cam = torch.from_numpy(results['extrinsics'][cid]).to(dtype=torch.float32)
             cam2img = torch.from_numpy(results['intrinsics'][cid]).to(dtype=torch.float32)
             
-            raw_img_np = results['img_ori'][cid]
-            img_bgrtorgb = raw_img_np[:, :, ::-1].copy()
+            # raw_img_np = results['img'][cid]
+            # img_bgrtorgb = raw_img_np[:, :, ::-1].copy()
 
-            aug_img_np = results['img'][cid]
-            aug_img_bgrtorgb = aug_img_np[:, :, ::-1].copy()
+            # aug_img_np = results['img'][cid]
+            # aug_img_bgrtorgb = aug_img_np[:, :, ::-1].copy()
                          
-            img_height = results['img_ori'][0].shape[0]
-            img_width  = results['img_ori'][0].shape[1]
+            img_height = results['img'][0].shape[0]
+            img_width  = results['img'][0].shape[1]
 
-            img_height_aug = results['img'][0].shape[0]
-            img_width_aug  = results['img'][0].shape[1]
+            # img_height_aug = results['img'][0].shape[0]
+            # img_width_aug  = results['img'][0].shape[1]
             # resized_img = cv2.resize(
             #     img_bgrtorgb, 
             #     (img_width, img_height),  # (width, height) 순서
             #     interpolation=cv2.INTER_LINEAR  # 기본값
             # )
-            img_to_display = img_bgrtorgb / 255.0
-            aug_img_to_display = aug_img_bgrtorgb / 255.0
+            # img_to_display = img_bgrtorgb / 255.0
+            # aug_img_to_display = aug_img_bgrtorgb / 255.0
             
-            img = torch.from_numpy(img_to_display).to(dtype=torch.float32)
-            aug_img = torch.from_numpy(aug_img_to_display).to(dtype=torch.float32)
+            # img = torch.from_numpy(img_to_display).to(dtype=torch.float32)
+            # aug_img = torch.from_numpy(aug_img_to_display).to(dtype=torch.float32)
            
             # points2img = add_calibration_adv(lidar2img , points_lidar)
             points2img , KT_ori  = add_calibration_adv2(lidar2cam ,cam2img, points_lidar)
@@ -721,24 +721,24 @@ class PointToMultiViewDepth(object):
             list_gt_KT.append(lidar2img)
             list_gt_KT_3by4.append(lidar2img_original)
             list_mis_KT.append(lidar2img_mis)
-            img_ori.append(img)
+            # img_ori.append(img)
             
             ####### depth image display ######
             depth_gt, gt_uv,gt_z, valid_indices_gt= points2depthmap_gpu(points2img, img_height ,img_width)
-            lidarOnImage_gt = torch.cat((gt_uv, gt_z.unsqueeze(1)), dim=1)
-            pts = lidarOnImage_gt.T
-            dense_depth_img_gt = dense_map_gpu_optimized(pts , img_width, img_height, 4)
-            dense_depth_img_gt = dense_depth_img_gt.to(dtype=torch.uint8)
-            dense_depth_img_color_gt = colormap(dense_depth_img_gt)
+            # lidarOnImage_gt = torch.cat((gt_uv, gt_z.unsqueeze(1)), dim=1)
+            # pts = lidarOnImage_gt.T
+            # dense_depth_img_gt = dense_map_gpu_optimized(pts , img_width, img_height, 4)
+            # dense_depth_img_gt = dense_depth_img_gt.to(dtype=torch.uint8)
+            # dense_depth_img_color_gt = colormap(dense_depth_img_gt)
 
             depth_mis, uv,z,valid_indices = points2depthmap_gpu(miscalibrated_points2img, img_height ,img_width)
-            lidarOnImage_mis = torch.cat((uv, z.unsqueeze(1)), dim=1)
-            # pts = preprocess_points(lidarOnImage_mis.T)
-            pts_mis = lidarOnImage_mis.T
-            dense_depth_img_mis = dense_map_gpu_optimized(pts_mis , img_width, img_height, 2)
-            # dense_depth_img_mis = distance_adaptive_depth_completion(pts , results['img'][0].shape[1], results['img'][0].shape[0], 4)
-            dense_depth_img_mis = dense_depth_img_mis.to(dtype=torch.uint8)
-            dense_depth_img_color_mis = colormap(dense_depth_img_mis)
+            # lidarOnImage_mis = torch.cat((uv, z.unsqueeze(1)), dim=1)
+            # # pts = preprocess_points(lidarOnImage_mis.T)
+            # pts_mis = lidarOnImage_mis.T
+            # dense_depth_img_mis = dense_map_gpu_optimized(pts_mis , img_width, img_height, 4)
+            # # dense_depth_img_mis = distance_adaptive_depth_completion(pts , results['img'][0].shape[1], results['img'][0].shape[0], 4)
+            # dense_depth_img_mis = dense_depth_img_mis.to(dtype=torch.uint8)
+            # dense_depth_img_color_mis = colormap(dense_depth_img_mis)
             # dense_depth_img_edge_mis = edge_aware_bilateral_filter(pts,dense_depth_img_color_mis_raw,results['img'][0].shape[1], results['img'][0].shape[0], 4)
             # dense_depth_img_edge_mis = dense_depth_img_edge_mis.to(dtype=torch.uint8)
             # dense_depth_img_color_mis = colormap(dense_depth_img_edge_mis)
@@ -770,14 +770,14 @@ class PointToMultiViewDepth(object):
             # dense_depth_img_color_mis_adv = colormap(dense_depth_img_mis_adv)
 
             # lidar_depth_dense_gt.append(dense_depth_img_color_gt)
-            lidar_depth_map_mis.append(dense_depth_img_color_mis)
+            lidar_depth_map_mis.append(depth_mis)
             # gt_uvz.append(dense_depth_img_gt)
             lidar_depth_map_gt.append(depth_gt)
             # uvz.append(dense_depth_img_mis)
             
             # ###### input display ######
             # img_np = img.detach().cpu().numpy()
-            # aug_img_np = img.detach().cpu().numpy()
+            # aug_img_np = aug_img.detach().cpu().numpy()
             # # 이미지 데이터가 float 타입인 경우 0과 1 사이로 정규화
             # # if img.dtype == np.float32 or img.dtype == np.float64:
             # #     img = (img - img.min()) / (img.max() - img.min())
@@ -794,7 +794,7 @@ class PointToMultiViewDepth(object):
 
             # disp_gt2 = dense_depth_img_color_gt.detach().cpu().numpy()
             # plt.subplot(4,1,3)
-            # plt.imshow(disp_gt2, cmap='magma_r')
+            # plt.imshow(disp_gt2, cmap='magma')
             # plt.title("gt display", fontsize=10)
             # plt.axis('off')
 
@@ -822,20 +822,20 @@ class PointToMultiViewDepth(object):
             # plt.close()
             # print ("end of print")
         
-        img_original = torch.stack(img_ori)
+        # img_original = torch.stack(img_ori)
         gt_KT = torch.stack(list_gt_KT)
         gt_KT_3by4 = torch.stack(list_gt_KT_3by4)
         mis_RT = torch.stack(list_mis_RT)
         mis_KT = torch.stack(list_mis_KT)
         lidar_depth_mis = torch.stack(lidar_depth_map_mis)
         lidar_depth_gt = torch.stack(lidar_depth_map_gt)
-        lidar_depth_mis = lidar_depth_mis.permute(0, 3, 1, 2)
-        img_original = img_original.permute(0,3,1,2)
+        # lidar_depth_mis = lidar_depth_mis.permute(0, 3, 1, 2)
+        # img_original = img_original.permute(0,3,1,2)
         # lidar_depth_gt = F.interpolate(lidar_depth_gt, size=[192, 640], mode="bilinear") # lidar 2d depth map input [192,640,1]
         # lidar_depth_mis = F.interpolate(lidar_depth_mis, size=[192, 640], mode="bilinear") 
         # img_original = F.interpolate(img_original, size=[img_height_aug, img_width_aug], mode="bilinear") 
 
-        results['img_original']  = img_original
+        # results['img_original']  = img_original
         results['lidar_depth_gt']  = lidar_depth_gt
         results['lidar_depth_mis'] = lidar_depth_mis
         results['mis_KT'] = mis_KT

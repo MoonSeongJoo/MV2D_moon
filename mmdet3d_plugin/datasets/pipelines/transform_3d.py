@@ -138,6 +138,10 @@ class PadMultiViewImage(object):
         assert size is None or size_divisor is None
 
     def _pad_img(self, results):
+        # import matplotlib.pyplot as plt
+        # # 1. 패딩 전 원본 이미지 저장 (CHW 형식)
+        # original_imgs = [img.copy() for img in results['img']]
+        
         """Pad images according to ``self.size``."""
         if self.size is not None:
             padded_img = [mmcv.impad(
@@ -150,6 +154,39 @@ class PadMultiViewImage(object):
         results['pad_shape'] = [img.shape for img in padded_img]
         results['pad_fixed_size'] = self.size
         results['pad_size_divisor'] = self.size_divisor
+
+        # # 4. 디노말라이제이션 파라미터 (config에서 가져옴)
+        # mean = np.array([123.675, 116.28, 103.53], dtype=np.float32)
+        # std = np.array([58.395, 57.12, 57.375], dtype=np.float32)
+
+        # # 5. 카메라별 시각화
+        # for cam_idx, (orig, pad) in enumerate(zip(original_imgs, padded_img)):
+        #     # CHW -> HWC 변환 및 디노말라이제이션
+        #     def process_img(img):
+        #         if img.shape[-1] == 3:  # HWC → CHW 변환
+        #             img = img.transpose(2, 0, 1)
+        #         denorm = img * std[:, None, None] + mean[:, None, None]
+        #         denorm = denorm.transpose(1, 2, 0)  # HWC
+        #         return np.clip(denorm, 0, 255).astype(np.uint8)
+
+        #     orig_denorm = process_img(orig)
+        #     pad_denorm = process_img(pad)
+
+        #     # 시각화
+        #     plt.figure(figsize=(15, 5))
+        #     plt.subplot(121)
+        #     plt.imshow(orig_denorm)
+        #     plt.title(f'Camera {cam_idx} - Original\nShape: {orig.shape}')
+            
+        #     plt.subplot(122)
+        #     plt.imshow(pad_denorm)
+        #     plt.title(f'Camera {cam_idx} - Padded\nShape: {pad.shape}')
+            
+        #     plt.tight_layout()
+        #     # 파일명 생성 (카메라 인덱스 + 타임스탬프)
+        #     plt.savefig("image_original.png", bbox_inches='tight', dpi=300)
+        #     plt.close()  # 메모리 해제
+        #     print("display end")
 
     def __call__(self, results):
         """Call function to pad images, masks, semantic segmentation maps.

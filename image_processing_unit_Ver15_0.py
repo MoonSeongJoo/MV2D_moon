@@ -84,24 +84,24 @@ def display_depth_maps(imgs, mis_calibrated_depth_map, sbs_img):
         #     sbs_img_np = (sbs_img_np - sbs_img_np.min()) / (sbs_img_np.max() - sbs_img_np.min())
 
         # input display
-        ####### display input signal #########        
-        # plt.figure(figsize=(20, 20))
-        # plt.subplot(311)
-        # plt.imshow(img_np)
-        # plt.title("camera_input", fontsize=15)
-        # plt.axis('off')
+        ###### display input signal #########        
+        plt.figure(figsize=(20, 20))
+        plt.subplot(311)
+        plt.imshow(img_np)
+        plt.title("camera_input", fontsize=15)
+        plt.axis('off')
 
         # plt.subplot(312)
         # plt.imshow( depth_gt_np, cmap='magma')
         # plt.title("calibrated_lidar_input", fontsize=15)
         # plt.axis('off') 
 
-        # plt.subplot(312)
-        # plt.imshow( depth_mis_np, cmap='magma')
-        # plt.title("mis-calibrated_lidar_input", fontsize=15)
-        # plt.axis('off')
+        plt.subplot(312)
+        plt.imshow( depth_mis_np, cmap='magma')
+        plt.title("mis-calibrated_lidar_input", fontsize=15)
+        plt.axis('off')
 
-        plt.subplot(111)
+        plt.subplot(313)
         plt.imshow( sbs_img_np)
         plt.title("sbs_img_input", fontsize=15)
         plt.axis('off')
@@ -126,7 +126,7 @@ def normalize_uvz_points(points_lidar2img):
 
     return normal_points_lidar2img
 
-def scale_uvz_points(uvz_tensor, original_size=(512, 1408), target_size=(192, 640)):
+def scale_uvz_points(uvz_tensor, original_size=(900, 1600), target_size=(192, 640)):
     """
     UVZ 좌표를 이미지 스케일링 비율에 맞게 변환
     Args:
@@ -147,7 +147,7 @@ def scale_uvz_points(uvz_tensor, original_size=(512, 1408), target_size=(192, 64
     
     return scaled_uvz
 
-def inverse_scale_uvz_points(scaled_uvz, original_size=(512, 1408), target_size=(192, 640)):
+def inverse_scale_uvz_points(scaled_uvz, original_size=(900, 1600), target_size=(192, 640)):
     """
     스케일링된 UVZ 좌표를 원본 크기로 역변환
     Args:
@@ -488,7 +488,7 @@ def process_queries_adv(corrs, sbs_img, num_points=100):
         
         # 카메라 인덱스 추가
         tagged_queries = torch.cat([
-            torch.full((num_points, 1), cam_idx, device=device, dtype=corrs.dtype),
+            torch.full((num_points, 1), cam, device=device, dtype=corrs.dtype),
             selected
         ], dim=1)
         
@@ -709,6 +709,32 @@ def two_images_side_by_side(img_a, img_b):
 
 #         canvas[:, :, : , 0 * w:1 * w] = img_a.cpu().numpy()
 #         canvas[:, :, : , 1 * w:2 * w] = img_b.cpu().numpy()
+    return canvas
+
+def two_images_side_by_side_gpu(img_a, img_b):
+    """
+    GPU 텐서용 사이드 바이 사이드 이미지 생성
+    입력: [B, C, H, W]
+    출력: [B, H, 2*W, C]
+    """
+    # 1. 입력 검증
+    assert img_a.shape == img_b.shape, f"Shape mismatch: {img_a.shape} vs {img_b.shape}"
+    assert img_a.device == img_b.device, "Device mismatch"
+    
+    # 2. 차원 재배열 [B, C, H, W] → [B, H, W, C]
+    img_a = img_a.permute(0, 2, 3, 1)  # B H W C
+    img_b = img_b.permute(0, 2, 3, 1)
+    
+    # 3. 캔버스 생성 (GPU 유지)
+    b, h, w, c = img_a.shape
+    canvas = torch.zeros((b, h, 2 * w, c), 
+                        dtype=img_a.dtype,
+                        device=img_a.device)
+    
+    # 4. 이미지 배치별 병합 (GPU 연산)
+    canvas[:, :, :w, :] = img_a
+    canvas[:, :, w:, :] = img_b
+    
     return canvas
 
 # From Github https://github.com/balcilar/DenseDepthMap
@@ -2014,7 +2040,7 @@ def image_to_lidar_global_modi1(det_uvz, gt_KT):
     
     return xyz_global_torch
 
-def lidar_to_image_with_index(det_xyz, gt_KT, img_shape=(512,1408)):
+def lidar_to_image_with_index(det_xyz, gt_KT, img_shape=(900,1600)):
     """
     Args:
         det_xyz: [N, 4] (camera_index, x, y, z)
@@ -2551,6 +2577,61 @@ def dense_map_gpu_optimized(Pts, n, m, grid):
     # return out.cpu()  # 최종 결과를 CPU로 이동
     return out # 최종 결과를 GPU
 
+def dense_map_from_depth_batch(lidar_depth_mis, grid=5, iterations=3):
+    batch_size, H, W = lidar_depth_mis.shape
+    device = lidar_depth_mis.device
+    output = lidar_depth_mis.clone()
+    
+    # 1. 마스크 생성 (값이 0이 아닌 유효 포인트)
+    valid_mask = (output > 0)
+    
+    # 2. 각 배치별 처리
+    for b in range(batch_size):
+        depth = output[b]
+        mask = valid_mask[b]
+        
+        # 3. 여러 번 반복적용으로 점진적 dense화
+        for _ in range(iterations):
+            # 커널 크기 (ng x ng)
+            ng = 2 * grid + 1
+            
+            # 이웃 픽셀 영향 계산을 위한 패딩
+            padded_depth = F.pad(depth.unsqueeze(0).unsqueeze(0), 
+                               (grid, grid, grid, grid), mode='constant', value=0)
+            padded_mask = F.pad(mask.unsqueeze(0).unsqueeze(0).float(), 
+                              (grid, grid, grid, grid), mode='constant', value=0)
+            
+            # 거리 기반 가중치 커널 생성
+            y, x = torch.meshgrid(
+                torch.arange(-grid, grid+1, device=device),
+                torch.arange(-grid, grid+1, device=device)
+            )
+            dist = torch.sqrt(x**2 + y**2 + 1e-8)
+            weight_kernel = (1.0 / dist**2).view(1, 1, ng, ng)
+            
+            # 마스크 가중치 적용 (유효 픽셀만 기여)
+            # 합성곱으로 깊이값 가중 합 계산
+            weighted_depth = F.conv2d(padded_depth * padded_mask, weight_kernel, padding=0)
+            # 가중치 합 계산
+            weight_sum = F.conv2d(padded_mask, weight_kernel, padding=0)
+            
+            # 새 마스크 (기존 유효점 + 이웃에 유효점이 있는 픽셀)
+            new_mask = (weight_sum > 0).squeeze()
+            
+            # 가중 평균 계산 및 업데이트
+            new_depth = depth.clone()
+            new_depth[new_mask] = (weighted_depth / (weight_sum + 1e-8))[0, 0][new_mask]
+            
+            # 업데이트
+            depth = new_depth
+            mask = new_mask
+        
+        # 결과 저장
+        output[b] = depth
+    
+    return output
+
+
 def colormap(disp):
     """"Color mapping for disp -- [H, W] -> [3, H, W]"""
     disp_np = disp.cpu().numpy()        # tensor -> numpy
@@ -2565,6 +2646,34 @@ def colormap(disp):
     # colormapped_tensor = torch.from_numpy(colormapped_im).permute(2, 0, 1).to(dtype=torch.float32)
     colormapped_tensor = torch.from_numpy(colormapped_im)
     return colormapped_tensor
+
+def batch_colormap(disp_batch, cmap='magma'):
+    """GPU 배치 컬러맵 함수 (수정판)"""
+    # 1. Magma LUT 전체 256개 색상값 로드
+    magma_cmap = plt.get_cmap('magma', 256)
+    magma_lut = torch.tensor(magma_cmap.colors[:,:3], device=disp_batch.device)  # [256, 3]
+
+    # 2. 정규화 및 인덱싱
+    b, h, w = disp_batch.shape
+    eps = 1e-8
+
+    # 최소/최대 계산 (배치별 독립적)
+    disp_flat = disp_batch.view(b, -1)
+    vmin = disp_flat.min(dim=1)[0].view(b, 1, 1)
+    vmax = disp_flat.max(dim=1)[0].view(b, 1, 1)
+    
+    # 0-1 정규화 (GPU 유지)
+    normalized = (disp_batch - vmin) / (vmax - vmin + eps)
+    
+    # 인덱스 생성 (0~255 고정)
+    indices = (normalized * 255).clamp(0, 255).long()  # [B, H, W]
+    
+    # 3. LUT 조회 → [B, H, W, 3]
+    colored = magma_lut[indices]  # 정확히 256개 색상 보장
+    
+    # 4. 차원 재배열
+    return colored.permute(0, 3, 1, 2).float()  # [B, 3, H, W]
+
 
 def denormalize_points(normal_points, z_min=None, z_max=None):
     """

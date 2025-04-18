@@ -48,6 +48,10 @@ class MV2D(Base3DDetector):
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
 
+        self.total_iter = 0
+        self.save_dir = "./saved_models"  # 모델 저장 경로 추가
+        os.makedirs(self.save_dir, exist_ok=True)
+        
         # 초기 학습 시 나머지 네트워크 freeze
         freeze_backbone = True
         if freeze_backbone:
@@ -63,9 +67,14 @@ class MV2D(Base3DDetector):
         for param in self.neck.parameters():
             param.requires_grad = False
             
-        # 3. ROI Head 내 corr 제외 동결
+        # # 3. ROI Head 내 corr 제외 동결
+        # for name, param in self.roi_head.named_parameters():
+        #     if 'corr' not in name:  # ← 핵심 변경점
+        #         param.requires_grad = False 
+        
+        # # 4. ROI Head 내 corr 만 동결 
         for name, param in self.roi_head.named_parameters():
-            if 'corr' not in name:  # ← 핵심 변경점
+            if 'corr' in name:  # ← 핵심 변경점
                 param.requires_grad = False 
 
     def process_2d_gt(self, gt_bboxes, gt_labels, device):
@@ -152,7 +161,6 @@ class MV2D(Base3DDetector):
     
     def forward_train(self,
                       img,
-                      img_original,
                       img_metas,
                       lidar_depth_gt,
                       lidar_depth_mis,
@@ -170,6 +178,7 @@ class MV2D(Base3DDetector):
 
         losses = dict()
         batch_size, num_views, c, h, w = img.shape
+        img_original = img.clone()
         img = img.view(batch_size * num_views, *img.shape[2:])
         assert batch_size == 1, 'only support batch_size 1 now'
         
@@ -184,7 +193,7 @@ class MV2D(Base3DDetector):
         
         if self.use_grid_mask:
             img = self.grid_mask(img)
-            lidar_depth_mis_resized = self.grid_mask(lidar_depth_mis.to(torch.float32))
+            # lidar_depth_mis_resized = self.grid_mask(lidar_depth_mis.to(torch.float32))
             # img_resized = self.grid_mask(img_resized)
 
         # get pseudo monocular input
@@ -223,7 +232,7 @@ class MV2D(Base3DDetector):
 
         # calculate losses for 2D detector
         detector_feat = self.extract_feat(img)
-        mis_depth_feat = self.extract_feat(lidar_depth_mis_resized)
+        # mis_depth_feat = self.extract_feat(lidar_depth_mis_resized)
 
         losses_detector = self.base_detector.forward_train_w_feat(
             detector_feat,
@@ -232,8 +241,8 @@ class MV2D(Base3DDetector):
             gt_bboxes,
             gt_labels,
             gt_bboxes_ignore)
-        for k, v in losses_detector.items():
-            losses['det_' + k] = v
+        # for k, v in losses_detector.items():
+        #     losses['det_' + k] = v
 
         # generate 2D detection
         self.base_detector.set_detection_cfg(self.train_cfg.get('detection_proposal'))
@@ -249,16 +258,50 @@ class MV2D(Base3DDetector):
 
         # calculate losses for 3d detector
         feat = self.process_detector_feat(detector_feat)
-        mis_depthmap_feat = self.process_detector_feat(mis_depth_feat)
+        # mis_depthmap_feat = self.process_detector_feat(mis_depth_feat)
         
-        roi_losses , loss_corr = self.roi_head.forward_train(img_ori,img_metas,lidar_depth_mis, feat,mis_depthmap_feat, detections,lidar_depth_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4, gt_bboxes, gt_labels,
+        roi_losses , loss_corr = self.roi_head.forward_train(img_ori,img_metas,lidar_depth_mis, feat, detections,lidar_depth_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4, gt_bboxes, gt_labels,
                                             gt_bboxes_3d, gt_labels_3d,
                                             ori_gt_bboxes_3d, ori_gt_labels_3d,
                                             attr_labels, None)
-        losses['loss_corr'] = loss_corr
-        # losses.update(roi_losses)
+        # losses['loss_corr'] = loss_corr
+        losses.update(roi_losses)
         # 그래디언트 클리핑 적용
         # torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=20)
+
+        # self.total_iter += 1
+        # if self.total_iter % 500 == 0:
+        #     # 계층적 키 매핑 생성 (버퍼 포함)
+        #     checkpoint = {}
+            
+        #     # Base Detector: state_dict()로 파라미터 + 버퍼 전체 저장
+        #     base_detector_dict = self.base_detector.state_dict()
+        #     for k, v in base_detector_dict.items():
+        #         checkpoint[f'base_detector.{k}'] = v
+            
+        #     # Neck: state_dict() 사용
+        #     neck_dict = self.neck.state_dict()
+        #     for k, v in neck_dict.items():
+        #         checkpoint[f'neck.{k}'] = v
+            
+        #     # ROI Head: state_dict() 사용
+        #     roi_head_dict = self.roi_head.state_dict()
+        #     for k, v in roi_head_dict.items():
+        #         checkpoint[f'roi_head.{k}'] = v
+            
+        #     # 추가 모듈 (예: grid_mask)
+        #     if hasattr(self, 'grid_mask'):
+        #         grid_mask_dict = self.grid_mask.state_dict()
+        #         for k, v in grid_mask_dict.items():
+        #             checkpoint[f'grid_mask.{k}'] = v
+            
+        #     save_path = os.path.join(self.save_dir, f'model_iter_{self.total_iter}_2.pth')
+        #     torch.save(checkpoint, save_path)
+        #     print(f"Model saved at iteration {self.total_iter}")
+
+        # if self.total_iter == 28130:
+        #     self.total_iter = 0
+
         return losses
 
     def forward_test(self, 
