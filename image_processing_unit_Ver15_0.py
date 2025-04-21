@@ -404,6 +404,103 @@ def process_queries(corrs, sbs_img, num_points=100):
     
     return selected_imgs, processed_queries, original_camera_ids
 
+# def process_queries_adv(corrs, sbs_img, num_points=100):
+#     device = corrs.device
+    
+#     # 입력 데이터가 비어 있는 경우 빈 텐서 반환
+#     if corrs.numel() == 0:
+#         return (
+#             torch.empty(0, *sbs_img.shape[1:], device=device),
+#             torch.empty(0, num_points, 5, device=device),
+#             torch.empty(0, device=device)
+#         )
+    
+#     # 1. 고유 카메라 인덱스 추출
+#     unique_cams, counts = torch.unique(corrs[:, 0], sorted=False, return_counts=True)
+    
+#     # unique_cams가 비어 있는 경우 처리
+#     if len(unique_cams) == 0:
+#         return (
+#             torch.empty(0, *sbs_img.shape[1:], device=device),
+#             torch.empty(0, num_points, 5, device=device),
+#             torch.empty(0, device=device)
+#         )
+    
+#     # 2. 이미지 선택
+#     selected_imgs = sbs_img[unique_cams.long()]
+    
+#     # 3. 카메라별 쿼리 처리
+#     grouped_queries = []
+#     camera_indices = []
+    
+#     for cam_idx, cam in enumerate(unique_cams):
+#         mask = (corrs[:, 0] == cam)
+#         cam_queries = corrs[mask, 1:]  # [N, 4]
+        
+#         # 객체별 샘플링 로직 (핵심 수정 부분)
+#         if cam_queries.size(0) >= num_points:
+#             # 객체 ID 추출 및 분포 계산
+#             object_ids = cam_queries[:, 0]
+#             unique_objs, obj_counts = torch.unique(object_ids, return_counts=True)
+            
+#             # 객체 빈도순 정렬 (빈도 높은 객체 우선)
+#             sorted_objs = unique_objs[torch.argsort(-obj_counts)]
+            
+#             # 객체별 최소 1개 샘플링 보장
+#             selected_indices = []
+#             for obj in sorted_objs:
+#                 obj_mask = (object_ids == obj)
+#                 obj_indices = torch.where(obj_mask)[0]
+#                 if len(selected_indices) < num_points:
+#                     idx = torch.randint(0, len(obj_indices), (1,))
+#                     selected_indices.append(obj_indices[idx])
+            
+#             # 남은 슬롯 채우기
+#             remaining = num_points - len(selected_indices)
+#             if remaining > 0:
+#                 all_indices = torch.arange(len(object_ids), device=device)
+#                 mask = torch.ones(len(object_ids), dtype=torch.bool, device=device)
+                
+#                 # Concatenate selected indices into a single tensor
+#                 if selected_indices:
+#                     selected_indices = torch.cat(selected_indices).to(device)
+#                 else:
+#                     selected_indices = torch.tensor([], dtype=torch.long, device=device)
+                
+#                 mask[selected_indices] = False
+
+#                 remaining_indices = all_indices[mask]
+#                 if len(remaining_indices) > 0:
+#                     idx = torch.randperm(len(remaining_indices))[:remaining]
+#                     selected_remaining = remaining_indices[idx]
+#                     selected_indices = torch.cat([selected_indices, selected_remaining])
+            
+#             # 최종 선택 및 충돌 방지
+#             selected_indices = torch.tensor(selected_indices[:num_points], device=device)
+#             selected = cam_queries[selected_indices]
+#         else:
+#             # 기존 패딩 로직 (객체 다양성 고려)
+#             padding_size = num_points - cam_queries.size(0)
+#             selected = torch.cat([
+#                 cam_queries,
+#                 cam_queries[torch.randint(0, cam_queries.size(0), (padding_size,))]
+#             ], dim=0)
+        
+#         # 카메라 인덱스 추가
+#         tagged_queries = torch.cat([
+#             torch.full((num_points, 1), cam, device=device, dtype=corrs.dtype),
+#             selected
+#         ], dim=1)
+        
+#         grouped_queries.append(tagged_queries)
+#         camera_indices.append(cam)
+    
+#     # 4. 배치 차원 생성
+#     processed_queries = torch.stack(grouped_queries, dim=0)
+#     original_camera_ids = torch.stack(camera_indices)
+    
+#     return selected_imgs, processed_queries, original_camera_ids
+
 def process_queries_adv(corrs, sbs_img, num_points=100):
     device = corrs.device
     
@@ -411,7 +508,7 @@ def process_queries_adv(corrs, sbs_img, num_points=100):
     if corrs.numel() == 0:
         return (
             torch.empty(0, *sbs_img.shape[1:], device=device),
-            torch.empty(0, num_points, 5, device=device),
+            torch.empty(0, num_points, 6, device=device),  # 5 → 6 (confidence 추가)
             torch.empty(0, device=device)
         )
     
@@ -422,7 +519,7 @@ def process_queries_adv(corrs, sbs_img, num_points=100):
     if len(unique_cams) == 0:
         return (
             torch.empty(0, *sbs_img.shape[1:], device=device),
-            torch.empty(0, num_points, 5, device=device),
+            torch.empty(0, num_points, 6, device=device),  # 5 → 6
             torch.empty(0, device=device)
         )
     
@@ -435,7 +532,7 @@ def process_queries_adv(corrs, sbs_img, num_points=100):
     
     for cam_idx, cam in enumerate(unique_cams):
         mask = (corrs[:, 0] == cam)
-        cam_queries = corrs[mask, 1:]  # [N, 4]
+        cam_queries = corrs[mask, 1:]  # [N, 8] (obj_id, x,y,z, x',y',z', confidence)
         
         # 객체별 샘플링 로직 (핵심 수정 부분)
         if cam_queries.size(0) >= num_points:
@@ -461,14 +558,12 @@ def process_queries_adv(corrs, sbs_img, num_points=100):
                 all_indices = torch.arange(len(object_ids), device=device)
                 mask = torch.ones(len(object_ids), dtype=torch.bool, device=device)
                 
-                # Concatenate selected indices into a single tensor
                 if selected_indices:
                     selected_indices = torch.cat(selected_indices).to(device)
                 else:
                     selected_indices = torch.tensor([], dtype=torch.long, device=device)
                 
                 mask[selected_indices] = False
-
                 remaining_indices = all_indices[mask]
                 if len(remaining_indices) > 0:
                     idx = torch.randperm(len(remaining_indices))[:remaining]
@@ -476,21 +571,33 @@ def process_queries_adv(corrs, sbs_img, num_points=100):
                     selected_indices = torch.cat([selected_indices, selected_remaining])
             
             # 최종 선택 및 충돌 방지
-            selected_indices = torch.tensor(selected_indices[:num_points], device=device)
+            selected_indices = selected_indices[:num_points]
             selected = cam_queries[selected_indices]
+        # 수정된 else 블록 (패딩 로직)
         else:
-            # 기존 패딩 로직 (객체 다양성 고려)
+            # Confidence 기반 패딩 (중복 허용)
             padding_size = num_points - cam_queries.size(0)
-            selected = torch.cat([
-                cam_queries,
-                cam_queries[torch.randint(0, cam_queries.size(0), (padding_size,))]
-            ], dim=0)
+            if padding_size > 0:
+                # Confidence 높은 순으로 정렬
+                sorted_indices = torch.argsort(cam_queries[:, -1], descending=True)
+                # 중복 허용하여 패딩 샘플 선택
+                if len(sorted_indices) == 0:
+                    padding_samples = cam_queries[torch.randint(0, len(cam_queries), (padding_size,))]
+                else:
+                    repeat_times = (padding_size // len(sorted_indices)) + 1
+                    repeated_indices = sorted_indices.repeat(repeat_times)
+                    padding_indices = repeated_indices[:padding_size]
+                    padding_samples = cam_queries[padding_indices]
+                selected = torch.cat([cam_queries, padding_samples], dim=0)
+            else:
+                selected = cam_queries
         
-        # 카메라 인덱스 추가
+        # [추가] Confidence Score 포함하여 쿼리 구성
         tagged_queries = torch.cat([
-            torch.full((num_points, 1), cam, device=device, dtype=corrs.dtype),
-            selected
-        ], dim=1)
+            torch.full((num_points, 1), cam, device=device, dtype=corrs.dtype),  # cam_id (1)
+            selected[:, :7],   # obj_id, x, y, z ,x' ,y', z' (4)
+            selected[:, -1].unsqueeze(1)  # confidence (1)
+        ], dim=1)  # 총 1+7+1=9 차원
         
         grouped_queries.append(tagged_queries)
         camera_indices.append(cam)
@@ -500,6 +607,145 @@ def process_queries_adv(corrs, sbs_img, num_points=100):
     original_camera_ids = torch.stack(camera_indices)
     
     return selected_imgs, processed_queries, original_camera_ids
+
+
+def process_queries_adv1(corrs, sbs_img, rois_with_indices, num_points=300):
+    device = corrs.device
+    
+    # 빈 입력 처리
+    if corrs.numel() == 0 and rois_with_indices.numel() == 0:
+        return (
+            torch.empty(0, *sbs_img.shape[1:], device=device),
+            torch.empty(0, num_points, 8, device=device),
+            torch.empty(0, device=device)
+        )
+
+    # 1. ROI 정보에서 (cam_id, obj_id) 추출
+    roi_keys = rois_with_indices[:, :2].long().unique(dim=0)
+    valid_cams = torch.cat([rois_with_indices[:, 0], corrs[:, 0]]).unique()
+
+    # 유효 카메라 필터링 (0 ≤ cam_id < 6)
+    valid_cams = valid_cams[(valid_cams >= 0) & (valid_cams < 6)]
+
+    if valid_cams.numel() == 0:
+        return (
+            torch.empty(0, *sbs_img.shape[1:], device=device),
+            torch.empty(0, num_points, 8, device=device),
+            torch.empty(0, device=device)
+        )
+
+    # 2. 이미지 선택
+    selected_imgs = sbs_img[valid_cams.long()]
+    
+    grouped_queries = []
+    camera_indices = []
+
+    for cam in valid_cams:
+        cam = cam.item()
+        cam_rois = rois_with_indices[rois_with_indices[:, 0] == cam]
+        cam_corrs = corrs[corrs[:, 0] == cam]
+
+        # 3. 현재 카메라의 모든 obj_id 수집
+        existing_obj_ids = torch.cat([
+            cam_rois[:, 1].long(),
+            cam_corrs[:, 1].long()
+        ]).unique()
+        
+        # 4. 유효 obj_id 관리 (0~80)
+        valid_obj_ids = existing_obj_ids[(existing_obj_ids >= 0) & (existing_obj_ids < 81)]
+        max_obj_id = valid_obj_ids.max().item() if valid_obj_ids.numel() > 0 else 0
+
+        queries = []
+
+        # 5. ROI 우선 처리
+        for roi_obj in cam_rois[:, 1].unique():
+            roi_obj = roi_obj.item()
+            obj_mask = (cam_corrs[:, 1] == roi_obj)
+            
+            if obj_mask.any():
+                # 기존 포인트 사용
+                queries.append(cam_corrs[obj_mask][0])
+            else:
+                # 신규 포인트 생성 (obj_id 범위 검증)
+                new_obj_id = roi_obj % 81
+                new_point = generate_roi_point(cam, new_obj_id, device)
+                queries.append(new_point)
+
+        # 6. 남은 슬롯 채우기
+        remaining = num_points - len(queries)
+        if remaining > 0:
+            # 새로운 obj_id 생성 (순차적 할당 + 모듈로 연산)
+            new_obj_ids = (max_obj_id + 1 + torch.arange(remaining, device=device)) % 81
+            new_obj_ids = new_obj_ids.cpu().numpy().astype(int)
+            
+            # 신규 포인트 생성
+            for obj_id in new_obj_ids:
+                new_point = generate_roi_point(cam, obj_id, device)
+                queries.append(new_point)
+
+        # 7. 최종 데이터 포맷팅
+        selected = torch.stack(queries[:num_points])
+        tagged_queries = torch.cat([
+            torch.full((num_points, 1), cam, device=device, dtype=torch.long),
+            selected[:, 1:]
+        ], dim=1)
+        
+        grouped_queries.append(tagged_queries)
+        camera_indices.append(cam)
+
+    # 8. 출력 형식 변환
+    processed_queries = torch.stack(grouped_queries, dim=0) if grouped_queries else torch.empty(0, device=device)
+    original_camera_ids = torch.tensor(camera_indices, device=device) if camera_indices else torch.empty(0, device=device)
+
+    return selected_imgs, processed_queries, original_camera_ids
+
+def generate_roi_point(cam_id, obj_id, device, existing_points=None):
+    """ROI 기반 신규 포인트 생성 (통계적 분포 반영 버전)"""
+    # 텐서 → 스칼라 변환
+    if isinstance(cam_id, torch.Tensor):
+        cam_id = cam_id.item()
+    if isinstance(obj_id, torch.Tensor):
+        obj_id = obj_id.item()
+
+    # 기존 포인트가 3개 이상인 경우 통계적 분포 사용
+    if existing_points is not None and len(existing_points) >= 3:
+        # x,y,z 좌표 추출 (cam_id, obj_id 제외)
+        spatial_coords = existing_points[:, 2:5]  # [N,3]
+        
+        # 평균 및 공분산 계산
+        mean = spatial_coords.mean(dim=0)
+        cov = torch.cov(spatial_coords.T)
+        
+        # 수치 안정성을 위한 작은 값 추가
+        cov += torch.eye(3, device=device) * 1e-6
+        
+        # 다변량 정규분포 샘플링
+        try:
+            mvn = torch.distributions.MultivariateNormal(mean, cov)
+            sample = mvn.sample()
+            x, y, z = sample[0], sample[1], sample[2]
+        except:
+            # 특이행렬 경우 대비 (대각 공분산 사용)
+            std = torch.sqrt(torch.diag(cov))
+            x = torch.normal(mean[0], std[0], (1,))
+            y = torch.normal(mean[1], std[1], (1,))
+            z = torch.normal(mean[2], std[2], (1,))
+    else:
+        # 기본 범위 사용 (실제 환경에 맞게 조정 필요)
+        x = torch.rand(1, device=device).item() * 100  # 0~100m
+        y = torch.rand(1, device=device).item() * 100  # 0~100m
+        z = torch.rand(1, device=device).item() * 50   # 0~50m
+
+    return torch.tensor([
+        cam_id,
+        obj_id,
+        x,
+        y,
+        z,
+        0.0,  # x'
+        0.0,  # y'
+        0.0   # z'
+    ], device=device, dtype=torch.float32)
 
 # def trim_corrs_torch(in_corrs, num_kp=100):
 #     length = in_corrs.shape[0]
@@ -1916,8 +2162,9 @@ def find_rois_nonzero_z_adv7(detections, depth_map):
     depth_map_re = depth_map.view(batch_size * num_cam, h, w)
     
     cam_indices = detections[:, 0].long().to(device)
-    obj_indices = torch.arange(len(detections), device=device).long()
-    bboxes = detections[:, 1:].to(device)
+    # obj_indices = torch.arange(len(detections), device=device).long()
+    obj_indices = detections[:, 1].long().to(device)  # 객체 ID 사용
+    bboxes = detections[:, 2:].to(device)
     
     x_min, y_min, x_max, y_max = bboxes.long().t()
     
@@ -1951,6 +2198,59 @@ def find_rois_nonzero_z_adv7(detections, depth_map):
             ], dim=1)
             
             all_points.append(points)
+    
+    return torch.cat(all_points, dim=0) if all_points else torch.empty((0, 6), device=device)
+
+def find_rois_nonzero_z_adv8(detections, depth_map):
+    device = depth_map.device
+    batch_size, num_cam, h, w = depth_map.shape
+    depth_map_re = depth_map.view(batch_size * num_cam, h, w)
+    
+    cam_indices = detections[:, 0].long().to(device)
+    obj_indices = detections[:, 1].long().to(device)
+    bboxes = detections[:, 2:].to(device)
+    
+    x_min, y_min, x_max, y_max = bboxes.long().t()
+    
+    x_min = torch.clamp(x_min, 0, w-1)
+    y_min = torch.clamp(y_min, 0, h-1)
+    x_max = torch.clamp(x_max, 0, w-1)
+    y_max = torch.clamp(y_max, 0, h-1)
+    
+    all_points = []
+    
+    for i in range(len(detections)):
+        cid = cam_indices[i].item()
+        oid = obj_indices[i].item()
+        
+        # BBox 중심 좌표 계산
+        cx = (x_min[i] + x_max[i]) // 2
+        cy = (y_min[i] + y_max[i]) // 2
+        
+        # 중심점 깊이 값 확인
+        center_z = depth_map_re[cid, cy, cx]
+        conf = 1.0  # 기본 신뢰도
+        
+        if center_z <= 0:
+            # 중심점이 유효하지 않으면 bbox 내에서 z값 탐색
+            bbox_area = depth_map_re[cid, y_min[i]:y_max[i]+1, x_min[i]:x_max[i]+1]
+            nonzero_indices = (bbox_area > 0).nonzero()
+            
+            if nonzero_indices.size(0) > 0:
+                # 유효한 z값이 있는 경우 평균 계산
+                z_values = bbox_area[nonzero_indices[:, 0], nonzero_indices[:, 1]]
+                center_z = z_values.mean().item()
+                conf = 0.7  # 주변부 신뢰도
+            else:
+                # 유효한 z값이 없는 경우
+                center_z = 0.0
+                conf = 0.3  # 신뢰도 0
+        
+        # 결과 포인트 추가 (항상 중심점 사용)
+        point = torch.tensor([
+            [cid, oid, float(cx), float(cy), center_z, conf]
+        ], device=device)
+        all_points.append(point)
     
     return torch.cat(all_points, dim=0) if all_points else torch.empty((0, 6), device=device)
 
@@ -2040,7 +2340,62 @@ def image_to_lidar_global_modi1(det_uvz, gt_KT):
     
     return xyz_global_torch
 
-def lidar_to_image_with_index(det_xyz, gt_KT, img_shape=(900,1600)):
+# def lidar_to_image_with_index(det_xyz, gt_KT, img_shape=(900,1600)):
+#     """
+#     Args:
+#         det_xyz: [N, 4] (camera_index, x, y, z)
+#         gt_KT: [6, 4, 4] (카메라별 변환 행렬)
+#         img_shape: (H, W) 이미지 해상도 (세로, 가로)
+    
+#     Returns:
+#         uvz_global_torch: [M, 4] (유효한 포인트만 포함)
+#         mask_valid_global: [N] (전체 포인트에 대한 유효성 마스크)
+#     """
+#     list_uvz_global = []
+#     list_indices = []
+#     mask_valid_global = torch.zeros(det_xyz.shape[0], dtype=torch.bool, device=det_xyz.device)
+
+#     for cid in range(6):
+#         lidar2img = gt_KT[cid]
+#         mask = (det_xyz[:, 0] == cid)  # 현재 카메라 ID에 해당하는 포인트 필터링
+#         if mask.any():
+#             detection_xyz = det_xyz[mask, 1:]  # x,y,z 좌표 추출
+#             points_lidar2img = (lidar2img @ detection_xyz.T).T  # [N,3]
+#             points_lidar2img = torch.cat([points_lidar2img[:, :2] / points_lidar2img[:, 2:3], points_lidar2img[:, 2:3]], dim=1)  # [N,3] (u,v,z)
+
+#             # 유효한 포인트 필터링
+#             pcl_uv = points_lidar2img[:, :2]  # u,v 좌표
+#             pcl_z = points_lidar2img[:, 2]   # 깊이 값
+#             mask_valid = (
+#                 (pcl_uv[:, 0] > 0) & (pcl_uv[:, 0] < img_shape[1]) &  # u 범위 체크 (0 < u < W)
+#                 (pcl_uv[:, 1] > 0) & (pcl_uv[:, 1] < img_shape[0]) &  # v 범위 체크 (0 < v < H)
+#                 (pcl_z > 0)                                           # 깊이 값이 양수인지 확인
+#             )
+            
+#             # 유효한 포인트만 저장
+#             valid_points = points_lidar2img[mask_valid]
+#             valid_indices = det_xyz[mask][mask_valid][:, 0]
+#             # valid_points = points_lidar2img
+#             # valid_indices = det_xyz[mask][:, 0]
+
+#             list_uvz_global.append(valid_points)
+#             list_indices.append(valid_indices)
+
+#             # 전체 마스크 업데이트
+#             mask_valid_global[mask.nonzero(as_tuple=True)[0]] = mask_valid
+
+#     if list_uvz_global:
+#         uvz_global_torch = torch.cat(list_uvz_global, dim=0)  # 유효한 포인트 병합
+#         indices_torch = torch.cat(list_indices, dim=0).unsqueeze(1)  # 인덱스 병합
+        
+#         # 인덱스와 uvz 좌표 결합
+#         uvz_global_torch = torch.cat([indices_torch, uvz_global_torch], dim=1)  # [M,4]
+#     else:
+#         uvz_global_torch = torch.empty(0, 4, device=det_xyz.device)  # 빈 텐서 반환
+    
+#     return uvz_global_torch, mask_valid_global
+
+def lidar_to_image_with_index(det_xyz, gt_KT, img_shape=(900, 1600)):
     """
     Args:
         det_xyz: [N, 4] (camera_index, x, y, z)
@@ -2052,46 +2407,57 @@ def lidar_to_image_with_index(det_xyz, gt_KT, img_shape=(900,1600)):
         mask_valid_global: [N] (전체 포인트에 대한 유효성 마스크)
     """
     list_uvz_global = []
-    list_indices = []
     mask_valid_global = torch.zeros(det_xyz.shape[0], dtype=torch.bool, device=det_xyz.device)
 
     for cid in range(6):
         lidar2img = gt_KT[cid]
-        mask = (det_xyz[:, 0] == cid)  # 현재 카메라 ID에 해당하는 포인트 필터링
-        if mask.any():
-            detection_xyz = det_xyz[mask, 1:]  # x,y,z 좌표 추출
-            points_lidar2img = (lidar2img @ detection_xyz.T).T  # [N,3]
-            points_lidar2img = torch.cat([points_lidar2img[:, :2] / points_lidar2img[:, 2:3], points_lidar2img[:, 2:3]], dim=1)  # [N,3] (u,v,z)
+        mask = (det_xyz[:, 0] == cid)
+        if not mask.any():
+            continue
 
-            # 유효한 포인트 필터링
-            pcl_uv = points_lidar2img[:, :2]  # u,v 좌표
-            pcl_z = points_lidar2img[:, 2]   # 깊이 값
-            mask_valid = (
-                (pcl_uv[:, 0] > 0) & (pcl_uv[:, 0] < img_shape[1]) &  # u 범위 체크 (0 < u < W)
-                (pcl_uv[:, 1] > 0) & (pcl_uv[:, 1] < img_shape[0]) &  # v 범위 체크 (0 < v < H)
-                (pcl_z > 0)                                           # 깊이 값이 양수인지 확인
-            )
-            
-            # 유효한 포인트만 저장
-            valid_points = points_lidar2img[mask_valid]
-            valid_indices = det_xyz[mask][mask_valid][:, 0]
+        # [STEP 1] LiDAR 좌표 추출 (x,y,z) 및 homogeneous 좌표 추가
+        detection_xyz = det_xyz[mask, 1:4]  # [M,3] (x,y,z)
+        ones = torch.ones_like(detection_xyz[:, :1])  # [M,1]
+        detection_xyz_h = torch.cat([detection_xyz, ones], dim=1)  # [M,4]
 
-            list_uvz_global.append(valid_points)
-            list_indices.append(valid_indices)
+        # [STEP 2] 투영 변환 (4x4 @ 4xM → 4xM → Transpose → [M,4])
+        points_cam = (lidar2img @ detection_xyz_h.T).T  # [M,4]
 
-            # 전체 마스크 업데이트
-            mask_valid_global[mask.nonzero(as_tuple=True)[0]] = mask_valid
+        # [STEP 3] z>0 필터링 (카메라 앞쪽 점만 유효)
+        z = points_cam[:, 2]
+        valid_z = z > 1e-6
+        if not valid_z.any():
+            continue
 
-    if list_uvz_global:
-        uvz_global_torch = torch.cat(list_uvz_global, dim=0)  # 유효한 포인트 병합
-        indices_torch = torch.cat(list_indices, dim=0).unsqueeze(1)  # 인덱스 병합
-        
-        # 인덱스와 uvz 좌표 결합
-        uvz_global_torch = torch.cat([indices_torch, uvz_global_torch], dim=1)  # [M,4]
-    else:
-        uvz_global_torch = torch.empty(0, 4, device=det_xyz.device)  # 빈 텐서 반환
-    
-    return uvz_global_torch, mask_valid_global
+        # [STEP 4] UV 좌표 계산 (x/z, y/z)
+        points_cam_valid = points_cam[valid_z]
+        uv = points_cam_valid[:, :2] / points_cam_valid[:, 2:3]  # [K,2]
+        uvz = torch.cat([uv, points_cam_valid[:, 2:3]], dim=1)  # [K,3]
+
+        # [STEP 5] 이미지 경계 내 UV 확인
+        H, W = img_shape
+        mask_uv = (
+            (uv[:, 0] >= 0) & (uv[:, 0] < W) &
+            (uv[:, 1] >= 0) & (uv[:, 1] < H)
+        )
+        uvz_valid = uvz[mask_uv]  # [L,3]
+
+        # [STEP 6] 유효한 인덱스 매핑
+        mask_combined = valid_z.clone()
+        mask_combined[valid_z] = mask_uv  # z>0 중 UV 유효한 점
+        original_indices = mask.nonzero(as_tuple=True)[0][valid_z][mask_uv]
+        mask_valid_global[original_indices] = True
+
+        # [STEP 7] 결과 저장 (camera_index 추가)
+        indices_torch = torch.full((uvz_valid.shape[0], 1), cid, device=det_xyz.device)
+        list_uvz_global.append(torch.cat([indices_torch, uvz_valid], dim=1))
+
+    return (
+        torch.cat(list_uvz_global, dim=0) if list_uvz_global 
+        else torch.empty((0, 4), device=det_xyz.device),
+        mask_valid_global
+    )
+
 
 def lidar_to_image_no_filter(det_xyz, gt_KT):
     """
@@ -2109,25 +2475,35 @@ def lidar_to_image_no_filter(det_xyz, gt_KT):
         lidar2img = gt_KT[cid]
         mask = (det_xyz[:, 0] == cid)  # 현재 카메라 ID에 해당하는 포인트 필터링
         if mask.any():
-            detection_xyz = det_xyz[mask, 1:]  # x,y,z 좌표 추출
-            points_lidar2img = (lidar2img @ detection_xyz.T).T  # [N,3]
-            points_lidar2img = torch.cat([points_lidar2img[:, :2] / points_lidar2img[:, 2:3], points_lidar2img[:, 2:3]], dim=1)  # [N,3] (u,v,z)
+            # [STEP 1] Homogeneous 좌표 추가 (x,y,z → x,y,z,1)
+            detection_xyz = det_xyz[mask, 1:4]  # x,y,z 좌표 추출
+            ones = torch.ones_like(detection_xyz[:, :1])  # [N,1]
+            detection_xyz_h = torch.cat([detection_xyz, ones], dim=1)  # [N,4]
+            
+            # [STEP 2] 올바른 행렬 곱셈 (4x4 @ 4xN → 4xN → Transpose → [N,4])
+            points_lidar2img = (lidar2img @ detection_xyz_h.T).T  # [N,4]
 
-            list_uvz_global.append(points_lidar2img)
-            list_indices.append(det_xyz[mask][:, 0])
+            # [STEP 3] z 값 필터링 (z > 1e-6)
+            z = points_lidar2img[:, 2]
+            valid_mask = z > 1e-6
+            if valid_mask.any():
+                points_valid = points_lidar2img[valid_mask]
+                u = points_valid[:, 0] / points_valid[:, 2]
+                v = points_valid[:, 1] / points_valid[:, 2]
+                uvz = torch.stack([u, v, points_valid[:, 2]], dim=1)  # [M,3]
+                
+                list_uvz_global.append(uvz)
+                list_indices.append(det_xyz[mask][valid_mask][:, 0].unsqueeze(1))
 
     if list_uvz_global:
-        uvz_global_torch = torch.cat(list_uvz_global, dim=0)  # 모든 포인트 병합
-        indices_torch = torch.cat(list_indices, dim=0).unsqueeze(1)  # 인덱스 병합
-        
-        # 인덱스와 uvz 좌표 결합
-        uvz_global_torch = torch.cat([indices_torch, uvz_global_torch], dim=1)  # [M,4]
+        uvz_global = torch.cat(list_uvz_global, dim=0)
+        indices = torch.cat(list_indices, dim=0)
+        uvz_global_torch = torch.cat([indices, uvz_global], dim=1)  # [M,4]
     else:
-        uvz_global_torch = torch.empty(0, 4, device=det_xyz.device)  # 빈 텐서 반환
+        uvz_global_torch = torch.empty((0,4), device=det_xyz.device)
     
     return uvz_global_torch
 
- 
 def project_lidar_to_image(pts_hom: torch.Tensor, 
                            lidar2img: torch.Tensor, 
                            eps: float = 1e-6) -> torch.Tensor:
@@ -2860,3 +3236,234 @@ def geometric_propagation(depth_map, iterations=3):
         depth_map[:,1:,:] = depth_map[:,:-1,:]*valid_mask + depth_map[:,1:,:]*(1-valid_mask)
         
     return depth_map
+
+
+def trim_detection_points(detection_xyz_lidar, trim_count=200):
+    """
+    cam_id 분포를 유지하며 포인트 트리밍
+    Args:
+        detection_xyz_lidar: [N,6] Tensor (cam_id, obj_id, x, y, z, confidence_score)
+        trim_count: 목표 포인트 개수
+    Returns:
+        trimmed_points: [trim_count,6] Tensor
+    """
+    if len(detection_xyz_lidar) <= trim_count:
+        return detection_xyz_lidar
+    
+    # cam_id 분포 계산
+    unique_cams, counts = torch.unique(detection_xyz_lidar[:,0], return_counts=True)
+    cam_distribution = counts.float() / counts.sum()
+    
+    # 각 cam_id별 할당 개수 계산
+    allocations = (cam_distribution * trim_count).long()
+    remainder = trim_count - allocations.sum()
+    
+    # 나머지 분배 (큰 소수점 순으로)
+    fracs = (cam_distribution * trim_count) - allocations.float()
+    _, indices = torch.sort(fracs, descending=True)
+    for i in range(remainder):
+        allocations[indices[i]] += 1
+
+    # 포인트 선택
+    selected = []
+    for cam, alloc in zip(unique_cams, allocations):
+        mask = detection_xyz_lidar[:,0] == cam
+        candidates = detection_xyz_lidar[mask]
+        if len(candidates) > alloc:
+            idx = torch.randperm(len(candidates))[:alloc]
+            selected.append(candidates[idx])
+        else:
+            selected.append(candidates)
+    
+    return torch.cat(selected)
+
+# def generate_random_points(detection_xyz_lidar, target_count=200):
+#     num_existing = len(detection_xyz_lidar)
+#     if num_existing >= target_count:
+#         return detection_xyz_lidar
+    
+#     device = detection_xyz_lidar.device  # 디바이스 정보 추출
+#     dtype = detection_xyz_lidar.dtype    # 데이터 타입 추출
+
+#     # 기존 데이터 통계 계산
+#     x_min, x_max = detection_xyz_lidar[:,2].min(), detection_xyz_lidar[:,2].max()
+#     y_min, y_max = detection_xyz_lidar[:,3].min(), detection_xyz_lidar[:,3].max()
+#     z_min, z_max = detection_xyz_lidar[:,4].min(), detection_xyz_lidar[:,4].max()
+    
+#     # cam_id 분포 계산
+#     unique_cams, counts = torch.unique(detection_xyz_lidar[:,0], return_counts=True)
+#     cam_distribution = counts.float() / counts.sum()
+    
+#     # 생성할 포인트 수 계산
+#     num_to_generate = target_count - num_existing
+#     allocations = (cam_distribution * num_to_generate).long()
+#     remainder = num_to_generate - allocations.sum()
+    
+#     # 나머지 분배
+#     if remainder > 0:
+#         allocations[0] += remainder
+    
+#     # 포인트 생성
+#     new_points = []
+#     for cam, alloc in zip(unique_cams, allocations):
+#         if alloc == 0:
+#             continue
+            
+#         # 좌표 생성 (디바이스/데이터타입 명시)
+#         x = torch.empty(alloc, device=device, dtype=dtype).uniform_(x_min, x_max)
+#         y = torch.empty(alloc, device=device, dtype=dtype).uniform_(y_min, y_max)
+#         z = torch.empty(alloc, device=device, dtype=dtype).uniform_(z_min, z_max)
+        
+#         # 신규 obj_id 생성 (기존 최대값 +1부터 시작)
+#         max_obj_id = detection_xyz_lidar[:,1].max()
+#         obj_ids = torch.arange(
+#             max_obj_id+1, 
+#             max_obj_id+1+alloc, 
+#             device=device, 
+#             dtype=detection_xyz_lidar[:,1].dtype
+#         )
+        
+#         # 텐서 조립
+#         new = torch.stack([
+#             torch.full((alloc,), cam, device=device, dtype=dtype),
+#             obj_ids,
+#             x,
+#             y,
+#             z,
+#             torch.zeros(alloc, device=device, dtype=dtype)  # confidence_score=0
+#         ], dim=1)
+        
+#         new_points.append(new)
+    
+#     return torch.cat([detection_xyz_lidar] + new_points, dim=0)
+
+def generate_random_points(detection_xyz_lidar, target_count=200):
+    num_existing = len(detection_xyz_lidar)
+    if num_existing >= target_count:
+        return detection_xyz_lidar
+    
+    device = detection_xyz_lidar.device  # 디바이스 정보 추출
+    dtype = detection_xyz_lidar.dtype    # 데이터 타입 추출
+
+    # 기존 데이터 통계 계산
+    x_min, x_max = detection_xyz_lidar[:,2].min(), detection_xyz_lidar[:,2].max()
+    y_min, y_max = detection_xyz_lidar[:,3].min(), detection_xyz_lidar[:,3].max()
+    z_min, z_max = detection_xyz_lidar[:,4].min(), detection_xyz_lidar[:,4].max()
+    
+    # cam_id 분포 계산
+    unique_cams, counts = torch.unique(detection_xyz_lidar[:,0], return_counts=True)
+    cam_distribution = counts.float() / counts.sum()
+    
+    # 생성할 포인트 수 계산
+    num_to_generate = target_count - num_existing
+    allocations = (cam_distribution * num_to_generate).long()
+    remainder = num_to_generate - allocations.sum()
+    
+    # 나머지 분배
+    if remainder > 0:
+        allocations[0] += remainder
+    
+    # 포인트 생성
+    new_points = []
+    
+    # 생성 전략 수정: 단순 랜덤이 아닌 실제 분포 고려
+    for cam, alloc in zip(unique_cams, allocations):
+        if alloc == 0:
+            continue
+        
+        # 실제 포인트 분포를 기반으로 샘플링
+        existing_points = detection_xyz_lidar[detection_xyz_lidar[:, 0] == cam]
+        
+        if len(existing_points) >= 3:  # 충분한 포인트가 있는 경우
+            # KDE 또는 GMM으로 분포 추정 후 샘플링
+            mean = existing_points[:, 2:5].mean(dim=0)
+            std = existing_points[:, 2:5].std(dim=0)
+            
+            # 가우시안 분포로 샘플링 (균등 분포 대신)
+            xyz = torch.randn(alloc, 3, device=device, dtype=dtype)
+            xyz = xyz * std + mean
+            
+            # 좌표값 추출
+            x, y, z = xyz[:, 0], xyz[:, 1], xyz[:, 2]
+        else:
+            # 포인트가 적으면 기존 방식 사용
+            x = torch.empty(alloc, device=device, dtype=dtype).uniform_(x_min, x_max)
+            y = torch.empty(alloc, device=device, dtype=dtype).uniform_(y_min, y_max)
+            z = torch.empty(alloc, device=device, dtype=dtype).uniform_(z_min, z_max)
+            
+        # 신규 obj_id 생성 (기존 최대값 +1부터 시작)
+        max_obj_id = detection_xyz_lidar[:,1].max()
+        obj_ids = torch.arange(
+            max_obj_id+1, 
+            max_obj_id+1+alloc, 
+            device=device, 
+            dtype=detection_xyz_lidar[:,1].dtype
+        )
+        
+        # 텐서 조립
+        new = torch.stack([
+            torch.full((alloc,), cam, device=device, dtype=dtype),
+            obj_ids,
+            x, y, z,
+            torch.zeros(alloc, device=device, dtype=dtype)  # confidence_score=0
+        ], dim=1)
+        
+        new_points.append(new)
+    
+    return torch.cat([detection_xyz_lidar] + new_points, dim=0)
+
+
+def trim_or_generate_points(detection_xyz_lidar, target_count=200):
+    if len(detection_xyz_lidar) > target_count:
+        return trim_detection_points(detection_xyz_lidar, target_count)
+    elif len(detection_xyz_lidar) < target_count:
+        return generate_random_points(detection_xyz_lidar, target_count)
+    return detection_xyz_lidar
+
+import torch
+
+def deduplicate_obj_ids(input_tensor):
+    # 입력 텐서 평탄화: [C, P, 5] -> [C*P, 5]
+    flat_data = input_tensor.view(-1, 5)
+    
+    # obj_id 추출 및 정수형 변환 (인덱스 1)
+    obj_ids = flat_data[:, 1].to(torch.int64)
+    
+    # 고유값과 역인덱스 추출
+    unique_obj_ids, inverse_indices = torch.unique(
+        obj_ids,
+        return_inverse=True,
+        sorted=True
+    )
+    
+    # 첫 번째 발생 인덱스 계산
+    inv_sorted = inverse_indices.argsort()
+    counts = torch.bincount(inverse_indices)
+    tot_counts = torch.cat((counts.new_zeros(1), counts.cumsum(dim=0)))[:-1]
+    unique_indices = inv_sorted[tot_counts]
+    
+    return flat_data[unique_indices]
+
+def merge_point_clouds(reference_points, detection_points):
+    """obj_id 매칭을 통해 두 포인트 클라우드 병합
+    
+    Args:
+        reference_points (Tensor): [N,5] 참조 포인트 (cam_id, obj_id, x,y,z)
+        detection_points (Tensor): [M,5] 검출 포인트 (cam_id, obj_id, x,y,z)
+    
+    Returns:
+        Tensor: [K,5] 병합된 포인트 클라우드 (K ≤ N)
+    """
+    # obj_id 정수형 변환
+    ref_ids = reference_points[:, 1].long()
+    det_ids = detection_points[:, 1].long()
+    
+    # 검출 포인트 딕셔너리 생성 (같은 obj_id가 여러 번 나타날 경우 마지막 항목 저장)
+    det_dict = {det_ids[i].item(): detection_points[i] for i in range(len(det_ids))}
+    
+    # 병합 로직
+    merged = []
+    for idx, obj_id in enumerate(ref_ids):
+        merged.append(det_dict.get(obj_id.item(), reference_points[idx]))
+    
+    return torch.stack(merged)

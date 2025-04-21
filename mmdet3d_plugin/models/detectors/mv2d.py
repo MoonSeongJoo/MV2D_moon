@@ -59,23 +59,27 @@ class MV2D(Base3DDetector):
     
     def _freeze_backbone_modules(self):
         """corr 네트워크 제외한 모든 모듈 동결"""
-        # 1. Base Detector 동결
-        for param in self.base_detector.parameters():
-            param.requires_grad = False
+        # # 1. Base Detector 동결
+        # for param in self.base_detector.parameters():
+        #     param.requires_grad = False
             
-        # 2. Neck 동결
-        for param in self.neck.parameters():
-            param.requires_grad = False
+        # # 2. Neck 동결
+        # for param in self.neck.parameters():
+        #     param.requires_grad = False
             
-        # # 3. ROI Head 내 corr 제외 동결
+        # 3. ROI Head 내 corr 제외 동결
+        for name, param in self.roi_head.named_parameters():
+            if 'corr' not in name:  # ← 핵심 변경점
+                param.requires_grad = False 
+        
+        # # # 4. ROI Head 내 corr 만 동결 
         # for name, param in self.roi_head.named_parameters():
-        #     if 'corr' not in name:  # ← 핵심 변경점
+        #     if 'corr' in name:  # ← 핵심 변경점
         #         param.requires_grad = False 
         
-        # # 4. ROI Head 내 corr 만 동결 
-        for name, param in self.roi_head.named_parameters():
-            if 'corr' in name:  # ← 핵심 변경점
-                param.requires_grad = False 
+        # # ROI Head 전체 동결
+        # for param in self.roi_head.parameters():
+        #     param.requires_grad = False
 
     def process_2d_gt(self, gt_bboxes, gt_labels, device):
         """
@@ -241,8 +245,8 @@ class MV2D(Base3DDetector):
             gt_bboxes,
             gt_labels,
             gt_bboxes_ignore)
-        # for k, v in losses_detector.items():
-        #     losses['det_' + k] = v
+        for k, v in losses_detector.items():
+            losses['det_' + k] = v
 
         # generate 2D detection
         self.base_detector.set_detection_cfg(self.train_cfg.get('detection_proposal'))
@@ -264,43 +268,43 @@ class MV2D(Base3DDetector):
                                             gt_bboxes_3d, gt_labels_3d,
                                             ori_gt_bboxes_3d, ori_gt_labels_3d,
                                             attr_labels, None)
-        # losses['loss_corr'] = loss_corr
-        losses.update(roi_losses)
+        losses['loss_corr'] = loss_corr
+        # losses.update(roi_losses)
         # 그래디언트 클리핑 적용
         # torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=20)
 
-        # self.total_iter += 1
-        # if self.total_iter % 500 == 0:
-        #     # 계층적 키 매핑 생성 (버퍼 포함)
-        #     checkpoint = {}
+        self.total_iter += 1
+        if self.total_iter % 1000 == 0:
+            # 계층적 키 매핑 생성 (버퍼 포함)
+            checkpoint = {}
             
-        #     # Base Detector: state_dict()로 파라미터 + 버퍼 전체 저장
-        #     base_detector_dict = self.base_detector.state_dict()
-        #     for k, v in base_detector_dict.items():
-        #         checkpoint[f'base_detector.{k}'] = v
+            # Base Detector: state_dict()로 파라미터 + 버퍼 전체 저장
+            base_detector_dict = self.base_detector.state_dict()
+            for k, v in base_detector_dict.items():
+                checkpoint[f'base_detector.{k}'] = v
             
-        #     # Neck: state_dict() 사용
-        #     neck_dict = self.neck.state_dict()
-        #     for k, v in neck_dict.items():
-        #         checkpoint[f'neck.{k}'] = v
+            # Neck: state_dict() 사용
+            neck_dict = self.neck.state_dict()
+            for k, v in neck_dict.items():
+                checkpoint[f'neck.{k}'] = v
             
-        #     # ROI Head: state_dict() 사용
-        #     roi_head_dict = self.roi_head.state_dict()
-        #     for k, v in roi_head_dict.items():
-        #         checkpoint[f'roi_head.{k}'] = v
+            # ROI Head: state_dict() 사용
+            roi_head_dict = self.roi_head.state_dict()
+            for k, v in roi_head_dict.items():
+                checkpoint[f'roi_head.{k}'] = v
             
-        #     # 추가 모듈 (예: grid_mask)
-        #     if hasattr(self, 'grid_mask'):
-        #         grid_mask_dict = self.grid_mask.state_dict()
-        #         for k, v in grid_mask_dict.items():
-        #             checkpoint[f'grid_mask.{k}'] = v
+            # 추가 모듈 (예: grid_mask)
+            if hasattr(self, 'grid_mask'):
+                grid_mask_dict = self.grid_mask.state_dict()
+                for k, v in grid_mask_dict.items():
+                    checkpoint[f'grid_mask.{k}'] = v
             
-        #     save_path = os.path.join(self.save_dir, f'model_iter_{self.total_iter}_2.pth')
-        #     torch.save(checkpoint, save_path)
-        #     print(f"Model saved at iteration {self.total_iter}")
+            save_path = os.path.join(self.save_dir, f'model_iter_{self.total_iter}_2.pth')
+            torch.save(checkpoint, save_path)
+            print(f"Model saved at iteration {self.total_iter}")
 
-        # if self.total_iter == 28130:
-        #     self.total_iter = 0
+        if self.total_iter == 28130:
+            self.total_iter = 0
 
         return losses
 
