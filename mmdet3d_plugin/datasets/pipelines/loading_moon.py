@@ -714,7 +714,7 @@ class PointToMultiViewDepth(object):
             # points2img = add_calibration_adv(lidar2img , points_lidar)
             points2img , KT_ori  = add_calibration_adv2(lidar2cam ,cam2img, points_lidar)
             # miscalibrated_points2img_ori , mis_RT_ori , mis_KT_ori ,mis_K_ori = add_mis_calibration_ori(lidar2cam,cam2img, points_lidar,max_r=0.0,max_t=0.0)
-            miscalibrated_points2img , extrinsic_perturb, lidar2img_original ,lidar2img_mis = add_mis_calibration_adv(lidar2img,lidar2cam,cam2img, points_lidar, max_r=10.0,max_t=0.075)
+            miscalibrated_points2img , extrinsic_perturb, lidar2img_original ,lidar2img_mis = add_mis_calibration_adv(lidar2img,lidar2cam,cam2img, points_lidar, max_r=5.0,max_t=0.5)
 
             point2img_gt.append(points2img) # lidar coordination 3d
             list_mis_RT.append(extrinsic_perturb) # lidar coordination 3d mis-calibration
@@ -724,14 +724,14 @@ class PointToMultiViewDepth(object):
             # img_ori.append(img)
             
             ####### depth image display ######
-            depth_gt, gt_uv,gt_z, valid_indices_gt= points2depthmap_gpu(points2img, img_height ,img_width)
+            depth_gt, gt_uv,gt_z, valid_indices_gt= points2depthmap_gpu(points2img, img_height ,img_width,self.grid_config,downsample=1)
             # lidarOnImage_gt = torch.cat((gt_uv, gt_z.unsqueeze(1)), dim=1)
             # pts = lidarOnImage_gt.T
             # dense_depth_img_gt = dense_map_gpu_optimized(pts , img_width, img_height, 4)
             # dense_depth_img_gt = dense_depth_img_gt.to(dtype=torch.uint8)
             # dense_depth_img_color_gt = colormap(dense_depth_img_gt)
 
-            depth_mis, uv,z,valid_indices = points2depthmap_gpu(miscalibrated_points2img, img_height ,img_width)
+            depth_mis, uv,z,valid_indices = points2depthmap_gpu(miscalibrated_points2img, img_height ,img_width,self.grid_config,downsample=1)
             # lidarOnImage_mis = torch.cat((uv, z.unsqueeze(1)), dim=1)
             # # pts = preprocess_points(lidarOnImage_mis.T)
             # pts_mis = lidarOnImage_mis.T

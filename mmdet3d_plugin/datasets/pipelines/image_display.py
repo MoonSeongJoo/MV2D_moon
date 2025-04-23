@@ -175,15 +175,15 @@ def points2depthmap_cpu(points, height, width, downsample=1):
     
     return depth_map, coor, depth, valid_indices
 
-def points2depthmap_gpu(points, height, width, downsample=1):
+def points2depthmap_gpu(points, height, width, grid_config, downsample=1):
     device = points.device
-    grid_config = {
-        'x': [-51.2, 51.2, 0.8],
-        'y': [-51.2, 51.2, 0.8],
-        'z': [-5, 3, 8],
-        # 'depth': [1.0, 60.0, 0.5],
-        'depth': [0.0, 60.0, 0.5],
-    }
+    # grid_config = {
+    #     'x': [-51.2, 51.2, 0.8],
+    #     'y': [-51.2, 51.2, 0.8],
+    #     'z': [-5, 3, 8],
+    #     # 'depth': [1.0, 60.0, 0.5],
+    #     'depth': [0.0, 60.0, 0.5],
+    # }
     height, width = height // downsample, width // downsample
     depth_map = torch.zeros((height, width), dtype=torch.float32, device=device)
     

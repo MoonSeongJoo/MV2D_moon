@@ -577,15 +577,16 @@ class MV2DSHead(MV2DHead):
         # detection_xyz_adv ,lidar2img = center2lidar(pixel_normal_uvz[:,1:4],intrinsics,extrinsics)
         # detection_xyz_adv_concat = torch.cat([pixel_normal_uvz[:,0:1],detection_xyz_adv,pixel_normal_uvz[:,4:5]],dim=1)
         # detection_nonzero_xyz = detection_xyz_adv_concat.float()
-        detection_nonzero_xyz = image_to_lidar_global_modi1(detection_nonzero_uvz_with_ObjectID,gt_KT) # 교정되어진 lidar좌표계 pc
-        detection_real_mask = (detection_nonzero_uvz_with_ObjectID[:,5] == 1.0)  | (detection_nonzero_uvz_with_ObjectID[:,5] == 0.7) 
+        gt_KT = gt_KT.double()
+        detection_nonzero_xyz = image_to_lidar_global_modi1(detection_nonzero_uvz_with_ObjectID.double(),gt_KT) # 교정되어진 lidar좌표계 pc
+        detection_real_mask = (detection_nonzero_uvz_with_ObjectID[:,5] == 1.0) | (detection_nonzero_uvz_with_ObjectID[:,5] == 0.7) 
         # detection_pred_mask = (detection_nonzero_uvz_with_ObjectID[:,5] == 0.7)
         detection_uvz_lidar = detection_nonzero_uvz_with_ObjectID[detection_real_mask]
         detection_xyz_lidar = detection_nonzero_xyz[detection_real_mask]
         # trimed_detection_xyz_lidar = trim_or_generate_points(detection_xyz_lidar,target_count=200)
         # detection_xyz_pred = detection_nonzero_xyz[detection_pred_mask]
         
-        gt_xyz = miscalib_transform2(detection_nonzero_xyz,mis_Rt)
+        gt_xyz = miscalib_transform2(detection_nonzero_xyz,mis_Rt.double())
         gt_xyz_lidar = gt_xyz[detection_real_mask]
 
         # trimed_gt_xyz = miscalib_transform2(trimed_detection_xyz_lidar,mis_Rt)
@@ -608,11 +609,11 @@ class MV2DSHead(MV2DHead):
         # points_lidar2img_mis = project_lidar_to_image(pts_hom,lidar2img)
         # points_lidar2img = project_lidar_to_image(det_xyz_hom,lidar2img)
         points_lidar2img = lidar_to_image_no_filter(det_xyz_hom_with_index,gt_KT)
-        points_lidar2img_mis ,mask_valid_mis = lidar_to_image_with_index(pts_hom_with_index,gt_KT,img_shape=(928,1600))
+        points_lidar2img_mis ,mask_valid_mis = lidar_to_image_with_index(pts_hom_with_index,gt_KT,img_shape=(900,1600))
         points_lidar2img = points_lidar2img[mask_valid_mis]
 
         scaled_points_lidar2img = scale_uvz_points(points_lidar2img[:,1:],original_size=(928,1600),target_size=(192,640))
-        scaled_points_lidar2img_mis = scale_uvz_points(points_lidar2img_mis[:,1:],original_size=(928,1600),target_size=(192,640))
+        scaled_points_lidar2img_mis = scale_uvz_points(points_lidar2img_mis[:,1:],original_size=(900,1600),target_size=(192,640))
         
         # normal_points_lidar2img_mis , mis_min_vals, mis_max_vals= minmax_normalize_uvz(points_lidar2img_mis)
         # normal_points_lidar2img_mis[:, 0] += 0.5
@@ -708,7 +709,7 @@ class MV2DSHead(MV2DHead):
         
         ########### corr transformer sjmoon ###########
         # selected_imgs, trimed_corrs ,original_camera_ids = process_queries(corrs_points,sbs_img)
-        selected_imgs, trimed_corrs ,original_camera_ids = process_queries_adv(corrs_points,sbs_img)
+        selected_imgs, trimed_corrs ,original_camera_ids = process_queries_adv(corrs_points.float(),sbs_img)
         # selected_imgs, trimed_corrs ,original_camera_ids = process_queries_adv1(corrs_points,sbs_img,rois_with_indices,num_points=300)
 
         # # 분포 추적 버퍼 초기화 (모델 클래스 내부에 선언)
@@ -789,13 +790,13 @@ class MV2DSHead(MV2DHead):
         # for cid in int_ids :
         #     idx = id_to_idx[cid.item()]
         #     draw_correspondences(
-        #         trimed_corrs=trimed_corrs[idx][:,2:],  # 첫 번째 배치 선택
+        #         trimed_corrs=trimed_corrs[idx][:2,2:],  # 첫 번째 배치 선택
         #         sbs_img=sbs_img,
         #         camera_idx=cid,
         #         save_path='correspondence_visualization_gt.jpg'
         #     )
         #     draw_correspondences(
-        #         trimed_corrs=pred_corrs[idx],  # 첫 번째 배치 선택
+        #         trimed_corrs=pred_corrs[idx][:2,:],  # 첫 번째 배치 선택
         #         sbs_img=sbs_img,
         #         camera_idx=cid,
         #         save_path='correspondence_visualization_pred.jpg'

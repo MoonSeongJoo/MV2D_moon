@@ -59,13 +59,14 @@ class MV2D(Base3DDetector):
     
     def _freeze_backbone_modules(self):
         """corr 네트워크 제외한 모든 모듈 동결"""
-        # # 1. Base Detector 동결
-        # for param in self.base_detector.parameters():
-        #     param.requires_grad = False
+        
+        # 1. Base Detector 동결
+        for param in self.base_detector.parameters():
+            param.requires_grad = False
             
-        # # 2. Neck 동결
-        # for param in self.neck.parameters():
-        #     param.requires_grad = False
+        # 2. Neck 동결
+        for param in self.neck.parameters():
+            param.requires_grad = False
             
         # 3. ROI Head 내 corr 제외 동결
         for name, param in self.roi_head.named_parameters():
@@ -186,14 +187,16 @@ class MV2D(Base3DDetector):
         img = img.view(batch_size * num_views, *img.shape[2:])
         assert batch_size == 1, 'only support batch_size 1 now'
         
-        img_ori = img_original.view(batch_size * num_views, *img_original.shape[2:])
+        # img_ori = img_original.view(batch_size * num_views, *img_original.shape[2:])
+        img_ori = img_original.contiguous().reshape(batch_size * num_views, *img_original.shape[2:])
         mis_KT = mis_KT.view(batch_size * num_views, *mis_KT.shape[2:])
         mis_Rt = mis_Rt.view(batch_size * num_views, *mis_Rt.shape[2:])
         gt_KT = gt_KT.view(batch_size * num_views, *gt_KT.shape[2:])
         gt_KT_3by4 = gt_KT_3by4.view(batch_size * num_views, *gt_KT_3by4.shape[2:])
     
         # lidar_depth_gt = lidar_depth_gt.view(batch_size * num_views, *lidar_depth_gt.shape[2:]).to(torch.float32) # uvz_gt
-        lidar_depth_mis = lidar_depth_mis.view(batch_size * num_views, *lidar_depth_mis.shape[2:])
+        # lidar_depth_mis = lidar_depth_mis.view(batch_size * num_views, *lidar_depth_mis.shape[2:])
+        lidar_depth_mis = lidar_depth_mis.contiguous().reshape(batch_size * num_views, *lidar_depth_mis.shape[2:])
         
         if self.use_grid_mask:
             img = self.grid_mask(img)
@@ -274,7 +277,7 @@ class MV2D(Base3DDetector):
         # torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=20)
 
         self.total_iter += 1
-        if self.total_iter % 1000 == 0:
+        if self.total_iter % 4000 == 0:
             # 계층적 키 매핑 생성 (버퍼 포함)
             checkpoint = {}
             
