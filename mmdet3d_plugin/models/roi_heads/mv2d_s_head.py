@@ -177,15 +177,16 @@ class COTR(nn.Module):
     
 
 class CorrelationCycleLoss(nn.Module):
-    def __init__(self, corr_weight=1.0 , cycle_weight=1.0):
+    def __init__(self, corr_weight=1.0 , cycle_weight=1.0 ,chamfer_weight=1.0):
         super().__init__()
         # self.loss_weight = loss_weight
         self.corr_weight = corr_weight
         self.cycle_weight= cycle_weight
+        self.chamfer_weight = chamfer_weight
         # self.chamfer_weight = corr_weight
         # print ("corr weights=" , self.loss_weight )
 
-    def forward(self, corr_pred, corr_target, cycle, queries, mask):
+    def forward(self, corr_pred, corr_target, cycle, queries, mask, pred_xyz,gt_xyz):
         corr_loss = torch.nn.functional.mse_loss(corr_pred, corr_target)
         # Smooth L1 Loss 사용
         # corr_loss = torch.nn.functional.smooth_l1_loss(corr_pred, corr_target)
@@ -195,47 +196,36 @@ class CorrelationCycleLoss(nn.Module):
             cycle_loss = torch.nn.functional.mse_loss(cycle[mask], queries[mask])
             # cycle_loss = torch.nn.functional.smooth_l1_loss(cycle[mask], queries[mask])
             corr_loss += cycle_loss 
-        
+        chamfer_loss = self.chamfer_loss(pred_xyz,gt_xyz)
         # return self.loss_weight * corr_loss
-        return self.corr_weight * corr_loss + self.cycle_weight * cycle_loss
+        return self.corr_weight * corr_loss + self.cycle_weight * cycle_loss + self.chamfer_weight * chamfer_loss
     
-    # def forward(self, corr_pred, corr_target, cycle, queries, mask):
-    #     # Learnable Chamfer Distance 구현
-    #     def chamfer_distance(x, y):
-    #         # x, y: 배치 단위 포인트 클라우드 (B, N, D)
-    #         x_size = x.size(1)
-    #         y_size = y.size(1)
-            
-    #         # 효율적인 거리 계산을 위한 방식
-    #         x = x.unsqueeze(2).expand(-1, -1, y_size, -1)  # (B, N, M, D)
-    #         y = y.unsqueeze(1).expand(-1, x_size, -1, -1)  # (B, N, M, D)
-            
-    #         # L2 거리 계산
-    #         dist = torch.pow(x - y, 2).sum(3)  # (B, N, M)
-            
-    #         # 양방향 최소 거리 계산
-    #         min_dist_xy = dist.min(2)[0]  # (B, N)
-    #         min_dist_yx = dist.min(1)[0]  # (B, M)
-            
-    #         # 가중치 네트워크를 통한 적응형 가중치 부여
-    #         # 간단한 구현을 위해 일반 가중치 사용
-    #         chamfer_loss = min_dist_xy.mean() + min_dist_yx.mean()
-            
-    #         return chamfer_loss
-    
-    #     # 기본 Chamfer 손실
-    #     chamfer_loss = chamfer_distance(corr_pred, corr_target)
+    def chamfer_loss(self, points_a, points_b):
+        """
+        Chamfer Distance Loss 계산 메서드
+        Args:
+            points_a: (N, 3) 형태의 텐서 [detection_xyz_normal[...,2:]]
+            points_b: (M, 3) 형태의 텐서 [pts_lidar_mis_normalized[mask_valid_mis]]
+        """
+        # 입력 차원 검증
+        assert points_a.dim() == 2 and points_b.dim() == 2, "Input must be 2D tensors"
+        points_b = points_b.float()
+        # 유효 포인트 필터링
+        valid_a = torch.isfinite(points_a).all(dim=1)
+        valid_b = torch.isfinite(points_b).all(dim=1)
+        points_a = points_a[valid_a]
+        points_b = points_b[valid_b]
+
+        # 거리 행렬 계산
+        dist_matrix = torch.cdist(points_a, points_b, p=2)
         
-    #     # Cycle Consistency 손실
-    #     cycle_loss = torch.tensor(0.0, device=chamfer_loss.device)
-    #     if mask.sum() > 0:
-    #         cycle_loss = torch.nn.functional.smooth_l1_loss(cycle[mask], queries[mask])
+        # 양방향 최소 거리 계산
+        min_a_to_b = torch.min(dist_matrix, dim=1)[0]
+        min_b_to_a = torch.min(dist_matrix, dim=0)[0]
         
-    #     # 추가적인 Point Cloud Distance 손실 (선택적)
-    #     # point_dist_loss = point_distance_loss(corr_pred, corr_target)
-    #     corr_loss = self.chamfer_weight * chamfer_loss + self.cycle_weight * cycle_loss
+        # 평균 손실 계산
+        return (min_a_to_b.mean() + min_b_to_a.mean()) / 2.0
     
-    #     return corr_loss
 
 # Deformable SPN 모듈 정의
 class DeformableSPN(nn.Module):
@@ -391,7 +381,7 @@ class MV2DSHead(MV2DHead):
         #     nn.ReLU(),
         #     nn.Linear(256, 3)
         # )
-        self.corr_loss = CorrelationCycleLoss(corr_weight=2.0 , cycle_weight=1.0)
+        self.corr_loss = CorrelationCycleLoss(corr_weight=200.0 , cycle_weight=100.0 ,chamfer_weight=50.0)
         
         self.num_kp = 100 
         self.corr = COTR(self.num_kp)
@@ -407,8 +397,8 @@ class MV2DSHead(MV2DHead):
         #     self.register_buffer('corr_mean', torch.zeros(3))
         #     self.register_buffer('corr_std', torch.ones(3))
 
-        self.empty_count = 0  # 빈 텐서 카운터 초기화
-        self.total_iter = 0   # 전체 이터레이션 카운터
+        # self.empty_count = 0  # 빈 텐서 카운터 초기화
+        # self.total_iter = 0   # 전체 이터레이션 카운터
 
         # # Deformable SPN 레이어 추가
         # self.deform_spn = DeformableSPN()
@@ -550,7 +540,7 @@ class MV2DSHead(MV2DHead):
         sbs_img = two_images_side_by_side_gpu(img_resized, lidar_depth_mis_resized)
         sbs_img = sbs_img.permute(0,3,1,2)
         # sbs_img = tvtf.normalize(sbs_img, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-        ############## input display ##########################
+        # ############## input display ##########################
         # visualize_bboxes(img,proposal_list,output_path='bbox_display.png')
         # display_depth_maps(img,dense_depth_img_color_mis,sbs_img)
         # print("input dispaly end")
@@ -593,6 +583,15 @@ class MV2DSHead(MV2DHead):
 
         detection_xyz = detection_xyz_lidar[:,2:5].clone()
         pts_lidar_mis = gt_xyz_lidar[:,2:5].clone()
+        pts_lidar_mis_normalized = pts_lidar_mis.clone()
+        
+        pts_lidar_mis_normalized[..., 0:1] = (pts_lidar_mis_normalized[..., 0:1] - self.pc_range[0]) / (
+                self.pc_range[3] - self.pc_range[0])
+        pts_lidar_mis_normalized[..., 1:2] = (pts_lidar_mis_normalized[..., 1:2] - self.pc_range[1]) / (
+                self.pc_range[4] - self.pc_range[1])
+        pts_lidar_mis_normalized[..., 2:3] = (pts_lidar_mis_normalized[..., 2:3] - self.pc_range[2]) / (
+                self.pc_range[5] - self.pc_range[2])
+        pts_lidar_mis_normalized = pts_lidar_mis_normalized.clamp(min=0, max=1)
 
         # detection_xyz = detection_xyz[:,2:5].clone()
         # pts_lidar_mis = pts_lidar_mis[:,2:5].clone()
@@ -723,7 +722,7 @@ class MV2DSHead(MV2DHead):
             #     (selected_imgs.size(0), 100, 3), 
             #     device=selected_imgs.device
             # ) * self.corr_std + self.corr_mean  # 핵심 변경 부분
-            self.empty_count += 1  # 빈 텐서 발생 시 카운트 증가
+            # self.empty_count += 1  # 빈 텐서 발생 시 카운트 증가
             
             # zero loss 생성 (requires_grad=True 유지)
             corr_loss = torch.tensor(0.0, 
@@ -737,7 +736,6 @@ class MV2DSHead(MV2DHead):
             corr_target = trimed_corrs[...,5:8]
         
             corrs_pred, cycle, corr_mask, enc_out = self.corr(selected_imgs, query_input)
-            corr_loss = self.corr_loss(corrs_pred, corr_target, cycle, query_input, corr_mask)
 
             # denormal_pred_uvz = minmax_denormalize_uvz(corrs_pred,mis_min_vals,mis_max_vals)
             denormal_pred_uvz = denormalize_points(corrs_pred)
@@ -756,6 +754,8 @@ class MV2DSHead(MV2DHead):
             detection_xyz_normal[..., 4:5] = (detection_xyz_normal[..., 4:5] - self.pc_range[2]) / (
                     self.pc_range[5] - self.pc_range[2])
             detection_xyz_normal[...,2:].clamp(min=0, max=1)
+            
+            corr_loss = self.corr_loss(corrs_pred, corr_target, cycle, query_input, corr_mask ,detection_xyz_normal[...,2:],pts_lidar_mis_normalized[mask_valid_mis])
 
             ref_points_with_index = merge_point_clouds(reference_points_with_indices, detection_xyz_normal)
             ref_points = ref_points_with_index[...,2:] 
@@ -764,15 +764,15 @@ class MV2DSHead(MV2DHead):
             # trimed_pred_xyz = self.final_ln_sparse_cross_attn(trimed_pred_xyz)
      
         # 그래디언트 클리핑 적용
-        torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=5)
-        self.total_iter += 1  # 모든 이터레이션에서 카운트 증가
+        # torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=5)
+        # self.total_iter += 1  # 모든 이터레이션에서 카운트 증가
         # 매 100회 이터레이션마다 로깅
-        if self.total_iter % 50 == 0:
-            empty_ratio = self.empty_count / self.total_iter
-            print(f"[Iter {self.total_iter}] Empty count: {self.empty_count:.2%}")
-            print(f"[Iter {self.total_iter}] Empty ratio: {empty_ratio:.2%}")
-            self.total_iter = 0
-            self.empty_count = 0  # 카운트 초기화
+        # if self.total_iter % 50 == 0:
+        #     empty_ratio = self.empty_count / self.total_iter
+        #     print(f"[Iter {self.total_iter}] Empty count: {self.empty_count:.2%}")
+        #     print(f"[Iter {self.total_iter}] Empty ratio: {empty_ratio:.2%}")
+        #     self.total_iter = 0
+        #     self.empty_count = 0  # 카운트 초기화
         
             # # 분포 통계 업데이트 (EMA 적용)
             # self.corr_mean = 0.9 * self.corr_mean + 0.1 * corrs_pred.mean(dim=(0,1))
@@ -802,24 +802,6 @@ class MV2DSHead(MV2DHead):
         #         save_path='correspondence_visualization_pred.jpg'
         #     )
         #     print ("end")
-
-        ####### display 용 gt uvz ############    
-        # denormal_query_uvz = denormalize_points(self.inverse_layer_norm(corr_target_normalized, self.final_ln))
-        # descale_query_uvz = inverse_scale_uvz_points(denormal_query_uvz)
-        # descale_query_uvz_with_index = torch.cat([trimed_corrs[...,0:2],descale_query_uvz],dim=2)
-        # pixel_normal_query_uvz = pixel_to_normalized(descale_query_uvz_with_index,intrinsics)
-        # detection_xyz_adv_with_index, detection_query_xyz_adv ,lidar2img = center2lidar_batch(pixel_normal_query_uvz,intrinsics,extrinsics)
-        # detection_query_xyz_normal = detection_query_xyz_adv.float()
-
-        # detection_query_xyz_normal[..., 0:1] = (detection_query_xyz_normal[..., 0:1] - self.pc_range[0]) / (
-        #         self.pc_range[3] - self.pc_range[0])
-        # detection_query_xyz_normal[..., 1:2] = (detection_query_xyz_normal[..., 1:2] - self.pc_range[1]) / (
-        #         self.pc_range[4] - self.pc_range[1])
-        # detection_query_xyz_normal[..., 2:3] = (detection_query_xyz_normal[..., 2:3] - self.pc_range[2]) / (
-        #         self.pc_range[5] - self.pc_range[2])
-        # detection_query_xyz_normal.clamp(min=0, max=1)
-        # gt_display_xyz = detection_query_xyz_normal.contiguous().view(-1, 3)
-        ########## end of display ##########
          
         # generate box correlation
         corr, mask = self.box_corr_module.gen_box_roi_correlation(rois, [len(p) for p in proposal_list], img_metas)
@@ -884,7 +866,7 @@ class MV2DSHead(MV2DHead):
         #     # dense_depth_img_color_ref = colormap(dense_depth_img_ref)
 
         #     #### 예측값 디스플레이 ####
-        #     denormalized_pts = ref_points.clone()
+        #     denormalized_pts = ref_points.clone().double()
         #     denormalized_pts[..., 0:1] = ref_points[..., 0:1] * (self.pc_range[3] - self.pc_range[0]) + self.pc_range[0]
         #     denormalized_pts[..., 1:2] = ref_points[..., 1:2] * (self.pc_range[4] - self.pc_range[1]) + self.pc_range[1]
         #     denormalized_pts[..., 2:3] = ref_points[..., 2:3] * (self.pc_range[5] - self.pc_range[2]) + self.pc_range[2]
@@ -1009,7 +991,7 @@ class MV2DSHead(MV2DHead):
                                                             attn_mask=None,
                                                             cross_attn_mask=None,
                                                             force_fp32=self.force_fp32, )
-            # torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=10)
+            torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=3)
 
         if mask_dict and mask_dict['pad_size'] > 0:
             output_known_class = all_cls_scores[:, :, :mask_dict['pad_size'], :]

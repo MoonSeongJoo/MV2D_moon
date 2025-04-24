@@ -2882,7 +2882,7 @@ def points2depthmap(points, height, width ,downsample=1):
         # 'depth': [1.0, 80.0, 0.5],
     }
     height, width = height // downsample, width // downsample
-    depth_map = torch.zeros((height, width), dtype=torch.float32, device=device)
+    depth_map = torch.zeros((height, width), dtype=torch.float64, device=device)
     coor = torch.round(points[:, :2] / downsample)
     depth = points[:, 2]
     kept1 = (coor[:, 0] >= 0) & (coor[:, 0] < width) & (
@@ -2912,9 +2912,9 @@ def dense_map_gpu_optimized(Pts, n, m, grid):
     epsilon = 1e-8  # 작은 값 추가하여 0으로 나누는 상황 방지
     # import pdb; pdb.set_trace()
     # 초기 텐서를 GPU로 이동
-    mX = torch.full((m, n), float('inf'), dtype=torch.float32, device=device)
-    mY = torch.full((m, n), float('inf'), dtype=torch.float32, device=device)
-    mD = torch.zeros((m, n), dtype=torch.float32, device=device)
+    mX = torch.full((m, n), float('inf'), dtype=torch.float64, device=device)
+    mY = torch.full((m, n), float('inf'), dtype=torch.float64, device=device)
+    mD = torch.zeros((m, n), dtype=torch.float64, device=device)
 
     mX_idx = Pts[1].clone().detach().to(dtype=torch.int64, device=device)
     mY_idx = Pts[0].clone().detach().to(dtype=torch.int64, device=device)
@@ -2923,9 +2923,9 @@ def dense_map_gpu_optimized(Pts, n, m, grid):
     mY[mX_idx, mY_idx] = Pts[1] - torch.round(Pts[1])
     mD[mX_idx, mY_idx] = Pts[2]
 
-    KmX = torch.zeros((ng, ng, m - ng, n - ng), dtype=torch.float32, device=device)
-    KmY = torch.zeros((ng, ng, m - ng, n - ng), dtype=torch.float32, device=device)
-    KmD = torch.zeros((ng, ng, m - ng, n - ng), dtype=torch.float32, device=device)
+    KmX = torch.zeros((ng, ng, m - ng, n - ng), dtype=torch.float64, device=device)
+    KmY = torch.zeros((ng, ng, m - ng, n - ng), dtype=torch.float64, device=device)
+    KmD = torch.zeros((ng, ng, m - ng, n - ng), dtype=torch.float64, device=device)
 
     # KmX = torch.zeros((ng, ng), dtype=torch.float32, device=device)
     # KmY = torch.zeros((ng, ng), dtype=torch.float32, device=device)
@@ -2948,7 +2948,7 @@ def dense_map_gpu_optimized(Pts, n, m, grid):
             S += s
 
     S[S == 0] = 1
-    out = torch.zeros((m, n), dtype=torch.float32, device=device)
+    out = torch.zeros((m, n), dtype=torch.float64, device=device)
     out[grid + 1: -grid, grid + 1: -grid] = Y / S
     # return out.cpu()  # 최종 결과를 CPU로 이동
     return out # 최종 결과를 GPU
@@ -3100,7 +3100,7 @@ def pixel_to_normalized(uv_pixel, intrinsics):
     # 4. 좌표 분해 및 계산
     u = uv_flat[:, 2]  # [B*N]
     v = uv_flat[:, 3]  # [B*N]
-    z = -uv_flat[:, 4]  # [B*N]
+    z = uv_flat[:, 4]  # [B*N]
     
     u_norm = (u - cx) / fx
     v_norm = (v - cy) / fy
