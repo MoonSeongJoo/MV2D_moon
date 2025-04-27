@@ -313,9 +313,9 @@ class MV2D(Base3DDetector):
 
     def forward_test(self, 
                     img, 
-                    img_metas,              
+                    img_metas, 
+                    lidar_depth_gt,             
                     lidar_depth_mis,
-                    lidar_depth_gt,
                     mis_KT,
                     mis_Rt,
                     gt_KT,
@@ -349,7 +349,7 @@ class MV2D(Base3DDetector):
         # lidar_depth_gt = lidar_depth_gt.view(batch_size * num_views, *lidar_depth_gt.shape[2:]).to(torch.float32)
         lidar_depth_mis = lidar_depth_mis.view(batch_size * num_views, *lidar_depth_mis.shape[2:]).to(torch.float32)
 
-        lidar_depth_mis_resized = lidar_depth_mis
+        # lidar_depth_mis_resized = lidar_depth_mis
       
         ori_img_metas = img_metas
         img_metas = []
@@ -371,7 +371,7 @@ class MV2D(Base3DDetector):
                 gt_labels.extend(proposal_labels[i])
 
         detector_feat = self.extract_feat(img)
-        mis_depth_feat = self.extract_feat(lidar_depth_mis_resized)
+        # mis_depth_feat = self.extract_feat(lidar_depth_mis_resized)
 
         # generate 3D detection
         self.base_detector.set_detection_cfg(self.test_cfg.get('detection_proposal'))
@@ -379,11 +379,11 @@ class MV2D(Base3DDetector):
         detections = self.process_2d_detections(det_results, device=img.device)
 
         feat = self.process_detector_feat(detector_feat)
-        mis_depthmap_feat = self.process_detector_feat(mis_depth_feat)
+        # mis_depthmap_feat = self.process_detector_feat(mis_depth_feat)
 
         # generate 3D detection
         # to -do 여기 아규먼트 수정해야 함 !! 
-        bbox_outputs_all = self.roi_head.simple_test(img_ori,img_metas,lidar_depth_mis,feat,mis_depthmap_feat, detections,lidar_depth_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4,rescale=rescale)
+        bbox_outputs_all = self.roi_head.simple_test(img_ori,img_metas,lidar_depth_mis,feat,detections,lidar_depth_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4,rescale=rescale)
         bbox_outputs = []
         box_type_3d = img_metas[0]['box_type_3d']
 

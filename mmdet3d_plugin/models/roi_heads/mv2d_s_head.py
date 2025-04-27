@@ -1123,7 +1123,7 @@ class MV2DSHead(MV2DHead):
 
         return losses , loss_corr
     
-    def simple_test(self,img,img_metas, lidar_depth_mis, x, mis_depthmap_feat,proposal_list, uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4,rescale=False):
+    def simple_test(self,img,img_metas, lidar_depth_mis, x,proposal_list, uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4,rescale=False):
         assert self.with_bbox, 'Bbox head must be implemented.'
         assert len(img_metas) // img_metas[0]['num_views'] == 1
 
@@ -1131,13 +1131,13 @@ class MV2DSHead(MV2DHead):
         pos_enc = self.position_encoding(x, img_metas)
         x = [torch.cat([feat, pe], dim=1) for feat, pe in zip(x, pos_enc)]
 
-        mis_depth_pos_enc = self.position_encoding(mis_depthmap_feat, img_metas)
-        depth_x = [torch.cat([feat, pe], dim=1) for feat, pe in zip(mis_depthmap_feat, mis_depth_pos_enc)]
+        # mis_depth_pos_enc = self.position_encoding(mis_depthmap_feat, img_metas)
+        # depth_x = [torch.cat([feat, pe], dim=1) for feat, pe in zip(mis_depthmap_feat, mis_depth_pos_enc)]
 
         results_from_last = dict()
 
         results_from_last['batch_size'] = len(img_metas) // img_metas[0]['num_views']
-        results_from_last ,_ = self._bbox_forward(img,img_metas, lidar_depth_mis,x,depth_x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
+        results_from_last ,_ = self._bbox_forward(img,img_metas, lidar_depth_mis,x,proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
 
         ## original
         cls_scores = results_from_last['cls_scores'][-1]
