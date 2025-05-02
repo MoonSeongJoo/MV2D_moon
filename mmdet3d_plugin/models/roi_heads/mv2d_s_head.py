@@ -208,6 +208,8 @@ class CorrelationCycleLoss(nn.Module):
             points_b: (M, 3) 형태의 텐서 [pts_lidar_mis_normalized[mask_valid_mis]]
         """
         # 입력 차원 검증
+        if points_a.size(0) == 0 or points_b.size(0) == 0:
+            print ("chmfer loss points_a or points_b is empty") 
         assert points_a.dim() == 2 and points_b.dim() == 2, "Input must be 2D tensors"
         points_b = points_b.float()
         # 유효 포인트 필터링
@@ -227,107 +229,72 @@ class CorrelationCycleLoss(nn.Module):
         return (min_a_to_b.mean() + min_b_to_a.mean()) / 2.0
     
 
-# Deformable SPN 모듈 정의
-class DeformableSPN(nn.Module):
-    def __init__(self, in_channels=3, out_channels=3):
-        super().__init__()
-        self.offset_conv = nn.Sequential(
-            nn.Conv2d(in_channels, 64, 3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(64, 18, 3, padding=1)  # 3x3 커널 기준 2*9 offset
-        )
-        self.dcn = DeformConv2d(in_channels, out_channels, 3, padding=1)
+# # Deformable SPN 모듈 정의
+# class DeformableSPN(nn.Module):
+#     def __init__(self, in_channels=3, out_channels=3):
+#         super().__init__()
+#         self.offset_conv = nn.Sequential(
+#             nn.Conv2d(in_channels, 64, 3, padding=1),
+#             nn.ReLU(),
+#             nn.Conv2d(64, 18, 3, padding=1)  # 3x3 커널 기준 2*9 offset
+#         )
+#         self.dcn = DeformConv2d(in_channels, out_channels, 3, padding=1)
 
-    def forward(self, x):
-        offsets = self.offset_conv(x)
-        return self.dcn(x, offsets)
+#     def forward(self, x):
+#         offsets = self.offset_conv(x)
+#         return self.dcn(x, offsets)
     
-class IDAwareROIExtractor(nn.Module):
-    def __init__(self, original_extractor):
-        super().__init__()
-        self.original_extractor = original_extractor
-        # self.id_cache = None  # ID 캐싱용
+# class SkipConnectionNetwork(nn.Module):
+#     def __init__(self, cam_feature_shape=(64, 312, 12), lidar_feature_dim=3, output_dim=3):
+#         super().__init__()
+#         self.cam_channel, self.cam_height, self.cam_width = cam_feature_shape
+        
+#         # 카메라 특징 처리 (공간 정보 집계)
+#         self.cam_encoder = nn.Sequential(
+#             nn.Linear(self.cam_channel, 256),
+#             nn.LayerNorm(256),
+#             nn.ReLU(),
+#             nn.Linear(256, 64)
+#         )
+        
+#         # 라이다 특징 처리 (정규 좌표 정보)
+#         self.lidar_encoder = nn.Sequential(
+#             nn.Linear(lidar_feature_dim, 64),
+#             nn.LayerNorm(64),
+#             nn.ReLU()
+#         )
+        
+#         # 융합 레이어 (교차 모달리티 학습)
+#         self.fusion = nn.Sequential(
+#             nn.Linear(128, 256),
+#             nn.ReLU(),
+#             nn.Linear(256, output_dim)
+#         )
 
-    def forward(self, x, rois_with_ids):
-        # ID 분리: [batch_idx, obj_id, x1,y1,x2,y2]
-        ids = rois_with_ids[:, 1]
-        rois = rois_with_ids[:, [0,2,3,4,5]]
+#     def forward(self, detection_xyz_normal, enc_out):
+#         num_objects = detection_xyz_normal.size(0)
+#         num_cameras = enc_out.size(0)
         
-        # 특징 추출
-        feats = self.original_extractor(x, rois)
+#         # 카메라 특징 처리 파이프라인
+#         cam_features = enc_out.contiguous().reshape(num_cameras, self.cam_channel, -1)  # [C, 64, 312*12]
+#         cam_features = cam_features.permute(0, 2, 1).contiguous()  # [C, 312*12, 64]
+#         cam_features = cam_features.view(-1, self.cam_channel)  # [C*312*12, 64]
         
-        # ID 캐싱
-        # self.id_cache = ids
-        return feats ,ids
-    
-class AdaptiveDepthFusion(nn.Module):
-    def __init__(self, img_width=1600, img_height=928):
-        super(AdaptiveDepthFusion, self).__init__()
-        self.img_width = img_width
-        self.img_height = img_height
-        self.w_mono = nn.Parameter(torch.tensor(0.5))
-        self.w_lidar = nn.Parameter(torch.tensor(0.5))
+#         cam_encoded = self.cam_encoder(cam_features)  # [C*312*12, 64]
+#         cam_encoded = cam_encoded.view(num_cameras, self.cam_height*self.cam_width, -1)  # [C, 312*12, 64]
+#         cam_agg = cam_encoded.mean(dim=1).mean(dim=0)  # [64] (공간+카메라 집계)
         
-    def forward(self, reference_points_with_indices, detection_nonzero_uvz_with_ObjectID):
-        """
-        Args:
-            reference_points_with_indices (Tensor): [N,5] (cam_id,obj_id,u_normalized,v_normalized,z)
-            detection_nonzero_uvz_with_ObjectID (Tensor): [M,6] (cam_id,obj_id,u_raw,v_raw,z,confidence)
-            
-        Returns:
-            fused_uvz (Tensor): [N,6] (cam_id,obj_id,u_raw,v_raw,fused_z,confidence)
-        """
-        lidar_dict = defaultdict(list)
-        for point in detection_nonzero_uvz_with_ObjectID:
-            cam_id = int(point[0].item())
-            obj_id = int(point[1].item())
-            lidar_dict[(cam_id, obj_id)].append(point)
+#         # 라이다 특징 추출
+#         lidar_encoded = self.lidar_encoder(detection_xyz_normal)  # [N, 64]
         
-        fused_results = []
-        for ref_point in reference_points_with_indices:
-            cam_id, obj_id, u_norm, v_norm, mono_z = ref_point.tolist()
-            cam_id = int(cam_id)
-            obj_id = int(obj_id)
-            key = (cam_id, obj_id)
-            
-            # UV 디노말라이제이션
-            u_raw = u_norm * self.img_width
-            v_raw = v_norm * self.img_height
-            
-            # LiDAR 데이터 처리
-            lidar_points = lidar_dict.get(key, [])
-            avg_conf = 0.0
-            
-            if lidar_points:
-                lidar_tensor = torch.stack(lidar_points)
-                conf_scores = lidar_tensor[:, 5]
-                lidar_z = lidar_tensor[:, 4]
-                
-                avg_conf = conf_scores.mean().item()
-                weighted_lidar_z = (lidar_z * conf_scores).sum() / conf_scores.sum()
-            else:
-                weighted_lidar_z = mono_z
-                
-            # 가중치 계산
-            total_weight = self.w_mono + self.w_lidar
-            norm_w_mono = self.w_mono / total_weight
-            norm_w_lidar = self.w_lidar / total_weight
-            
-            # 깊이 융합
-            fused_z = norm_w_mono * mono_z + norm_w_lidar * weighted_lidar_z
-            
-            fused_results.append([
-                cam_id, 
-                obj_id, 
-                u_raw,  # 디노말라이즈된 UV
-                v_raw,
-                fused_z,
-                avg_conf
-            ])
+#         # 교차 모달리티 융합
+#         fused = torch.cat([
+#             lidar_encoded,
+#             cam_agg.unsqueeze(0).expand(num_objects, -1)
+#         ], dim=1)  # [N, 128]
         
-        return torch.tensor(fused_results, 
-                          dtype=torch.float32, 
-                          device=reference_points_with_indices.device)
+#         # 잔차 연결 기반 좌표 보정
+#         return detection_xyz_normal[...,2:] + self.fusion(fused)
 
 
 @HEADS.register_module()
@@ -381,10 +348,11 @@ class MV2DSHead(MV2DHead):
         #     nn.ReLU(),
         #     nn.Linear(256, 3)
         # )
-        self.corr_loss = CorrelationCycleLoss(corr_weight=200.0 , cycle_weight=100.0 ,chamfer_weight=50.0)
+        self.corr_loss = CorrelationCycleLoss(corr_weight=100.0 , cycle_weight=50.0 ,chamfer_weight=200.0)
         
         self.num_kp = 100 
         self.corr = COTR(self.num_kp)
+        # self.skip_connection = SkipConnectionNetwork()
         # self.idawareroiextractor = IDAwareROIExtractor(self.bbox_roi_extractor)
         # self.adaptivedepthfusion = AdaptiveDepthFusion()
 
@@ -754,6 +722,8 @@ class MV2DSHead(MV2DHead):
             detection_xyz_normal[..., 4:5] = (detection_xyz_normal[..., 4:5] - self.pc_range[2]) / (
                     self.pc_range[5] - self.pc_range[2])
             detection_xyz_normal[...,2:].clamp(min=0, max=1)
+
+            # skip_detection_xyz_normal = self.skip_connection(detection_xyz_normal[...,2:],enc_out)
             
             corr_loss = self.corr_loss(corrs_pred, corr_target, cycle, query_input, corr_mask ,detection_xyz_normal[...,2:],pts_lidar_mis_normalized[mask_valid_mis])
 
