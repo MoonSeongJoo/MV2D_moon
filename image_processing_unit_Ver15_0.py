@@ -3422,27 +3422,49 @@ def trim_or_generate_points(detection_xyz_lidar, target_count=200):
 
 import torch
 
-def deduplicate_obj_ids(input_tensor):
-    # 입력 텐서 평탄화: [C, P, 5] -> [C*P, 5]
-    flat_data = input_tensor.view(-1, 5)
+# def deduplicate_obj_ids(input_tensor):
+#     # 입력 텐서 평탄화: [C, P, 5] -> [C*P, 5]
+#     flat_data = input_tensor.view(-1, 5)
     
-    # obj_id 추출 및 정수형 변환 (인덱스 1)
+#     # obj_id 추출 및 정수형 변환 (인덱스 1)
+#     obj_ids = flat_data[:, 1].to(torch.int64)
+    
+#     # 고유값과 역인덱스 추출
+#     unique_obj_ids, inverse_indices = torch.unique(
+#         obj_ids,
+#         return_inverse=True,
+#         sorted=True
+#     )
+    
+#     # 첫 번째 발생 인덱스 계산
+#     inv_sorted = inverse_indices.argsort()
+#     counts = torch.bincount(inverse_indices)
+#     tot_counts = torch.cat((counts.new_zeros(1), counts.cumsum(dim=0)))[:-1]
+#     unique_indices = inv_sorted[tot_counts]
+    
+#     return flat_data[unique_indices]
+
+def deduplicate_obj_ids(input_tensor):
+    flat_data = input_tensor.view(-1, 5)
     obj_ids = flat_data[:, 1].to(torch.int64)
     
-    # 고유값과 역인덱스 추출
-    unique_obj_ids, inverse_indices = torch.unique(
-        obj_ids,
-        return_inverse=True,
-        sorted=True
-    )
+    # [수정 1] unique 값만 추출
+    unique_obj_ids = torch.unique(obj_ids, sorted=True)
     
-    # 첫 번째 발생 인덱스 계산
-    inv_sorted = inverse_indices.argsort()
-    counts = torch.bincount(inverse_indices)
-    tot_counts = torch.cat((counts.new_zeros(1), counts.cumsum(dim=0)))[:-1]
-    unique_indices = inv_sorted[tot_counts]
+    last_occurrence = torch.zeros(len(unique_obj_ids), dtype=torch.long)
     
-    return flat_data[unique_indices]
+    # [수정 2] 각 고유 ID별 마지막 발생 위치 탐색
+    for i, obj_id in enumerate(unique_obj_ids):
+        matches = torch.where(obj_ids == obj_id)[0]
+        if len(matches) > 0:
+            last_occurrence[i] = matches[-1]
+        else:
+            last_occurrence[i] = -1  # 유효하지 않은 인덱스 처리
+    
+    # [수정 3] 유효한 인덱스만 필터링
+    valid_mask = last_occurrence != -1
+    return flat_data[last_occurrence[valid_mask]]
+
 
 def merge_point_clouds(reference_points, detection_points):
     """obj_id 매칭을 통해 두 포인트 클라우드 병합

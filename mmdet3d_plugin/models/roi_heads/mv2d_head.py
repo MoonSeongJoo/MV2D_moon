@@ -188,11 +188,11 @@ class MV2DHead(BaseRoIHead, BBoxTestMixin, MaskTestMixin):
     def _bbox_forward_train(self, img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4): # for SJMOON
     # def _bbox_forward_train(self, x, proposal_list, img_metas): # for original 
         """Run forward function and calculate loss for box head in training."""
-        bbox_results , loss_corr  = self._bbox_forward(img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON
+        bbox_results , loss_corr , loss_pc_distance = self._bbox_forward(img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON
         # bbox_results = self._bbox_forward(x, proposal_list, img_metas) # for original 
         bbox_results.update(pred={'cls_scores': bbox_results['cls_scores'], 'bbox_preds': bbox_results['bbox_preds']})
 
-        return bbox_results,loss_corr
+        return bbox_results,loss_corr ,loss_pc_distance
         # return bbox_results
 
     def forward_train(self,

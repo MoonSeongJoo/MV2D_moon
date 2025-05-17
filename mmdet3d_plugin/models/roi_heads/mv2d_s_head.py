@@ -171,22 +171,18 @@ class COTR(nn.Module):
             query_reverse[..., 0] = query_reverse[..., 0] - 0.5
             cycle,_ = self.corr(img_reverse_input, query_reverse)
             cycle[..., 0] = cycle[..., 0] - 0.5
-            mask = torch.norm(cycle - query_input, dim=-1) < 10 / 640 # 40 pixel 거리에서는 마스크 
+            mask = torch.norm(cycle - query_input, dim=-1) < 40 / 640 # 40 pixel 거리에서는 마스크 
 
         return corrs_pred , cycle , mask , enc_out
     
 
 class CorrelationCycleLoss(nn.Module):
-    def __init__(self, corr_weight=1.0 , cycle_weight=1.0 ,chamfer_weight=1.0):
+    def __init__(self, corr_weight=1.0 , cycle_weight=1.0):
         super().__init__()
-        # self.loss_weight = loss_weight
         self.corr_weight = corr_weight
         self.cycle_weight= cycle_weight
-        self.chamfer_weight = chamfer_weight
-        # self.chamfer_weight = corr_weight
-        # print ("corr weights=" , self.loss_weight )
 
-    def forward(self, corr_pred, corr_target, cycle, queries, mask, pred_xyz,gt_xyz):
+    def forward(self, corr_pred, corr_target, cycle, queries, mask):
         corr_loss = torch.nn.functional.mse_loss(corr_pred, corr_target)
         # Smooth L1 Loss 사용
         # corr_loss = torch.nn.functional.smooth_l1_loss(corr_pred, corr_target)
@@ -196,9 +192,17 @@ class CorrelationCycleLoss(nn.Module):
             cycle_loss = torch.nn.functional.mse_loss(cycle[mask], queries[mask])
             # cycle_loss = torch.nn.functional.smooth_l1_loss(cycle[mask], queries[mask])
             corr_loss += cycle_loss 
-        chamfer_loss = self.chamfer_loss(pred_xyz,gt_xyz)
+
         # return self.loss_weight * corr_loss
-        return self.corr_weight * corr_loss + self.cycle_weight * cycle_loss + self.chamfer_weight * chamfer_loss
+        return self.corr_weight * corr_loss + self.cycle_weight * cycle_loss
+
+class PointDistanceLoss(nn.Module):
+    def __init__(self, distance_weight=1.0):
+        super().__init__()
+        self.point_distance_weight = distance_weight
+    
+    def forward(self, points_pred, points_gt):
+        return self.point_distance_loss(points_pred, points_gt) * self.point_distance_weight
     
     def chamfer_loss(self, points_a, points_b):
         """
@@ -228,7 +232,25 @@ class CorrelationCycleLoss(nn.Module):
         # 평균 손실 계산
         return (min_a_to_b.mean() + min_b_to_a.mean()) / 2.0
     
+    def point_distance_loss(self, points_pred, points_gt):
+        """
+        1:1 대응 포인트 거리 손실 계산
+        - points_a와 points_b는 (N, 3) 형태이며 동일한 개수의 포인트를 가져야 함
+        - 각 포인트 쌍 간의 L2 거리 평균 계산
+        """
+        if points_pred.size(0) == 0 or points_gt.size(0) == 0:
+            print("point_distance_loss: 입력 포인트 클라우드가 비어 있음")
+            return torch.tensor(0.0, device=points_pred.device)
+         
+        assert points_pred.size() == points_gt.size(), "포인트 개수가 일치하지 않습니다"
+        point_clouds_loss = torch.tensor([0.0]).to(points_pred.device)
+        error = (points_pred - points_gt).norm(dim=0)
+        error.clamp(100.)
+        point_clouds_loss += error.mean()
 
+        return point_clouds_loss/points_pred.shape[0]
+
+    
 # # Deformable SPN 모듈 정의
 # class DeformableSPN(nn.Module):
 #     def __init__(self, in_channels=3, out_channels=3):
@@ -348,7 +370,8 @@ class MV2DSHead(MV2DHead):
         #     nn.ReLU(),
         #     nn.Linear(256, 3)
         # )
-        self.corr_loss = CorrelationCycleLoss(corr_weight=100.0 , cycle_weight=50.0 ,chamfer_weight=200.0)
+        self.corr_loss = CorrelationCycleLoss(corr_weight=2.0 , cycle_weight=1.0)
+        self.point_distance_loss = PointDistanceLoss(distance_weight=1.0)
         
         self.num_kp = 100 
         self.corr = COTR(self.num_kp)
@@ -525,16 +548,7 @@ class MV2DSHead(MV2DHead):
         reference_points = reference_points.clamp(min=0, max=1)
         reference_points_with_indices= torch.cat([rois_with_indices[:,0:2],reference_points],dim=1)
 
-        # detection_nonzero_uvz , conf_scores = find_rois_nonzero_z_adv4(rois,uvz_gt,ref_points_uvz)
-        # detection_nonzero_uvz = find_rois_nonzero_z_adv5(rois,uvz_gt,ref_points_uvz)
-        # detection_nonzero_uvz_with_ObjectID = find_rois_nonzero_z_adv6(rois,uvz_gt,ref_points_uvz)
         detection_nonzero_uvz_with_ObjectID =find_rois_nonzero_z_adv8(rois_with_indices,uvz_gt)
-        # fused_uvz = self.adaptivedepthfusion(reference_points_with_indices, detection_nonzero_uvz_with_ObjectID)
-        # detection_nonzero_uvz = detection_nonzero_uvz_with_ObjectID[:,1:]
-        # pixel_normal_uvz = pixel_to_normalized(detection_nonzero_uvz,intrinsics)
-        # detection_xyz_adv ,lidar2img = center2lidar(pixel_normal_uvz[:,1:4],intrinsics,extrinsics)
-        # detection_xyz_adv_concat = torch.cat([pixel_normal_uvz[:,0:1],detection_xyz_adv,pixel_normal_uvz[:,4:5]],dim=1)
-        # detection_nonzero_xyz = detection_xyz_adv_concat.float()
         gt_KT = gt_KT.double()
         detection_nonzero_xyz = image_to_lidar_global_modi1(detection_nonzero_uvz_with_ObjectID.double(),gt_KT) # 교정되어진 lidar좌표계 pc
         detection_real_mask = (detection_nonzero_uvz_with_ObjectID[:,5] == 1.0) | (detection_nonzero_uvz_with_ObjectID[:,5] == 0.7) 
@@ -553,45 +567,28 @@ class MV2DSHead(MV2DHead):
         pts_lidar_mis = gt_xyz_lidar[:,2:5].clone()
         pts_lidar_mis_normalized = pts_lidar_mis.clone()
         
-        pts_lidar_mis_normalized[..., 0:1] = (pts_lidar_mis_normalized[..., 0:1] - self.pc_range[0]) / (
-                self.pc_range[3] - self.pc_range[0])
-        pts_lidar_mis_normalized[..., 1:2] = (pts_lidar_mis_normalized[..., 1:2] - self.pc_range[1]) / (
-                self.pc_range[4] - self.pc_range[1])
-        pts_lidar_mis_normalized[..., 2:3] = (pts_lidar_mis_normalized[..., 2:3] - self.pc_range[2]) / (
-                self.pc_range[5] - self.pc_range[2])
-        pts_lidar_mis_normalized = pts_lidar_mis_normalized.clamp(min=0, max=1)
 
-        # detection_xyz = detection_xyz[:,2:5].clone()
-        # pts_lidar_mis = pts_lidar_mis[:,2:5].clone()
-
-        # detection_xyz_total = detection_nonzero_xyz[:,1:4].clone()
-        # gt_xyz_total = gt_xyz[:,1:4].clone()
-
-        ## homogeous - with index
-        # det_xyz_hom = torch.cat([detection_xyz, torch.ones_like(detection_xyz[:, :1])], dim=1)
         det_xyz_hom_with_index = torch.cat([detection_xyz_lidar[:,0:1],detection_xyz],dim=1)
         # pts_hom = torch.cat([pts_lidar_mis, torch.ones_like(pts_lidar_mis[:, :1])], dim=1)
         pts_hom_with_index = torch.cat([gt_xyz_lidar[:,0:1],pts_lidar_mis],dim=1)
         
-        # points_lidar2img_mis = project_lidar_to_image(pts_hom,lidar2img)
-        # points_lidar2img = project_lidar_to_image(det_xyz_hom,lidar2img)
-        points_lidar2img = lidar_to_image_no_filter(det_xyz_hom_with_index,gt_KT)
+        points_lidar2img, mask_valid = lidar_to_image_with_index(det_xyz_hom_with_index,gt_KT,img_shape=(900,1600))
         points_lidar2img_mis ,mask_valid_mis = lidar_to_image_with_index(pts_hom_with_index,gt_KT,img_shape=(900,1600))
-        points_lidar2img = points_lidar2img[mask_valid_mis]
+        common_mask = mask_valid & mask_valid_mis  # 공통 유효 마스크 생성
+
+        points_lidar2img = points_lidar2img[common_mask]
+        # points_lidar2img_mis = points_lidar2img_mis[common_mask]
+
+        assert points_lidar2img.shape[0] == points_lidar2img_mis.shape[0], "points_lidar2img and points_lidar2img_mis shape mismatch"
 
         scaled_points_lidar2img = scale_uvz_points(points_lidar2img[:,1:],original_size=(928,1600),target_size=(192,640))
         scaled_points_lidar2img_mis = scale_uvz_points(points_lidar2img_mis[:,1:],original_size=(900,1600),target_size=(192,640))
         
-        # normal_points_lidar2img_mis , mis_min_vals, mis_max_vals= minmax_normalize_uvz(points_lidar2img_mis)
-        # normal_points_lidar2img_mis[:, 0] += 0.5
-        # normal_points_lidar2img , min_vals, max_vals  = minmax_normalize_uvz(points_lidar2img)
-
         normal_points_lidar2img_mis = normalize_uvz_points(scaled_points_lidar2img_mis)
-        # modified_points = normal_points_lidar2img_mis.clone()
         normal_points_lidar2img_mis[:, 0] += 0.5
         normal_points_lidar2img = normalize_uvz_points(scaled_points_lidar2img)
         # corrs_points = torch.cat([detection_xyz_lidar[mask_valid_mis][:,0:2],normal_points_lidar2img,normal_points_lidar2img_mis],dim=1)
-        corrs_points = torch.cat([detection_xyz_lidar[mask_valid_mis][:,0:2],normal_points_lidar2img,normal_points_lidar2img_mis,detection_xyz_lidar[mask_valid_mis][:,5:6]],dim=1)
+        corrs_points = torch.cat([detection_xyz_lidar[common_mask][:,0:2],normal_points_lidar2img,normal_points_lidar2img_mis,detection_xyz_lidar[common_mask][:,5:6]],dim=1)
         
         # ####### 검증용 corrs display ########
         # for camera_idx in range(6):
@@ -712,7 +709,8 @@ class MV2DSHead(MV2DHead):
             pixel_normal_uvz = pixel_to_normalized(descale_pre_uvz_with_index,intrinsics)
             detection_xyz_adv_with_index, detection_xyz_adv ,lidar2img = center2lidar_batch(pixel_normal_uvz,intrinsics,extrinsics)
             filtered_tensor = deduplicate_obj_ids(detection_xyz_adv_with_index)
-            detection_xyz_normal = filtered_tensor.float()
+            detection_xyz_normal = filtered_tensor.clone().float()
+            detection_xyz_normal = detection_xyz_normal[~torch.any(detection_xyz_normal.isnan(), dim=1)]
 
             ## query generator by SJMOON : 카메라에서 제대로 나온 라이다 xyz points 
             detection_xyz_normal[..., 2:3] = (detection_xyz_normal[..., 2:3] - self.pc_range[0]) / (
@@ -723,12 +721,40 @@ class MV2DSHead(MV2DHead):
                     self.pc_range[5] - self.pc_range[2])
             detection_xyz_normal[...,2:].clamp(min=0, max=1)
 
+            pts_lidar_mis_normalized[..., 0:1] = (pts_lidar_mis_normalized[..., 0:1] - self.pc_range[0]) / (
+                self.pc_range[3] - self.pc_range[0])
+            pts_lidar_mis_normalized[..., 1:2] = (pts_lidar_mis_normalized[..., 1:2] - self.pc_range[1]) / (
+                    self.pc_range[4] - self.pc_range[1])
+            pts_lidar_mis_normalized[..., 2:3] = (pts_lidar_mis_normalized[..., 2:3] - self.pc_range[2]) / (
+                    self.pc_range[5] - self.pc_range[2])
+            pts_lidar_mis_normalized = pts_lidar_mis_normalized.clamp(min=0, max=1)
+            pts_lidar_mis_normalized_with_index = torch.cat([gt_xyz_lidar[...,0:2],pts_lidar_mis_normalized],dim=1)
+
             # skip_detection_xyz_normal = self.skip_connection(detection_xyz_normal[...,2:],enc_out)
+
+            # 객체 ID 기반 정렬 및 필터링
+            det_obj_ids = detection_xyz_normal[:,1].int()
+            pts_obj_ids = pts_lidar_mis_normalized_with_index[:,1].int()
+
+            det_unique = torch.unique(det_obj_ids)
+            pts_unique = torch.unique(pts_obj_ids)
+            common_ids = det_unique[torch.isin(det_unique, pts_unique)]
+
+            # 공통 ID에 대한 마스크 생성
+            det_mask = torch.isin(det_obj_ids, common_ids)
+            pts_mask = torch.isin(pts_obj_ids, common_ids)
+
+            pred_pts = detection_xyz_normal[det_mask]
+            gt_pts = pts_lidar_mis_normalized_with_index[pts_mask]
+
+            assert pred_pts.shape[0] == gt_pts.shape[0], "pred_pts and gt_pts shape mismatch"
             
-            corr_loss = self.corr_loss(corrs_pred, corr_target, cycle, query_input, corr_mask ,detection_xyz_normal[...,2:],pts_lidar_mis_normalized[mask_valid_mis])
+            corr_loss = self.corr_loss(corrs_pred, corr_target, cycle, query_input, corr_mask)
+            pc_distance_loss = self.point_distance_loss(pred_pts[...,2:],gt_pts[...,2:]) 
 
             ref_points_with_index = merge_point_clouds(reference_points_with_indices, detection_xyz_normal)
-            ref_points = ref_points_with_index[...,2:] 
+            ref_points = ref_points_with_index[...,2:]
+
             # pred_xyz = detection_xyz_normal.contiguous().view(-1, 3)
             # trimed_pred_xyz = trim_corrs(pred_xyz,num_kp=rois.shape[0]).clone() # 단순히 잘라내는 것이 아니라,object id 별로 무조건 하나씩은 다 들어가도록 고쳐야함.
             # trimed_pred_xyz = self.final_ln_sparse_cross_attn(trimed_pred_xyz)
@@ -981,14 +1007,14 @@ class MV2DSHead(MV2DHead):
             intrinsics=intrinsics, extrinsics=extrinsics, rois=rois, dn_mask_dict=mask_dict,
         )
 
-        return bbox_results , corr_loss
+        return bbox_results , corr_loss ,pc_distance_loss
         # return bbox_results
 
     # def _bbox_forward(self, x, proposal_list, img_metas): # for original 
     def _bbox_forward(self,img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4): ### this modified moon
         # bbox_results = self._bbox_forward_denoise(x, proposal_list, img_metas) # for original 
-        bbox_results ,loss_corr = self._bbox_forward_denoise(img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON 
-        return bbox_results ,loss_corr
+        bbox_results ,loss_corr ,loss_pc_distance = self._bbox_forward_denoise(img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON 
+        return bbox_results ,loss_corr ,loss_pc_distance
         # return bbox_results
 
     def prepare_for_dn_loss(self, mask_dict):
@@ -1056,7 +1082,7 @@ class MV2DSHead(MV2DHead):
             img_metas[0]['gt_bboxes_3d'] = ori_gt_bboxes_3d[0]
             img_metas[0]['gt_labels_3d'] = ori_gt_labels_3d[0]
 
-        results_from_last,loss_corr = self._bbox_forward_train(img,img_metas,lidar_depth_mis, x, proposal_boxes, uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJ MOON 
+        results_from_last,loss_corr , loss_pc_distance = self._bbox_forward_train(img,img_metas,lidar_depth_mis, x, proposal_boxes, uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJ MOON 
         # results_from_last = self._bbox_forward_train(x, proposal_boxes, img_metas) # for original 
         preds = results_from_last['pred']
 
@@ -1091,7 +1117,7 @@ class MV2DSHead(MV2DHead):
             for k, v in loss_stage[layer].items():
                 losses[f'l{layer}.{k}'] = v * lw if 'loss' in k else v
 
-        return losses , loss_corr
+        return losses , loss_corr , loss_pc_distance
     
     def simple_test(self,img,img_metas, lidar_depth_mis, x,proposal_list, uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4,rescale=False):
         assert self.with_bbox, 'Bbox head must be implemented.'

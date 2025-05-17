@@ -49,34 +49,34 @@ class MV2D(Base3DDetector):
         self.test_cfg = test_cfg
 
         self.total_iter = 0
-        self.save_dir = "./saved_models"  # 모델 저장 경로 추가
+        self.save_dir = "data/saved_models"  # 모델 저장 경로 추가
         os.makedirs(self.save_dir, exist_ok=True)
         
         # 초기 학습 시 나머지 네트워크 freeze
-        freeze_backbone = False
+        freeze_backbone = True
         if freeze_backbone:
             self._freeze_backbone_modules()
     
     def _freeze_backbone_modules(self):
         """corr 네트워크 제외한 모든 모듈 동결"""
         
-        # 1. Base Detector 동결
-        for param in self.base_detector.parameters():
-            param.requires_grad = False
+        # # 1. Base Detector 동결
+        # for param in self.base_detector.parameters():
+        #     param.requires_grad = False
             
-        # 2. Neck 동결
-        for param in self.neck.parameters():
-            param.requires_grad = False
+        # # 2. Neck 동결
+        # for param in self.neck.parameters():
+        #     param.requires_grad = False
             
-        # # 3. ROI Head 내 corr 제외 동결
-        # for name, param in self.roi_head.named_parameters():
-        #     if 'corr' not in name:  # ← 핵심 변경점
-        #         param.requires_grad = False 
-        
-        # # 4. ROI Head 내 corr 만 동결 
+        # 3. ROI Head 내 corr 제외 동결
         for name, param in self.roi_head.named_parameters():
-            if 'corr' in name:  # ← 핵심 변경점
+            if 'corr' not in name:  # ← 핵심 변경점
                 param.requires_grad = False 
+        
+        # # # 4. ROI Head 내 corr 만 동결 
+        # for name, param in self.roi_head.named_parameters():
+        #     if 'corr' in name:  # ← 핵심 변경점
+        #         param.requires_grad = False 
         
         # # ROI Head 전체 동결
         # for param in self.roi_head.parameters():
@@ -267,19 +267,33 @@ class MV2D(Base3DDetector):
         feat = self.process_detector_feat(detector_feat)
         # mis_depthmap_feat = self.process_detector_feat(mis_depth_feat)
         
-        roi_losses , loss_corr = self.roi_head.forward_train(img_ori,img_metas,lidar_depth_mis, feat, detections,lidar_depth_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4, gt_bboxes, gt_labels,
+        roi_losses , loss_corr ,loss_pc_distance = self.roi_head.forward_train(img_ori,img_metas,lidar_depth_mis, feat, detections,lidar_depth_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4, gt_bboxes, gt_labels,
                                             gt_bboxes_3d, gt_labels_3d,
                                             ori_gt_bboxes_3d, ori_gt_labels_3d,
                                             attr_labels, None)
         losses['loss_corr'] = loss_corr
-        losses.update(roi_losses)
+        # losses['loss_pc_distance'] = loss_pc_distance
+        # losses.update(roi_losses)
         # 그래디언트 클리핑 적용
         # torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=20)
 
         self.total_iter += 1
-        if self.total_iter % 5000 == 0:
+        if self.total_iter % 2000 == 0:
+            import time
+            # checkpoint = {}
             # 계층적 키 매핑 생성 (버퍼 포함)
-            checkpoint = {}
+                # 메타데이터 생성
+            meta = {
+                'epoch': self.total_iter // 28130 ,  # 에폭 기반이 아닌 경우 0으로 설정
+                'iter': self.total_iter,
+                'time': time.strftime('%Y-%m-%d %H:%M:%S')
+            }
+
+                # 체크포인트 구성
+            checkpoint = {
+                'state_dict': self.state_dict(),  # 전체 모델 파라미터
+                'meta': meta
+            }
             
             # Base Detector: state_dict()로 파라미터 + 버퍼 전체 저장
             base_detector_dict = self.base_detector.state_dict()
@@ -302,12 +316,12 @@ class MV2D(Base3DDetector):
                 for k, v in grid_mask_dict.items():
                     checkpoint[f'grid_mask.{k}'] = v
             
-            save_path = os.path.join(self.save_dir, f'model_iter_{self.total_iter}_2.pth')
+            save_path = os.path.join(self.save_dir, f'model_iter_{self.total_iter}_5.pth')
             torch.save(checkpoint, save_path)
             print(f"Model saved at iteration {self.total_iter}")
 
-        if self.total_iter == 28130:
-            self.total_iter = 0
+        # if self.total_iter == 28130:
+        #     self.total_iter = 0
 
         return losses
 
