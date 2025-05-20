@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import torch.nn.functional as F
+import torch.nn as nn
 
 import matplotlib as mpl
 import matplotlib.cm as cm
@@ -607,6 +608,74 @@ def process_queries_adv(corrs, sbs_img, num_points=100):
     original_camera_ids = torch.stack(camera_indices)
     
     return selected_imgs, processed_queries, original_camera_ids
+
+
+def differentiable_process_queries(corrs, sbs_img, num_points=100, temp=0.1):
+    device = corrs.device
+    num_cam = 6
+
+    # 1. 카메라별 그룹화 (One-hot 인코딩)
+    cam_mask = torch.eye(num_cam, device=device)[corrs[:,0].long()]  # [N,6]
+
+    all_queries = []
+    for cam in range(num_cam):
+        # 2. 카메라별 쿼리 선택
+        cam_corrs = corrs[cam_mask[:,cam].bool()]
+        if len(cam_corrs) == 0:
+            # 빈 카메라 처리
+            all_queries.append(torch.zeros(num_points, 9, device=device))
+            continue
+
+        # 3. 객체별 확률 계산 (객체가 0개인 경우 처리)
+        obj_ids = cam_corrs[:,1]
+        unique_objs, obj_idx = torch.unique(obj_ids, return_inverse=True)
+        if len(unique_objs) == 0:
+            all_queries.append(torch.zeros(num_points, 9, device=device))
+            continue
+
+        # 4. 샘플링 개수 조정 (핵심 수정 부분)
+        k_val = min(num_points, len(unique_objs))
+        
+        # 5. Gumbel-TopK 샘플링 (k_val 사용)
+        logits = torch.ones(len(unique_objs), device=device)  # 균일 확률
+        gumbel_noise = -torch.log(-torch.log(torch.rand_like(logits)))
+        _, selected_obj_idx = torch.topk(logits + gumbel_noise, k_val)
+
+        # 6. 남은 슬롯 채우기 (중복 허용)
+        if k_val < num_points:
+            repeat_times = (num_points // k_val) + 1
+            selected_obj_idx = selected_obj_idx.repeat(repeat_times)[:num_points]
+
+        # 7. 객체 내부 랜덤 샘플링
+        sampled_queries = []
+        for obj in selected_obj_idx:
+            mask = (obj_idx == obj)
+            if mask.sum() == 0:  # 예외 처리
+                sampled_queries.append(cam_corrs[0].unsqueeze(0))
+                continue
+                
+            weights = torch.softmax(torch.randn(mask.sum(), device=device), dim=0)
+            idx = torch.multinomial(weights, 1)
+            sampled_queries.append(cam_corrs[mask][idx])
+
+        # 8. 결과 조립 및 패딩
+        sampled_queries = torch.cat(sampled_queries)[:num_points]
+        if len(sampled_queries) < num_points:
+            padding = sampled_queries[torch.randint(0, len(sampled_queries), 
+                                   (num_points - len(sampled_queries),))]
+            sampled_queries = torch.cat([sampled_queries, padding])
+
+        all_queries.append(sampled_queries)
+
+    # 9. 최종 출력 형식 맞춤
+    # processed_queries = torch.stack([
+    #     torch.cat([q[:,:1], q[:,2:], q[:,1:2]], dim=1) for q in all_queries
+    # ])
+    processed_queries = torch.stack([
+    torch.cat([q[:,:2], q[:,2:]], dim=1) for q in all_queries  # obj_id 위치 수정
+    ])
+    
+    return sbs_img, processed_queries, torch.arange(num_cam, device=device)
 
 
 def process_queries_adv1(corrs, sbs_img, rois_with_indices, num_points=300):
@@ -2254,6 +2323,254 @@ def find_rois_nonzero_z_adv8(detections, depth_map):
     
     return torch.cat(all_points, dim=0) if all_points else torch.empty((0, 6), device=device)
 
+def find_rois_nonzero_z_adv9(detections, depth_map, model_pred_z):
+    device = depth_map.device
+    batch_size, num_cam, h, w = depth_map.shape
+    depth_map_re = depth_map.view(batch_size * num_cam, h, w)
+    
+    confidence_scores = torch.zeros(len(detections), device=device, dtype=torch.float32)
+    
+    # Extract components from detections [cam_id, obj_id, x_min, y_min, x_max, y_max]
+    cam_indices = detections[:, 0].long().to(device)
+    obj_indices = detections[:, 1].long().to(device)
+    bboxes = detections[:, 2:].to(device)
+    
+    x_min, y_min, x_max, y_max = bboxes.long().t()
+    
+    x_min = torch.clamp(x_min, 0, w-1)
+    y_min = torch.clamp(y_min, 0, h-1)
+    x_max = torch.clamp(x_max, 0, w-1)
+    y_max = torch.clamp(y_max, 0, h-1)
+    
+    def interpolate_depth(depth_slice, x, y, window_size=3):
+        x1, x2 = max(0, x-window_size), min(w, x+window_size+1)
+        y1, y2 = max(0, y-window_size), min(h, y+window_size+1)
+        window = depth_slice[y1:y2, x1:x2]
+        valid_depths = window[window > 0]
+        return valid_depths.mean().item() if valid_depths.numel() > 0 else 0.0
+    
+    result = []
+    for i in range(len(detections)):
+        cid = cam_indices[i].item()
+        oid = obj_indices[i].item()
+        orig_cx = (x_min[i].item() + x_max[i].item()) // 2
+        orig_cy = (y_min[i].item() + y_max[i].item()) // 2
+        cx, cy = orig_cx, orig_cy
+        z = 0.0
+        conf = 1.0
+        
+        # Stage 1: Center interpolation
+        z = interpolate_depth(depth_map_re[cid], orig_cx, orig_cy)
+        if z > 1e-6:
+            result.append(torch.tensor([cid, oid, cx, cy, z, conf], device=device))
+            confidence_scores[i] = conf
+            continue
+            
+        # Stage 2: Weighted bbox search
+        bbox_area = depth_map_re[cid, y_min[i]:y_max[i]+1, x_min[i]:x_max[i]+1]
+        if bbox_area.numel() > 0:
+            weights = torch.exp(-torch.abs(bbox_area - bbox_area.mean()) / (bbox_area.std() + 1e-6))
+            weighted = bbox_area * weights
+            max_z = weighted.max().item()
+            if max_z > 1e-6:
+                max_pos = (weighted == max_z).nonzero().float().mean(dim=0)
+                cy = y_min[i].item() + int(max_pos[0].item())
+                cx = x_min[i].item() + int(max_pos[1].item())
+                z = max_z
+                conf = 0.8
+                result.append(torch.tensor([cid, oid, cx, cy, z, conf], device=device))
+                confidence_scores[i] = conf
+                continue
+                
+        # Stage 3: Expanded search
+        search_x = max(bbox_area.shape[1]//4, 3)
+        search_y = max(bbox_area.shape[0]//4, 3)
+        x1 = max(0, orig_cx-search_x)
+        x2 = min(w, orig_cx+search_x+1)
+        y1 = max(0, orig_cy-search_y)
+        y2 = min(h, orig_cy+search_y+1)
+        
+        expanded = depth_map_re[cid, y1:y2, x1:x2]
+        valid = expanded[expanded > 0]
+        if valid.numel() > 0:
+            z = valid.median().item()
+            avg_pos = (expanded > 0).nonzero().float().mean(dim=0)
+            cy = y1 + int(avg_pos[0].item())
+            cx = x1 + int(avg_pos[1].item())
+            conf = 0.7
+            result.append(torch.tensor([cid, oid, cx, cy, z, conf], device=device))
+            confidence_scores[i] = conf
+            continue
+            
+        # Stage 4: Model prediction
+        cx = int(model_pred_z[i,0].item() * w)
+        cy = int(model_pred_z[i,1].item() * h)
+        z = model_pred_z[i,2].item()
+        conf = 0.5
+        cx = max(0, min(w-1, cx))
+        cy = max(0, min(h-1, cy))
+        
+        result.append(torch.tensor([cid, oid, cx, cy, z, conf], device=device))
+        confidence_scores[i] = conf
+    
+    return torch.stack(result) if result else torch.empty((0, 6), device=device), confidence_scores
+
+def differentiable_find_rois(detections, depth_map, model_pred_z):
+    device = depth_map.device
+    B, C, H, W = depth_map.shape
+    
+    # 박스 파라미터 추출 및 정규화
+    cam_ids = detections[:, 0].long()  # [N]
+    obj_ids = detections[:, 1].long()  # [N]
+    boxes = detections[:, 2:]  # [N,4] (x_min, y_min, x_max, y_max)
+    
+    # 중심점 및 크기 계산 (미분 가능)
+    centers = torch.stack([
+        (boxes[:,0] + boxes[:,2]) / 2 / (W-1),  # cx [0,1]
+        (boxes[:,1] + boxes[:,3]) / 2 / (H-1)   # cy [0,1]
+    ], dim=1)  # [N,2]
+    
+    sizes = torch.stack([
+        (boxes[:,2] - boxes[:,0]) / (W-1),  # width [0,1]
+        (boxes[:,3] - boxes[:,1]) / (H-1)   # height [0,1]
+    ], dim=1)  # [N,2]
+
+    # 샘플링 그리드 생성 (미분 가능)
+    grid_size = 5
+    x = torch.linspace(-0.5, 0.5, grid_size, device=device)  # [-0.5, 0.5]
+    y = torch.linspace(-0.5, 0.5, grid_size, device=device)
+    grid_y, grid_x = torch.meshgrid(y, x, indexing='ij')  # [5,5]
+    
+    # 박스 크기 기반 그리드 스케일링
+    grid_x = grid_x[None] * sizes[:, 0, None, None]  # [N,5,5]
+    grid_y = grid_y[None] * sizes[:, 1, None, None]  # [N,5,5]
+    
+    # 중심점 기반 그리드 이동
+    grid_x = grid_x + centers[:, 0, None, None]  # [N,5,5]
+    grid_y = grid_y + centers[:, 1, None, None]  # [N,5,5]
+    
+    # 최종 그리드 형성 [N,5,5,2]
+    grid = torch.stack([grid_x, grid_y], dim=-1) * 2 - 1  # [-1,1] 범위로 정규화
+
+    # 깊이 맵 샘플링 (미분 가능)
+    sampled_depth = F.grid_sample(
+        depth_map.repeat_interleave(C, dim=0)[cam_ids],  # [N,C,H,W]
+        grid,  # [N,5,5,2]
+        mode='bilinear',
+        align_corners=True
+    )  # [N,1,5,5]
+
+    # 신뢰도 계산
+    valid_mask = (sampled_depth > 0).float()  # [N,1,5,5]
+    valid_count = valid_mask.sum(dim=[2,3])  # [N,1]
+    
+    # 가중 평균 깊이 계산
+    depth_weights = F.softmax(sampled_depth * valid_mask * 10, dim=-1)
+    weighted_depth = (sampled_depth * depth_weights).sum(dim=[2,3])  # [N,1]
+    
+    # 모델 예측값과 결합
+    final_depth = torch.sigmoid(valid_count) * weighted_depth + \
+                (1 - torch.sigmoid(valid_count)) * model_pred_z[:, 2:]
+    
+    # 최종 출력 형성
+    results = torch.cat([
+        cam_ids.unsqueeze(1).float(),
+        obj_ids.unsqueeze(1).float(),
+        model_pred_z[:, :2] * torch.tensor([W-1, H-1], device=device),
+        final_depth,
+        torch.sigmoid(valid_count)
+    ], dim=1)
+
+    return results, torch.sigmoid(valid_count).squeeze()
+
+def differentiable_find_rois1(detections, depth_map, eps=1e-6, temp=0.1, chunk_size=64):
+    device = depth_map.device
+    B, num_cam, H, W = depth_map.shape
+    N = detections.shape[0]
+
+    # 좌표 초기화
+    cam_ids = detections[:, 0].long()
+    x_min, y_min, x_max, y_max = detections[:, 2:6].unbind(1)
+    cx = (x_min + x_max) / 2
+    cy = (y_min + y_max) / 2
+
+    output_buffer = []
+
+    # Straight-Through Estimator (STE) 함수 정의
+    def round_ste(x):
+        return (x.round() - x).detach() + x
+
+    for i in range(0, N, chunk_size):
+        chunk_end = min(i + chunk_size, N)
+        chunk_idx = slice(i, chunk_end)
+        
+        # 현재 청크 데이터
+        chunk_det = detections[chunk_idx]
+        chunk_cam = cam_ids[chunk_idx]
+        
+        # STE를 이용한 정수 좌표 변환
+        chunk_xmin = round_ste(x_min[chunk_idx])
+        chunk_ymin = round_ste(y_min[chunk_idx])
+        chunk_xmax = round_ste(x_max[chunk_idx])
+        chunk_ymax = round_ste(y_max[chunk_idx])
+
+        # 1. 중심점 좌표 계산 (STE 적용)
+        cx_int = round_ste((chunk_xmin + chunk_xmax) / 2)
+        cy_int = round_ste((chunk_ymin + chunk_ymax) / 2)
+        
+        # 2. Grid 생성 (Bilinear sampling용)
+        grid_x = (cx_int + 0.5) / W * 2 - 1
+        grid_y = (cy_int + 0.5) / H * 2 - 1
+        grid = torch.stack([grid_x, grid_y], -1).unsqueeze(1).unsqueeze(2)
+
+        # 3. 깊이 샘플링 (Bilinear + STE)
+        depth_selected = depth_map[0, chunk_cam].unsqueeze(1)  # [Chunk, 1, H, W]
+        
+        # Bilinear 샘플링 후 STE로 Nearest 효과 구현
+        sampled = F.grid_sample(
+            depth_selected,
+            grid,
+            mode='bilinear',
+            align_corners=False
+        ).squeeze()
+        center_z = (sampled.round() - sampled).detach() + sampled  # STE 적용
+
+        # 4. BBox 마스크 생성 (미분 가능한 방식)
+        x_range = torch.arange(W, device=device).float()
+        y_range = torch.arange(H, device=device).float()
+        
+        x_mask = (x_range[None] >= chunk_xmin[:, None]) & (x_range[None] <= chunk_xmax[:, None])
+        y_mask = (y_range[None] >= chunk_ymin[:, None]) & (y_range[None] <= chunk_ymax[:, None])
+        bbox_mask = x_mask[:, None, :] & y_mask[:, :, None]  # [Chunk, H, W]
+
+        # 5. 주변부 깊이 계산
+        depth_valid = (depth_selected.squeeze(1) > eps).float()
+        valid_pixels = depth_valid * bbox_mask
+        
+        weighted_depth = (depth_selected.squeeze(1) * valid_pixels).sum((1,2)) / \
+                        (valid_pixels.sum((1,2)) + eps)
+
+        # 6. Confidence 계산
+        center_valid = (center_z > eps).float()
+        has_valid_pixels = (valid_pixels.sum((1,2)) > 0).float()
+        conf = 1.0 * center_valid + 0.7 * (has_valid_pixels - center_valid)
+
+        # 최종 결과 생성
+        final_z = torch.where(center_z > eps, center_z, weighted_depth)
+        
+        chunk_result = torch.stack([
+            chunk_det[:, 0].float(),
+            chunk_det[:, 1].float(),
+            cx[chunk_idx],
+            cy[chunk_idx],
+            final_z,
+            conf
+        ], dim=1)
+        
+        output_buffer.append(chunk_result)
+
+    return torch.cat(output_buffer, dim=0)
+
 
 def image_to_lidar_global_modi(det_uvz, gt_KT):
     inverse_gt_kt = torch.inverse(gt_KT).float()
@@ -2457,6 +2774,56 @@ def lidar_to_image_with_index(det_xyz, gt_KT, img_shape=(900, 1600)):
         else torch.empty((0, 4), device=det_xyz.device),
         mask_valid_global
     )
+
+def diff_lidar_to_image_with_index(det_xyz, gt_KT, img_shape=(900, 1600), temp=100):
+    """
+    미분 가능한 LiDAR → 이미지 투영 (빈 출력 문제 해결)
+    Args:
+        det_xyz: [N,4] (cam_id, x,y,z)
+        gt_KT: [6,4,4] 카메라 변환 행렬
+        img_shape: (H,W) 이미지 해상도
+        temp: 소프트 마스크 온도 (기본 100)
+    """
+    device = det_xyz.device
+    H, W = img_shape
+    num_cam = gt_KT.shape[0]  # 6
+
+    # 1. 카메라 인덱스 정수화 (STE 적용)
+    cam_indices = torch.clamp(det_xyz[:,0].round(), 0, num_cam-1).long()
+
+    # 2. 각 포인트에 해당하는 카메라 행렬 선택
+    lidar2img = gt_KT[cam_indices]  # [N,4,4]
+
+    # 3. 투영 변환
+    xyz = det_xyz[:,1:4]
+    ones = torch.ones_like(xyz[:,:1])
+    xyz_h = torch.cat([xyz, ones], dim=1).unsqueeze(-1)  # [N,4,1]
+    points_cam = (lidar2img @ xyz_h).squeeze(-1)  # [N,4]
+
+    # 4. UV 좌표 계산 (원본과 동일)
+    z = points_cam[:,2] + 1e-6
+    uv = points_cam[:,:2] / z.unsqueeze(-1)  # [N,2]
+
+    # 5. 소프트 마스킹 (미분 가능)
+    valid_z = torch.sigmoid(temp*(z - 1e-6))  # z>0 근사
+    uv_x = (uv[:,0] + 1e-6).clamp(0, W-1)  # [0,W) 강제 클램핑
+    uv_y = (uv[:,1] + 1e-6).clamp(0, H-1)  # [0,H) 강제 클램핑
+    mask = valid_z  # z 유효성만 고려
+
+    # 6. 최종 출력 구성 (원본과 동일 형식)
+    uvz_global = torch.stack([
+        cam_indices.float(),
+        uv_x,
+        uv_y,
+        z
+    ], dim=1)
+
+    # 7. 하드 마스크 적용 (출력 일치 보장)
+    with torch.no_grad():
+        hard_mask = (z > 1e-6) & (uv[:,0] >= 0) & (uv[:,0] < W) & (uv[:,1] >= 0) & (uv[:,1] < H)
+        uvz_global = uvz_global[hard_mask]
+    
+    return uvz_global, hard_mask
 
 
 def lidar_to_image_no_filter(det_xyz, gt_KT):
@@ -3165,6 +3532,59 @@ def center2lidar_batch(center_pred, intrinsics, extrinsics):
 
     return center_lidar_with_index,center_lidar, lidar2img
 
+def differentiable_center2lidar(center_pred, intrinsics, extrinsics, eps=1e-6):
+    """
+    개선사항:
+    1. 미분 가능한 객체 파라미터 선택
+    2. 수치 안정성 강화된 역행렬 계산
+    3. 배치 차원 보존 연산
+    """
+    B, N, _ = center_pred.shape
+    device = center_pred.device
+    
+    # 1. 객체 ID 추출 (정수 변환 시 그래디언트 차단)
+    with torch.no_grad():  # 객체 ID는 미분 흐름에서 제외
+        obj_ids = center_pred[:, :, 1].long()  # [B, N]
+    
+    # 2. 미분 가능한 파라미터 선택 (One-hot 기반)
+    obj_ids_flat = obj_ids.view(-1)  # [B*N]
+    one_hot = torch.nn.functional.one_hot(obj_ids_flat, intrinsics.size(0))  # [B*N, O]
+    
+    # 3. 행렬 재구성 (배치 차원 보존)
+    selected_intrinsics = torch.matmul(
+        one_hot.unsqueeze(1).double(),  # [B*N, 1, O]
+        intrinsics.view(intrinsics.size(0), -1)  # [O, 16]
+    ).view(B, N, 4, 4)  # [B, N, 4, 4]
+    
+    selected_extrinsics = torch.matmul(
+        one_hot.unsqueeze(1).double(),
+        extrinsics.view(extrinsics.size(0), -1)
+    ).view(B, N, 4, 4)
+
+    # 4. 좌표 변환 준비 (기존 코드 유지)
+    u = center_pred[:, :, 2]
+    v = center_pred[:, :, 3]
+    z = center_pred[:, :, 4]
+    
+    center_img = torch.stack([u*z, v*z, z, torch.ones_like(z)], dim=-1)
+    
+    # 5. 안정화된 역행렬 계산
+    lidar2img = torch.matmul(selected_intrinsics, selected_extrinsics.transpose(2,3))
+    lidar2img_reg = lidar2img + eps * torch.eye(4, device=device)  # 정칙화
+    
+    # 6. Pseudo-inverse 대체 (미분 가능)
+    img2lidar = torch.linalg.pinv(lidar2img_reg)
+    
+    # 7. 변환 수행 (기존 코드 유지)
+    center_lidar = torch.matmul(
+        img2lidar,
+        center_img.unsqueeze(-1)
+    ).squeeze(-1)[:, :, :3]
+    
+    center_lidar_with_index = torch.cat([center_pred[...,0:2], center_lidar], dim=2)
+    
+    return center_lidar_with_index, center_lidar, lidar2img
+
 
 def draw_correspondences(trimed_corrs, sbs_img, camera_idx=0, save_path='correspond.jpg'):
     """정규화 좌표 기반 시각화 (0~1 범위 입력 필요)"""
@@ -3465,6 +3885,26 @@ def deduplicate_obj_ids(input_tensor):
     valid_mask = last_occurrence != -1
     return flat_data[last_occurrence[valid_mask]]
 
+def differentiable_deduplicate(input_tensor, temperature=0.1):
+    """Differentiable last-occurrence selection for object IDs"""
+    flat_data = input_tensor.view(-1, 5)
+    obj_ids = flat_data[:, 1].long()
+    
+    # 1. Create group masks using broadcasting
+    unique_ids = torch.unique(obj_ids)
+    mask = (obj_ids.unsqueeze(1) == unique_ids.unsqueeze(0))  # [N, U]
+    
+    # 2. Positional weighting using temporal scores
+    indices = torch.arange(flat_data.size(0), device=obj_ids.device).float()
+    logits = mask * indices.unsqueeze(1)  # [N, U]
+    
+    # 3. Temperature-controlled softmax for sharp selection
+    weights = torch.softmax(logits / temperature, dim=0) * mask.float()
+    weights = weights / (weights.sum(dim=0, keepdim=True) + 1e-8)  # Normalize
+    
+    # 4. Differentiable weighted sum (approximates last-occurrence selection)
+    return torch.matmul(weights.T, flat_data.float())  # [U, 5]
+
 
 def merge_point_clouds(reference_points, detection_points):
     """obj_id 매칭을 통해 두 포인트 클라우드 병합
@@ -3489,3 +3929,74 @@ def merge_point_clouds(reference_points, detection_points):
         merged.append(det_dict.get(obj_id.item(), reference_points[idx]))
     
     return torch.stack(merged)
+
+def differentiable_merge_point_clouds(reference_points, detection_points):
+    """obj_id 매칭을 통해 두 포인트 클라우드 병합 (미분 가능 버전)
+    Args:
+        reference_points (Tensor): [N,5] (cam_id, obj_id, x,y,z)
+        detection_points (Tensor): [M,5] (cam_id, obj_id, x,y,z)
+    Returns:
+        Tensor: [N,5] 병합된 포인트 클라우드
+    """
+    device = reference_points.device
+    
+    # 1. 객체 ID 추출 및 차원 확장
+    ref_ids = reference_points[:, 1].unsqueeze(1)  # [N,1]
+    det_ids = detection_points[:, 1].unsqueeze(0)  # [1,M]
+
+    # 2. 매칭 마스크 생성 (객체 ID 일치 여부)
+    matches = (ref_ids == det_ids).float()  # [N,M]
+
+    # 3. 검출 포인트 확장 및 가중치 적용
+    det_exp = detection_points.unsqueeze(0)  # [1,M,5]
+    weighted_det = det_exp * matches.unsqueeze(-1)  # [N,M,5]
+
+    # 4. 가중 합계 계산 (같은 객체 ID의 평균값)
+    sum_det = weighted_det.sum(dim=1)  # [N,5]
+    count = matches.sum(dim=1, keepdim=True)  # [N,1]
+    count = torch.where(count == 0, torch.ones_like(count), count)
+    avg_det = sum_det / count  # [N,5]
+
+    # 5. 최종 병합 (매칭 없는 경우 원본 사용)
+    mask = (matches.sum(dim=1) == 0).unsqueeze(1)  # [N,1]
+    merged = torch.where(mask, reference_points, avg_det)
+
+    return merged
+
+def differentiable_object_matching(pred_points, gt_points, obj_id_dim=1, temp=0.1):
+    """
+    미분 가능한 객체 ID 기반 포인트 클라우드 매칭
+    Args:
+        pred_points: [N, D] 예측 포인트 (obj_id = obj_id_dim)
+        gt_points: [M, D] GT 포인트 (obj_id = obj_id_dim)
+    Returns:
+        matched_pred: [K, D] 매칭된 예측 포인트
+        matched_gt: [K, D] 매칭된 GT 포인트
+    """
+    device = pred_points.device
+    
+    # 1. 객체 ID 추출 (미분 가능한 정규화)
+    pred_ids = pred_points[:, obj_id_dim]  # [N]
+    gt_ids = gt_points[:, obj_id_dim]      # [M]
+
+    # 2. 유사도 행렬 계산 (미분 가능)
+    similarity = torch.sigmoid(10*(pred_ids.unsqueeze(1) - gt_ids.unsqueeze(0)))  # [N,M]
+
+    # 3. 양방향 최대 유사도 마스크 생성
+    pred_max = similarity.max(dim=1)[0]  # [N]
+    gt_max = similarity.max(dim=0)[0]    # [M]
+    
+    # 4. 임계값 기반 마스킹 (soft thresholding)
+    pred_mask = torch.sigmoid(100*(pred_max - 0.5))  # [N]
+    gt_mask = torch.sigmoid(100*(gt_max - 0.5))      # [M]
+
+    # 5. 매칭된 포인트 선택 (미분 가능 샘플링)
+    matched_pred = pred_points * pred_mask.unsqueeze(1)  # [N,D]
+    matched_gt = gt_points * gt_mask.unsqueeze(1)        # [M,D]
+
+    # 6. 공통 포인트 수 일치 (패딩/마스킹)
+    k = min(int(pred_mask.sum()), int(gt_mask.sum()))
+    _, pred_topk = torch.topk(pred_mask, k)
+    _, gt_topk = torch.topk(gt_mask, k)
+
+    return matched_pred[pred_topk], matched_gt[gt_topk]
