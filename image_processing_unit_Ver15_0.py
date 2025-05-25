@@ -16,6 +16,7 @@ from pyquaternion import Quaternion
 from nuscenes.nuscenes import NuScenes
 from nuscenes.utils.data_classes import LidarPointCloud
 from nuscenes.utils.geometry_utils import view_points
+from geomloss import SamplesLoss
 
 def visualize_bboxes(img_tensor, proposal_list, output_path='output.png', dpi=150):
     """
@@ -610,6 +611,74 @@ def process_queries_adv(corrs, sbs_img, num_points=100):
     return selected_imgs, processed_queries, original_camera_ids
 
 
+# def differentiable_process_queries(corrs, sbs_img, num_points=100, temp=0.1):
+#     device = corrs.device
+#     num_cam = 6
+
+#     # 1. 카메라별 그룹화 (One-hot 인코딩)
+#     cam_mask = torch.eye(num_cam, device=device)[corrs[:,0].long()]  # [N,6]
+
+#     all_queries = []
+#     for cam in range(num_cam):
+#         # 2. 카메라별 쿼리 선택
+#         cam_corrs = corrs[cam_mask[:,cam].bool()]
+
+#         if len(cam_corrs) == 0:
+#             # 빈 카메라 처리
+#             all_queries.append(torch.zeros(num_points, 9, device=device))
+#             continue
+
+#         # 3. 객체별 확률 계산 (객체가 0개인 경우 처리)
+#         obj_ids = cam_corrs[:,1]
+#         unique_objs, obj_idx = torch.unique(obj_ids, return_inverse=True)
+#         if len(unique_objs) == 0:
+#             all_queries.append(torch.zeros(num_points, 9, device=device))
+#             continue
+
+#         # 4. 샘플링 개수 조정 (핵심 수정 부분)
+#         k_val = min(num_points, len(unique_objs))
+        
+#         # 5. Gumbel-TopK 샘플링 (k_val 사용)
+#         logits = torch.ones(len(unique_objs), device=device)  # 균일 확률
+#         gumbel_noise = -torch.log(-torch.log(torch.rand_like(logits)))
+#         _, selected_obj_idx = torch.topk(logits + gumbel_noise, k_val)
+
+#         # 6. 남은 슬롯 채우기 (중복 허용)
+#         if k_val < num_points:
+#             repeat_times = (num_points // k_val) + 1
+#             selected_obj_idx = selected_obj_idx.repeat(repeat_times)[:num_points]
+
+#         # 7. 객체 내부 랜덤 샘플링
+#         sampled_queries = []
+#         for obj in selected_obj_idx:
+#             mask = (obj_idx == obj)
+#             if mask.sum() == 0:  # 예외 처리
+#                 sampled_queries.append(cam_corrs[0].unsqueeze(0))
+#                 continue
+                
+#             weights = torch.softmax(torch.randn(mask.sum(), device=device), dim=0)
+#             idx = torch.multinomial(weights, 1)
+#             sampled_queries.append(cam_corrs[mask][idx])
+
+#         # 8. 결과 조립 및 패딩
+#         sampled_queries = torch.cat(sampled_queries)[:num_points]
+#         if len(sampled_queries) < num_points:
+#             padding = sampled_queries[torch.randint(0, len(sampled_queries), 
+#                                    (num_points - len(sampled_queries),))]
+#             sampled_queries = torch.cat([sampled_queries, padding])
+
+#         all_queries.append(sampled_queries)
+
+#     # 9. 최종 출력 형식 맞춤
+#     # processed_queries = torch.stack([
+#     #     torch.cat([q[:,:1], q[:,2:], q[:,1:2]], dim=1) for q in all_queries
+#     # ])
+#     processed_queries = torch.stack([
+#     torch.cat([q[:,:2], q[:,2:]], dim=1) for q in all_queries  # obj_id 위치 수정
+#     ])
+    
+#     return sbs_img, processed_queries, torch.arange(num_cam, device=device)
+
 def differentiable_process_queries(corrs, sbs_img, num_points=100, temp=0.1):
     device = corrs.device
     num_cam = 6
@@ -622,15 +691,16 @@ def differentiable_process_queries(corrs, sbs_img, num_points=100, temp=0.1):
         # 2. 카메라별 쿼리 선택
         cam_corrs = corrs[cam_mask[:,cam].bool()]
         if len(cam_corrs) == 0:
-            # 빈 카메라 처리
-            all_queries.append(torch.zeros(num_points, 9, device=device))
+            # 빈 카메라 처리 (12차원으로 수정)
+            all_queries.append(torch.zeros(num_points, 12, device=device))
             continue
 
         # 3. 객체별 확률 계산 (객체가 0개인 경우 처리)
         obj_ids = cam_corrs[:,1]
         unique_objs, obj_idx = torch.unique(obj_ids, return_inverse=True)
         if len(unique_objs) == 0:
-            all_queries.append(torch.zeros(num_points, 9, device=device))
+            # 12차원으로 수정
+            all_queries.append(torch.zeros(num_points, 12, device=device))
             continue
 
         # 4. 샘플링 개수 조정 (핵심 수정 부분)
@@ -667,12 +737,9 @@ def differentiable_process_queries(corrs, sbs_img, num_points=100, temp=0.1):
 
         all_queries.append(sampled_queries)
 
-    # 9. 최종 출력 형식 맞춤
-    # processed_queries = torch.stack([
-    #     torch.cat([q[:,:1], q[:,2:], q[:,1:2]], dim=1) for q in all_queries
-    # ])
+    # 9. 최종 출력 형식 맞춤 (12차원 유지)
     processed_queries = torch.stack([
-    torch.cat([q[:,:2], q[:,2:]], dim=1) for q in all_queries  # obj_id 위치 수정
+        torch.cat([q[:,:2], q[:,2:]], dim=1) for q in all_queries  # [cam_id, obj_id, u, v, z, u', v', z', x', y', z', conf]
     ])
     
     return sbs_img, processed_queries, torch.arange(num_cam, device=device)
@@ -3417,6 +3484,42 @@ def batch_colormap(disp_batch, cmap='magma'):
     # 4. 차원 재배열
     return colored.permute(0, 3, 1, 2).float()  # [B, 3, H, W]
 
+def differentiable_colormap(disp_batch, cmap='magma'):
+    """미분 가능한 컬러맵 변환 함수"""
+    # 1. LUT 초기화
+    magma_cmap = plt.get_cmap(cmap, 256)
+    magma_lut = torch.tensor(magma_cmap.colors[:, :3], 
+                           dtype=torch.float32, 
+                           device=disp_batch.device)  # [256, 3]
+
+    # 2. 입력 데이터 형상 추출
+    b, h, w = disp_batch.shape
+    eps = 1e-8  # 분모 0 방지
+
+    # 3. 최소/최대 계산 (배치별 독립적)
+    disp_flat = disp_batch.view(b, -1)
+    vmin = disp_flat.min(dim=1).values.view(b, 1, 1)
+    vmax = disp_flat.max(dim=1).values.view(b, 1, 1)
+
+    # 4. 정규화 (0~1 범위)
+    normalized = (disp_batch - vmin) / (vmax - vmin + eps)  # [B, H, W]
+
+    # 5. 연속 인덱스 계산 (0~254)
+    indices = normalized * 254  # 255개 색상 → 254 구간
+
+    # 6. 선형 보간
+    lower = torch.floor(indices).long()  # [B, H, W]
+    upper = torch.ceil(indices).long()   # [B, H, W]
+    alpha = indices - lower              # [B, H, W]
+
+    # 7. 색상 보간 (벡터화 연산)
+    lower_color = magma_lut[lower]       # [B, H, W, 3]
+    upper_color = magma_lut[upper]       # [B, H, W, 3]
+    colored = (1 - alpha.unsqueeze(-1)) * lower_color + alpha.unsqueeze(-1) * upper_color
+
+    # 8. 차원 재배열 (BCHW)
+    return colored.permute(0, 3, 1, 2)  # [B, 3, H, W]
+
 
 def denormalize_points(normal_points, z_min=None, z_max=None):
     """
@@ -3963,40 +4066,58 @@ def differentiable_merge_point_clouds(reference_points, detection_points):
 
     return merged
 
-def differentiable_object_matching(pred_points, gt_points, obj_id_dim=1, temp=0.1):
-    """
-    미분 가능한 객체 ID 기반 포인트 클라우드 매칭
-    Args:
-        pred_points: [N, D] 예측 포인트 (obj_id = obj_id_dim)
-        gt_points: [M, D] GT 포인트 (obj_id = obj_id_dim)
-    Returns:
-        matched_pred: [K, D] 매칭된 예측 포인트
-        matched_gt: [K, D] 매칭된 GT 포인트
-    """
-    device = pred_points.device
+# def differentiable_object_matching(pred_points, gt_points, obj_id_dim=1, temp=0.1):
+#     """
+#     미분 가능한 객체 ID 기반 포인트 클라우드 매칭
+#     Args:
+#         pred_points: [N, D] 예측 포인트 (obj_id = obj_id_dim)
+#         gt_points: [M, D] GT 포인트 (obj_id = obj_id_dim)
+#     Returns:
+#         matched_pred: [K, D] 매칭된 예측 포인트
+#         matched_gt: [K, D] 매칭된 GT 포인트
+#     """
+#     device = pred_points.device
     
-    # 1. 객체 ID 추출 (미분 가능한 정규화)
-    pred_ids = pred_points[:, obj_id_dim]  # [N]
-    gt_ids = gt_points[:, obj_id_dim]      # [M]
+#     # 1. 객체 ID 추출 (미분 가능한 정규화)
+#     pred_ids = pred_points[:, obj_id_dim]  # [N]
+#     gt_ids = gt_points[:, obj_id_dim]      # [M]
 
-    # 2. 유사도 행렬 계산 (미분 가능)
-    similarity = torch.sigmoid(10*(pred_ids.unsqueeze(1) - gt_ids.unsqueeze(0)))  # [N,M]
+#     # 2. 유사도 행렬 계산 (미분 가능)
+#     similarity = torch.sigmoid(10*(pred_ids.unsqueeze(1) - gt_ids.unsqueeze(0)))  # [N,M]
 
-    # 3. 양방향 최대 유사도 마스크 생성
-    pred_max = similarity.max(dim=1)[0]  # [N]
-    gt_max = similarity.max(dim=0)[0]    # [M]
+#     # 3. 양방향 최대 유사도 마스크 생성
+#     pred_max = similarity.max(dim=1)[0]  # [N]
+#     gt_max = similarity.max(dim=0)[0]    # [M]
     
-    # 4. 임계값 기반 마스킹 (soft thresholding)
-    pred_mask = torch.sigmoid(100*(pred_max - 0.5))  # [N]
-    gt_mask = torch.sigmoid(100*(gt_max - 0.5))      # [M]
+#     # 4. 임계값 기반 마스킹 (soft thresholding)
+#     pred_mask = torch.sigmoid(100*(pred_max - 0.5))  # [N]
+#     gt_mask = torch.sigmoid(100*(gt_max - 0.5))      # [M]
 
-    # 5. 매칭된 포인트 선택 (미분 가능 샘플링)
-    matched_pred = pred_points * pred_mask.unsqueeze(1)  # [N,D]
-    matched_gt = gt_points * gt_mask.unsqueeze(1)        # [M,D]
+#     # 5. 매칭된 포인트 선택 (미분 가능 샘플링)
+#     matched_pred = pred_points * pred_mask.unsqueeze(1)  # [N,D]
+#     matched_gt = gt_points * gt_mask.unsqueeze(1)        # [M,D]
 
-    # 6. 공통 포인트 수 일치 (패딩/마스킹)
-    k = min(int(pred_mask.sum()), int(gt_mask.sum()))
-    _, pred_topk = torch.topk(pred_mask, k)
-    _, gt_topk = torch.topk(gt_mask, k)
+#     # 6. 공통 포인트 수 일치 (패딩/마스킹)
+#     k = min(int(pred_mask.sum()), int(gt_mask.sum()))
+#     _, pred_topk = torch.topk(pred_mask, k)
+#     _, gt_topk = torch.topk(gt_mask, k)
 
-    return matched_pred[pred_topk], matched_gt[gt_topk]
+#     return matched_pred[pred_topk], matched_gt[gt_topk]
+
+def differentiable_object_matching(pred_points, gt_points):
+    # from geomloss import SamplesLoss
+    gt_points = gt_points.float()
+    
+    # 1. 좌표 추출 (2D 텐서 보장)
+    pred_coords = pred_points[..., :3].view(-1, 3)  # [N,3]
+    gt_coords = gt_points[..., :3].view(-1, 3)      # [M,3]
+
+    # 2. Sinkhorn 전송 계획 계산
+    cost_matrix = torch.cdist(pred_coords, gt_coords, p=2)  # [N,M]
+    transport_plan = F.softmax(-cost_matrix / 0.1, dim=1)   # [N,M]
+
+    # 3. 미분 가능 매칭
+    weights = torch.softmax(transport_plan * 10, dim=1)  # [N,M]
+    matched_gt = torch.matmul(weights, gt_points)        # [N,D]
+
+    return pred_points, matched_gt

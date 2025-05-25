@@ -162,7 +162,7 @@ data = dict(
 optimizer = dict(
     _delete_=True,
     type='AdamW',
-    lr=2e-4,
+    lr=1.924e-4,
     paramwise_cfg=dict(
         custom_keys={
             'base_detector.backbone': dict(lr_mult=0.25),
@@ -183,9 +183,10 @@ optimizer_config = dict(
 total_epochs = 24
 
 # 학습 재개를 위한 설정
-load_from = None #check point path
-# resume_from = 'data/work_dirs/20250404_gpu01/latest.pth'  # 같은 체크포인트 경로
-resume_from = None
+load_from = None
+# load_from = 'data/weights/epoch_3.pth' #check point path
+resume_from = '/workspace/MV2D_moon/data/saved_models/model_iter_2000_5deg_0.5m.pth'  # 같은 체크포인트 경로
+# resume_from = None
 runner = dict(type='EpochBasedRunner', max_epochs=total_epochs)
 evaluation = dict(interval=5, )
 # evaluation = dict(interval=1, by_epoch=False, start=0) # validation 만 실행

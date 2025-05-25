@@ -73,6 +73,12 @@ class MV2D(Base3DDetector):
         #     if 'corr' not in name:  # ← 핵심 변경점
         #         param.requires_grad = False 
         
+        # ROI Head 내 corr과 pts_regressor 제외 동결
+        for name, param in self.roi_head.named_parameters():
+            # 'corr' 또는 'pts_regressor'가 이름에 포함되지 않은 경우만 동결
+            if 'corr' not in name and 'pts_regressor' not in name:
+                param.requires_grad = False
+        
         # # # 4. ROI Head 내 corr 만 동결 
         # for name, param in self.roi_head.named_parameters():
         #     if 'corr' in name:  # ← 핵심 변경점
@@ -274,7 +280,7 @@ class MV2D(Base3DDetector):
                                             attr_labels, None)
         losses['loss_corr'] = loss_corr
         losses['loss_pc_distance'] = loss_pc_distance
-        losses.update(roi_losses)
+        # losses.update(roi_losses)
         # 그래디언트 클리핑 적용
         # torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=20)
 
@@ -317,7 +323,7 @@ class MV2D(Base3DDetector):
                 for k, v in grid_mask_dict.items():
                     checkpoint[f'grid_mask.{k}'] = v
             
-            save_path = os.path.join(self.save_dir, f'model_iter_{self.total_iter}_5deg_0.5m.pth')
+            save_path = os.path.join(self.save_dir, f'model_iter_{self.total_iter}_2deg_0.2m.pth')
             torch.save(checkpoint, save_path)
             print(f"Model saved at iteration {self.total_iter}")
 
