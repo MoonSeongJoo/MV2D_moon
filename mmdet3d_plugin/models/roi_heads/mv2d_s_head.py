@@ -50,7 +50,7 @@ from image_processing_unit_Ver15_0 import (find_all_depthmap_z_adv,find_rois_non
                                            image_to_lidar_global,image_to_lidar_global_modi,image_to_lidar_global_modi1,
                                            lidar_to_image_with_index,diff_lidar_to_image_with_index,
                                            miscalib_transform, miscalib_transform1,miscalib_transform2,
-                                           points2depthmap,dense_map_gpu_optimized,colormap,dense_map_from_depth_batch,batch_colormap,
+                                           points2depthmap,dense_map_gpu_optimized,colormap,dense_map_from_depth_batch,batch_colormap,differentiable_colormap,
                                            two_images_side_by_side,two_images_side_by_side_gpu,
                                            display_depth_maps,scale_uvz_points,normalize_uvz_points,
                                            inverse_scale_uvz_points,
@@ -338,61 +338,76 @@ class PointDistanceLoss(nn.Module):
 #         # 잔차 연결 기반 좌표 보정
 #         return detection_xyz_normal[...,2:] + self.fusion(fused)
 
-class DifferentiableQueryProcessor(torch.nn.Module):
-    def __init__(self, num_cameras=6, max_objects=100, num_points=100):
-        super().__init__()
-        self.num_points = num_points
-        self.max_objects = max_objects
-        self.num_cameras = num_cameras
-        self.obj_emb = torch.nn.Embedding(max_objects, 16)
-        self.cam_emb = torch.nn.Embedding(num_cameras, 16)
+# class DifferentiableQueryProcessor(torch.nn.Module):
+#     def __init__(self, num_cameras=6, max_objects=100, num_points=100):
+#         super().__init__()
+#         self.num_points = num_points
+#         self.max_objects = max_objects
+#         self.num_cameras = num_cameras
+#         self.obj_emb = torch.nn.Embedding(max_objects, 16)
+#         self.cam_emb = torch.nn.Embedding(num_cameras, 16)
         
-    def forward(self, corrs, sbs_img):
-        device = corrs.device
+#     def forward(self, corrs, sbs_img):
+#         device = corrs.device
         
-        # 1. 카메라별 마스크 생성
-        cam_masks = F.one_hot(corrs[:,0].long(), self.num_cameras).bool()
+#         # 1. 카메라별 마스크 생성
+#         cam_masks = F.one_hot(corrs[:,0].long(), self.num_cameras).bool()
         
-        # 2. 카메라별 특징 분리
-        all_cam_features = []
-        for cam_idx in range(self.num_cameras):
-            cam_mask = cam_masks[:, cam_idx]
-            cam_corrs = corrs[cam_mask]  # [M, 9]
+#         # 2. 카메라별 특징 분리
+#         all_cam_features = []
+#         for cam_idx in range(self.num_cameras):
+#             cam_mask = cam_masks[:, cam_idx]
+#             cam_corrs = corrs[cam_mask]  # [M, 9]
             
-            if cam_corrs.size(0) == 0:
-                padded = torch.zeros((self.num_points, 9), device=device)
-                all_cam_features.append(padded)
-                continue
+#             if cam_corrs.size(0) == 0:
+#                 padded = torch.zeros((self.num_points, 9), device=device)
+#                 all_cam_features.append(padded)
+#                 continue
                 
-            # 3. 객체 처리 (전체 9개 특징 사용)
-            obj_ids = torch.clamp(cam_corrs[:,1].long(), 0, self.max_objects-1)
-            obj_features = self.obj_emb(obj_ids)
+#             # 3. 객체 처리 (전체 9개 특징 사용)
+#             obj_ids = torch.clamp(cam_corrs[:,1].long(), 0, self.max_objects-1)
+#             obj_features = self.obj_emb(obj_ids)
             
-            obj_logits = obj_features @ self.obj_emb.weight.T
-            obj_counts = torch.sum(F.softmax(obj_logits, dim=-1), dim=0)
-            sorted_idx = torch.argsort(obj_counts, descending=True)
+#             obj_logits = obj_features @ self.obj_emb.weight.T
+#             obj_counts = torch.sum(F.softmax(obj_logits, dim=-1), dim=0)
+#             sorted_idx = torch.argsort(obj_counts, descending=True)
             
-            samples = F.gumbel_softmax(obj_logits[:, sorted_idx], tau=0.5, hard=True)
-            selected = torch.matmul(samples.T, cam_corrs)  # ← 핵심 수정 부분 ([:, 2:] → [:] )
+#             samples = F.gumbel_softmax(obj_logits[:, sorted_idx], tau=0.5, hard=True)
+#             selected = torch.matmul(samples.T, cam_corrs)  # ← 핵심 수정 부분 ([:, 2:] → [:] )
             
-            # 4. 동적 패딩
-            if selected.size(0) < self.num_points:
-                padding = torch.zeros((self.num_points-selected.size(0), 9), device=device)
-                trimmed = torch.cat([selected, padding], dim=0)
-            else:
-                trimmed = selected[:self.num_points]
+#             # 4. 동적 패딩
+#             if selected.size(0) < self.num_points:
+#                 padding = torch.zeros((self.num_points-selected.size(0), 9), device=device)
+#                 trimmed = torch.cat([selected, padding], dim=0)
+#             else:
+#                 trimmed = selected[:self.num_points]
                 
-            all_cam_features.append(trimmed)
+#             all_cam_features.append(trimmed)
 
-        # 5. 최종 출력 형식
-        trimmed_corrs = torch.stack(all_cam_features, dim=0)  # [6, 100, 9]
+#         # 5. 최종 출력 형식
+#         trimmed_corrs = torch.stack(all_cam_features, dim=0)  # [6, 100, 9]
         
-        # 6. 이미지 선택
-        cam_weights = torch.sigmoid(torch.sum(cam_masks.float(), dim=0) * 1e3)
-        selected_imgs = torch.einsum('c,c...->c...', cam_weights, sbs_img)
+#         # 6. 이미지 선택
+#         cam_weights = torch.sigmoid(torch.sum(cam_masks.float(), dim=0) * 1e3)
+#         selected_imgs = torch.einsum('c,c...->c...', cam_weights, sbs_img)
         
-        return selected_imgs, trimmed_corrs, torch.unique(corrs[:,0].long())
+#         return selected_imgs, trimmed_corrs, torch.unique(corrs[:,0].long())
 
+class pts_regressor(nn.Module) :
+    def __init__(self, dropout=0.0 , num_kp=100) :
+        super(pts_regressor,self).__init__()
+
+        self.num_kp = num_kp
+        self.leakyRELU = nn.LeakyReLU(0.1)
+        self.mish = nn.Mish()
+        
+        # transformer encoder feature aggregration
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1)) # Global Average Pooling
+        self.flatten = nn.Flatten()
+        self.fc0_aggr = nn.Linear(self.num_kp*3 + 312 , 1024) # select numer of corresepondence matching point * 2 shape[0] # ========= number of kp (self.num_kp) * 4 ===========
+        self.bn0_aggr = nn.BatchNorm1d(1024)
+        self.fc = nn.Linear(1024, 300)
+        self.dropout = nn.Dropout(dropout)
 
 @HEADS.register_module()
 class MV2DSHead(MV2DHead):
@@ -445,13 +460,14 @@ class MV2DSHead(MV2DHead):
         #     nn.ReLU(),
         #     nn.Linear(256, 3)
         # )
-        self.corr_loss = CorrelationCycleLoss(corr_weight=200.0 , cycle_weight=100.0)
+        self.corr_loss = CorrelationCycleLoss(corr_weight=100.0 , cycle_weight=50.0)
         self.point_distance_loss = PointDistanceLoss(distance_weight=1.0)
         
         self.num_kp = 100 
         self.corr = COTR(self.num_kp)
+        self.pts_regressor = pts_regressor()
         # self.query_selector = DifferentiableQueryProcessor(num_cameras=6,max_objects=100, num_points=100)
-        # self.skip_connection = SkipConnectionNetwork()
+        
         # self.idawareroiextractor = IDAwareROIExtractor(self.bbox_roi_extractor)
         # self.adaptivedepthfusion = AdaptiveDepthFusion()
 
@@ -591,7 +607,8 @@ class MV2DSHead(MV2DHead):
         ###### SJ MOON 수정 #############
         dense_depth_map = dense_map_from_depth_batch(lidar_depth_mis,grid=3,iterations=3)
         dense_depth_img_mis = dense_depth_map.to(dtype=torch.uint8)
-        dense_depth_img_color_mis = batch_colormap(dense_depth_img_mis)
+        # dense_depth_img_color_mis = batch_colormap(dense_depth_img_mis)
+        dense_depth_img_color_mis = differentiable_colormap(dense_depth_img_mis)
         
         img_resized = F.interpolate(img, size=[192, 640], mode="bilinear")
         lidar_depth_mis_resized = F.interpolate(dense_depth_img_color_mis, size=[192, 640], mode="bilinear")
@@ -644,6 +661,15 @@ class MV2DSHead(MV2DHead):
         detection_xyz = detection_xyz_lidar[:,2:5].clone()
         pts_lidar_mis = gt_xyz_lidar[:,2:5].clone()
         pts_lidar_mis_normalized = pts_lidar_mis.clone()
+
+        pts_lidar_mis_normalized[..., 0:1] = (pts_lidar_mis_normalized[..., 0:1] - self.pc_range[0]) / (
+            self.pc_range[3] - self.pc_range[0])
+        pts_lidar_mis_normalized[..., 1:2] = (pts_lidar_mis_normalized[..., 1:2] - self.pc_range[1]) / (
+                self.pc_range[4] - self.pc_range[1])
+        pts_lidar_mis_normalized[..., 2:3] = (pts_lidar_mis_normalized[..., 2:3] - self.pc_range[2]) / (
+                self.pc_range[5] - self.pc_range[2])
+        pts_lidar_mis_normalized = pts_lidar_mis_normalized.clamp(min=0, max=1)
+        pts_lidar_mis_normalized_with_index = torch.cat([gt_xyz_lidar[...,0:2],pts_lidar_mis_normalized],dim=1)
         
         det_xyz_hom_with_index = torch.cat([detection_xyz_lidar[:,0:1],detection_xyz],dim=1)
         # pts_hom = torch.cat([pts_lidar_mis, torch.ones_like(pts_lidar_mis[:, :1])], dim=1)
@@ -670,7 +696,12 @@ class MV2DSHead(MV2DHead):
         normal_points_lidar2img_mis[:, 0] += 0.5
         normal_points_lidar2img = normalize_uvz_points(scaled_points_lidar2img)
         # corrs_points = torch.cat([detection_xyz_lidar[mask_valid_mis][:,0:2],normal_points_lidar2img,normal_points_lidar2img_mis],dim=1)
-        corrs_points = torch.cat([detection_xyz_lidar[common_mask][:,0:2],normal_points_lidar2img,normal_points_lidar2img_mis,detection_xyz_lidar[common_mask][:,5:6]],dim=1)
+        corrs_points = torch.cat([detection_xyz_lidar[common_mask][:,0:2],
+                                  normal_points_lidar2img,
+                                  normal_points_lidar2img_mis,
+                                  pts_lidar_mis_normalized_with_index[common_mask][:,2:5],
+                                  detection_xyz_lidar[common_mask][:,5:6]],
+                                  dim=1)
         
         # ####### 검증용 corrs display ########
         # for camera_idx in range(6):
@@ -784,77 +815,87 @@ class MV2DSHead(MV2DHead):
         else :
             query_input = trimed_corrs[...,2:5]
             corr_target = trimed_corrs[...,5:8]
+            pts_target = trimed_corrs[...,8:11]
         
             corrs_pred, cycle, corr_mask, enc_out = self.corr(selected_imgs, query_input)
             corr_loss = self.corr_loss(corrs_pred, corr_target, cycle, query_input, corr_mask)
+           
+            pts_avg =self.pts_regressor.avgpool(enc_out)
+            pts_avg = self.pts_regressor.flatten(pts_avg)
+            corrs_emb = corrs_pred.view(6, -1)
+            feature_emb=torch.cat((pts_avg,corrs_emb),dim=-1)
+            pts_x = self.pts_regressor.mish(self.pts_regressor.fc0_aggr(feature_emb))
+            pts_x = self.pts_regressor.bn0_aggr(pts_x)
+            pts_x = self.pts_regressor.dropout(pts_x)
+            pts_x = self.pts_regressor.fc(pts_x)
+            pts_x = pts_x.view(6,100,-1)
+            pc_distance_loss = self.point_distance_loss(pts_x,pts_target)
 
-            # denormal_pred_uvz = minmax_denormalize_uvz(corrs_pred,mis_min_vals,mis_max_vals)
-            denormal_pred_uvz = denormalize_points(corrs_pred)
-            descale_pre_uvz = inverse_scale_uvz_points(denormal_pred_uvz)
-            descale_pre_uvz_with_index = torch.cat([trimed_corrs[...,0:2],descale_pre_uvz],dim=2)
-            pixel_normal_uvz = pixel_to_normalized(descale_pre_uvz_with_index,intrinsics)
-            # detection_xyz_adv_with_index, detection_xyz_adv ,lidar2img = center2lidar_batch(pixel_normal_uvz,intrinsics,extrinsics)
-            detection_xyz_adv_with_index, detection_xyz_adv ,lidar2img = differentiable_center2lidar(pixel_normal_uvz,intrinsics,extrinsics)
-            # filtered_tensor = deduplicate_obj_ids(detection_xyz_adv_with_index)
-            filtered_tensor = differentiable_deduplicate(detection_xyz_adv_with_index, temperature=0.1)
-            detection_xyz_normal = filtered_tensor.clone().float()
-            detection_xyz_normal = torch.where(
-                torch.isnan(detection_xyz_normal),
-                torch.zeros_like(detection_xyz_normal),
-                detection_xyz_normal
-            )
-
-            ## query generator by SJMOON : 카메라에서 제대로 나온 라이다 xyz points 
-            detection_xyz_normal[..., 2:3] = (detection_xyz_normal[..., 2:3] - self.pc_range[0]) / (
-                    self.pc_range[3] - self.pc_range[0])
-            detection_xyz_normal[..., 3:4] = (detection_xyz_normal[..., 3:4] - self.pc_range[1]) / (
-                    self.pc_range[4] - self.pc_range[1])
-            detection_xyz_normal[..., 4:5] = (detection_xyz_normal[..., 4:5] - self.pc_range[2]) / (
-                    self.pc_range[5] - self.pc_range[2])
-            detection_xyz_normal[...,2:].clamp(min=0, max=1)
-
-            pts_lidar_mis_normalized[..., 0:1] = (pts_lidar_mis_normalized[..., 0:1] - self.pc_range[0]) / (
-                self.pc_range[3] - self.pc_range[0])
-            pts_lidar_mis_normalized[..., 1:2] = (pts_lidar_mis_normalized[..., 1:2] - self.pc_range[1]) / (
-                    self.pc_range[4] - self.pc_range[1])
-            pts_lidar_mis_normalized[..., 2:3] = (pts_lidar_mis_normalized[..., 2:3] - self.pc_range[2]) / (
-                    self.pc_range[5] - self.pc_range[2])
-            pts_lidar_mis_normalized = pts_lidar_mis_normalized.clamp(min=0, max=1)
-            pts_lidar_mis_normalized_with_index = torch.cat([gt_xyz_lidar[...,0:2],pts_lidar_mis_normalized],dim=1)
-
+            pts_x_with_index = torch.cat([trimed_corrs[...,0:2],pts_x],dim=2)
+            filtered_tensor = differentiable_deduplicate(pts_x_with_index, temperature=0.1)
+            filterd_pts_x = filtered_tensor.clone().float()
+           
             # skip_detection_xyz_normal = self.skip_connection(detection_xyz_normal[...,2:],enc_out)
+
+            # # denormal_pred_uvz = minmax_denormalize_uvz(corrs_pred,mis_min_vals,mis_max_vals)
+            # denormal_pred_uvz = denormalize_points(corrs_pred)
+            # descale_pre_uvz = inverse_scale_uvz_points(denormal_pred_uvz)
+            # descale_pre_uvz_with_index = torch.cat([trimed_corrs[...,0:2],descale_pre_uvz],dim=2)
+            # pixel_normal_uvz = pixel_to_normalized(descale_pre_uvz_with_index,intrinsics)
+            # # detection_xyz_adv_with_index, detection_xyz_adv ,lidar2img = center2lidar_batch(pixel_normal_uvz,intrinsics,extrinsics)
+            # detection_xyz_adv_with_index, detection_xyz_adv ,lidar2img = differentiable_center2lidar(pixel_normal_uvz,intrinsics,extrinsics)
+            # # filtered_tensor = deduplicate_obj_ids(detection_xyz_adv_with_index)
+            # filtered_tensor = differentiable_deduplicate(detection_xyz_adv_with_index, temperature=0.1)
+            # detection_xyz_normal = filtered_tensor.clone().float()
+            # # detection_xyz_normal = torch.where(
+            # #     torch.isnan(detection_xyz_normal),
+            # #     torch.zeros_like(detection_xyz_normal),
+            # #     detection_xyz_normal
+            # # )
+
+            # ## query generator by SJMOON : 카메라에서 제대로 나온 라이다 xyz points 
+            # detection_xyz_normal[..., 2:3] = (detection_xyz_normal[..., 2:3] - self.pc_range[0]) / (
+            #         self.pc_range[3] - self.pc_range[0])
+            # detection_xyz_normal[..., 3:4] = (detection_xyz_normal[..., 3:4] - self.pc_range[1]) / (
+            #         self.pc_range[4] - self.pc_range[1])
+            # detection_xyz_normal[..., 4:5] = (detection_xyz_normal[..., 4:5] - self.pc_range[2]) / (
+            #         self.pc_range[5] - self.pc_range[2])
+            # detection_xyz_normal[...,2:] = detection_xyz_normal[...,2:].clamp(min=0, max=1)
+
+            # # 
       
-            # # 객체 ID 기반 정렬 및 필터링
-            # det_obj_ids = detection_xyz_normal[:,1].int()
-            # pts_obj_ids = pts_lidar_mis_normalized_with_index[:,1].int()
+            # # # # 객체 ID 기반 정렬 및 필터링
+            # # with torch.no_grad():  # 객체 ID는 미분 흐름에서 제외
+            # #     det_obj_ids = detection_xyz_normal[:,1].int()
+            # #     pts_obj_ids = pts_lidar_mis_normalized_with_index[:,1].int()
 
-            # det_unique = torch.unique(det_obj_ids)
-            # pts_unique = torch.unique(pts_obj_ids)
-            # common_ids = det_unique[torch.isin(det_unique, pts_unique)]
+            # #     det_unique = torch.unique(det_obj_ids)
+            # #     pts_unique = torch.unique(pts_obj_ids)
+            # #     common_ids = det_unique[torch.isin(det_unique, pts_unique)]
 
-            # # 공통 ID에 대한 마스크 생성
-            # det_mask = torch.isin(det_obj_ids, common_ids)
-            # pts_mask = torch.isin(pts_obj_ids, common_ids)
+            # #     # 공통 ID에 대한 마스크 생성
+            # #     det_mask = torch.isin(det_obj_ids, common_ids)
+            # #     pts_mask = torch.isin(pts_obj_ids, common_ids)
 
-            # pred_pts = detection_xyz_normal[det_mask]
-            # gt_pts = pts_lidar_mis_normalized_with_index[pts_mask]
+            # #     pred_pts = detection_xyz_normal[det_mask]
+            # #     gt_pts = pts_lidar_mis_normalized_with_index[pts_mask]
 
-            pred_pts, gt_pts = differentiable_object_matching(
-                            detection_xyz_normal, 
-                            pts_lidar_mis_normalized_with_index,
-                            obj_id_dim=1,
-                            temp=0.1
-                            )
+            # # pred_pts, gt_pts = differentiable_object_matching(
+            # #                 detection_xyz_normal, 
+            # #                 pts_lidar_mis_normalized_with_index,
+            # #                 # obj_id_dim=1,
+            # #                 # temp=0.1
+            # #                 )
 
-            # assert pred_pts.shape[0] == gt_pts.shape[0], "pred_pts and gt_pts shape mismatch"
-            if not pred_pts.shape[0] == gt_pts.shape[0] :
-                print("pred_pts and gt_pts shape mismatch")
+            # # assert pred_pts.shape[0] == gt_pts.shape[0], "pred_pts and gt_pts shape mismatch"
+            # # if not pred_pts.shape[0] == gt_pts.shape[0] :
+            # #     print("pred_pts and gt_pts shape mismatch")
             
-            pc_distance_loss = self.point_distance_loss(pred_pts[...,2:],gt_pts[...,2:]) # real loss
+             # real loss
             # pc_distance_loss = torch.zeros(pred_pts[...,2:].shape, device=pred_pts.device, dtype=pred_pts.dtype) # dummy loss
 
             # ref_points_with_index = merge_point_clouds(reference_points_with_indices, detection_xyz_normal)
-            ref_points_with_index = differentiable_merge_point_clouds(reference_points_with_indices, detection_xyz_normal)
+            ref_points_with_index = differentiable_merge_point_clouds(reference_points_with_indices, filterd_pts_x)
             ref_points = ref_points_with_index[...,2:]
 
             # pred_xyz = detection_xyz_normal.contiguous().view(-1, 3)
@@ -978,6 +1019,7 @@ class MV2DSHead(MV2DHead):
         #     dense_depth_img_color_mis = colormap(dense_depth_img_mis)
 
         #     # #### GT값 디스플레이 ####
+
         #     # denormalized_pts = gt_display_xyz.clone()
         #     # denormalized_pts[..., 0:1] = gt_display_xyz[..., 0:1] * (self.pc_range[3] - self.pc_range[0]) + self.pc_range[0]
         #     # denormalized_pts[..., 1:2] = gt_display_xyz[..., 1:2] * (self.pc_range[4] - self.pc_range[1]) + self.pc_range[1]
