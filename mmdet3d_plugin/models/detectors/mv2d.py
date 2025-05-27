@@ -73,17 +73,16 @@ class MV2D(Base3DDetector):
         #     if 'corr' not in name:  # ← 핵심 변경점
         #         param.requires_grad = False 
         
-        # ROI Head 내 corr과 pts_regressor 제외 동결
-        for name, param in self.roi_head.named_parameters():
-            # 'corr' 또는 'pts_regressor'가 이름에 포함되지 않은 경우만 동결
-            if 'corr' not in name and 'pts_regressor' not in name:
-                param.requires_grad = False
-        
-        # # # 4. ROI Head 내 corr 만 동결 
+        # # ROI Head 내 corr과 pts_regressor 제외 동결
         # for name, param in self.roi_head.named_parameters():
-        #     if 'corr' in name:  # ← 핵심 변경점
-
-        #         param.requires_grad = False 
+        #     # 'corr' 또는 'pts_regressor'가 이름에 포함되지 않은 경우만 동결
+        #     if 'corr' not in name and 'pts_regressor' not in name:
+        #         param.requires_grad = False
+        
+        # # 4. ROI Head 내 corr 만 동결 
+        for name, param in self.roi_head.named_parameters():
+            if 'corr' in name:  # ← 핵심 변경점
+                param.requires_grad = False 
         
         # # ROI Head 전체 동결
         # for param in self.roi_head.parameters():
@@ -274,13 +273,13 @@ class MV2D(Base3DDetector):
         feat = self.process_detector_feat(detector_feat)
         # mis_depthmap_feat = self.process_detector_feat(mis_depth_feat)
         
-        roi_losses , loss_corr ,loss_pc_distance = self.roi_head.forward_train(img_ori,img_metas,lidar_depth_mis, feat, detections,lidar_depth_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4, gt_bboxes, gt_labels,
+        roi_losses,loss_corr  = self.roi_head.forward_train(img_ori,img_metas,lidar_depth_mis, feat, detections,lidar_depth_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4, gt_bboxes, gt_labels,
                                             gt_bboxes_3d, gt_labels_3d,
                                             ori_gt_bboxes_3d, ori_gt_labels_3d,
                                             attr_labels, None)
         losses['loss_corr'] = loss_corr
-        losses['loss_pc_distance'] = loss_pc_distance
-        # losses.update(roi_losses)
+        # losses['loss_pc_distance'] = loss_pc_distance
+        losses.update(roi_losses)
         # 그래디언트 클리핑 적용
         # torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=20)
 

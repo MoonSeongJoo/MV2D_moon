@@ -124,7 +124,7 @@ def normalize_uvz_points(points_lidar2img):
         normal_points_lidar2img[:, 2] = (normal_points_lidar2img[:, 2]-torch.min(normal_points_lidar2img[:, 2]))\
             /(torch.max(normal_points_lidar2img[:, 2]) - torch.min(normal_points_lidar2img[:, 2]))
     else :
-        normal_points_lidar2img[:, 2] = (normal_points_lidar2img[:, 2]-0)/(80 - 0)
+        normal_points_lidar2img[:, 2] = (normal_points_lidar2img[:, 2]-0)/(60 - 0)
 
     return normal_points_lidar2img
 
@@ -597,7 +597,7 @@ def process_queries_adv(corrs, sbs_img, num_points=100):
         # [추가] Confidence Score 포함하여 쿼리 구성
         tagged_queries = torch.cat([
             torch.full((num_points, 1), cam, device=device, dtype=corrs.dtype),  # cam_id (1)
-            selected[:, :7],   # obj_id, x, y, z ,x' ,y', z' (4)
+            selected[:, :11],   # obj_id, x, y, z ,x' ,y', z' (4)
             selected[:, -1].unsqueeze(1)  # confidence (1)
         ], dim=1)  # 총 1+7+1=9 차원
         
@@ -3544,7 +3544,7 @@ def denormalize_points(normal_points, z_min=None, z_max=None):
         z_range = z_max - z_min
         denorm_points[..., 2] = denorm_points[..., 2] * z_range + z_min
     else:  # 기본 범위 사용 (0~80)
-        denorm_points[..., 2] = denorm_points[..., 2] * 80
+        denorm_points[..., 2] = denorm_points[..., 2] * 60
         
     return denorm_points
 
@@ -4121,3 +4121,86 @@ def differentiable_object_matching(pred_points, gt_points):
     matched_gt = torch.matmul(weights, gt_points)        # [N,D]
 
     return pred_points, matched_gt
+
+
+
+   # ####### 검증용 corrs display ########
+        # for camera_idx in range(6):
+        #     mask = pts_hom_with_index[:, 0] == camera_idx
+        #     lidar_points = pts_hom_with_index[mask, 1:5]
+        #     veri_points_lidar2img_mis = (gt_KT[camera_idx] @ lidar_points.T).T
+        #     veri_points_lidar2img_mis = torch.cat([veri_points_lidar2img_mis[:, :2] / veri_points_lidar2img_mis[:, 2:3], veri_points_lidar2img_mis[:, 2:3]], 1)
+
+        #     lidar_points = det_xyz_hom_with_index[mask, 1:5]
+        #     veri_points_lidar2img = (gt_KT[camera_idx] @ lidar_points.T).T
+        #     veri_points_lidar2img = torch.cat([veri_points_lidar2img[:, :2] / veri_points_lidar2img[:, 2:3], veri_points_lidar2img[:, 2:3]], 1)
+            
+        #     veri_scaled_points_lidar2img_mis = scale_uvz_points(veri_points_lidar2img_mis)
+        #     veri_scaled_points_lidar2img = scale_uvz_points(veri_points_lidar2img)
+        #     veri_normal_points_lidar2img_mis = veri_scaled_points_lidar2img_mis.clone()
+        #     veri_normal_points_lidar2img = veri_scaled_points_lidar2img.clone()
+
+        #     veri_normal_points_lidar2img_mis[:, 0] = veri_normal_points_lidar2img_mis[:, 0]/640
+        #     veri_normal_points_lidar2img_mis[:, 1] = veri_normal_points_lidar2img_mis[:, 1]/192 
+        #     if veri_normal_points_lidar2img_mis[:, 2].numel() > 0:
+        #         veri_normal_points_lidar2img_mis[:, 2] = (veri_normal_points_lidar2img_mis[:, 2]-torch.min(veri_normal_points_lidar2img_mis[:, 2]))\
+        #             /(torch.max(veri_normal_points_lidar2img_mis[:, 2]) - torch.min(veri_normal_points_lidar2img_mis[:, 2]))
+        #     else :
+        #         veri_normal_points_lidar2img_mis[:, 2] = (veri_normal_points_lidar2img_mis[:, 2]-0)/(80 - 0)
+        #     veri_normal_points_lidar2img_mis[:, 0] += 0.5
+            
+        #     veri_normal_points_lidar2img[:, 0] = veri_normal_points_lidar2img[:, 0]/640
+        #     veri_normal_points_lidar2img[:, 1] = veri_normal_points_lidar2img[:, 1]/192
+        #     if veri_normal_points_lidar2img[:, 2].numel() > 0:
+        #         veri_normal_points_lidar2img[:, 2] = (veri_normal_points_lidar2img[:, 2]-torch.min(veri_normal_points_lidar2img[:, 2]))\
+        #             /(torch.max(veri_normal_points_lidar2img[:, 2]) - torch.min(veri_normal_points_lidar2img[:, 2]))
+        #     else :
+        #         veri_normal_points_lidar2img[:, 2] = (veri_normal_points_lidar2img[:, 2]-0)/(80 - 0)
+            
+        #     #### corrspondence points display ######
+        #     import matplotlib.pyplot as plt
+        #     # 입력 이미지 처리
+        #     img_tensor = sbs_img[camera_idx]  # [3, 192, 1280]
+        #     # denorm_img = img_tensor / 2 + 0.5  # 정규화 해제
+        #     img_np = img_tensor.permute(1, 2, 0).cpu().numpy()
+
+        #     # 3차원 좌표에서 2D 이미지 좌표 추출 (z값 제거)
+        #     left_pts = veri_scaled_points_lidar2img.cpu().numpy()[:, :2]  # [N,2] (u,v)
+        #     right_pts = veri_scaled_points_lidar2img_mis.cpu().numpy()[:, :2]  # [N,2]
+        #     right_pts[:, 0] += 640 
+
+        #     # 좌표 형상 보정
+        #     left_pts = left_pts.reshape(-1, 2)  # [N,2] 보장
+        #     right_pts = right_pts.reshape(-1, 2)
+
+        #     # 좌표 범위 클리핑
+        #     H, W = img_np.shape[:2]
+        #     left_pts[:, 0] = np.clip(left_pts[:, 0], 0, W-1)
+        #     left_pts[:, 1] = np.clip(left_pts[:, 1], 0, H-1)
+        #     right_pts[:, 0] = np.clip(right_pts[:, 0], 0, W-1)
+        #     right_pts[:, 1] = np.clip(right_pts[:, 1], 0, H-1)
+
+        #     # NaN 값 필터링
+        #     valid_mask = ~(np.isnan(left_pts).any(axis=1) | np.isnan(right_pts).any(axis=1))
+        #     left_pts = left_pts[valid_mask]
+        #     right_pts = right_pts[valid_mask]
+
+        #     # 시각화
+        #     plt.figure(figsize=(20, 6))
+        #     plt.imshow(img_np)
+
+        #     # 포인트 및 연결선 플롯
+        #     plt.scatter(left_pts[:,0], left_pts[:,1], 
+        #                 c='cyan', s=5, edgecolors='k', linewidths=0.8, label='Left Points')
+        #     plt.scatter(right_pts[:,0], right_pts[:,1], 
+        #                 c='magenta', s=5, edgecolors='k', linewidths=0.8, label='Right Points')
+
+        #     for left_p, right_p in zip(left_pts, right_pts):
+        #         plt.plot([left_p[0], right_p[0]], [left_p[1], right_p[1]],
+        #                 color='yellow', linestyle='--', linewidth=1.5, alpha=0.6)
+
+        #     plt.axis('off')
+        #     plt.legend(loc='upper right', prop={'size': 12})
+        #     plt.savefig('correspond.jpg', dpi=300, bbox_inches='tight')
+        #     plt.close()
+        #     print ("end")
