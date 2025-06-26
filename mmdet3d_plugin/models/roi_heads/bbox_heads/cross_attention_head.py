@@ -18,23 +18,147 @@ from mmdet3d_plugin.core.bbox.util import normalize_bbox
 from mmdet3d_plugin.models.utils.pe import pos2posemb3d
 from mmdet3d_plugin.models.utils import PETRTransformer
 
+# ############ MV2D original code #############
+# @TRANSFORMER.register_module()
+# class MV2DTransformer(PETRTransformer):
+#     def forward(self, x, mask, query_embed, pos_embed,
+#                 attn_mask=None, cross_attn_mask=None, **kwargs):
+        
+#         # x: [bs, n, c, h, w], mask: [bs, n, h, w], query_embed: [bs, n_query, c]
+#         bs, n, c, h, w = x.shape
+#         memory = x.permute(1, 3, 4, 0, 2).reshape(n * h * w, bs, c) # [bs, n, c, h, w] -> [n*h*w, bs, c]
+#         mask = mask.view(bs, n * h * w)  # [bs, n, h, w] -> [bs, n*h*w]
+#         query_embed = query_embed.permute(1, 0, 2)
+#         pos_embed = pos_embed.permute(1, 3, 4, 0, 2).reshape(n * h * w, bs, c) # [bs, n, c, h, w] -> [n*h*w, bs, c]
+#         target = torch.zeros_like(query_embed)
+#         if cross_attn_mask is not None:
+#             cross_attn_mask = cross_attn_mask.flatten(1, 3)   # [n_query, n, h, w] -> [n_query, n * h * w]
+        
+#         # out_dec: [num_layers, num_query, bs, dim]
+#         out_dec = self.decoder(
+#             query=target,
+#             key=memory,
+#             value=memory,
+#             key_pos=pos_embed,
+#             query_pos=query_embed,
+#             key_padding_mask=mask,
+#             attn_masks=[attn_mask, cross_attn_mask],
+#             **kwargs,
+#             )
+#         out_dec = out_dec.transpose(1, 2)
+#         memory = memory.reshape(n, h, w, bs, c).permute(3, 0, 4, 1, 2)
+#         return out_dec, memory
 
 @TRANSFORMER.register_module()
 class MV2DTransformer(PETRTransformer):
+    def __init__(self, 
+                 confidence_dim=256,  # Confidence 모듈 파라미터 추가
+                 dynamic_threshold=True,  # 동적 임계값 활성화
+                 **kwargs):
+        super().__init__(**kwargs)
+        
+        # 3. 고급 Confidence Attention 모듈 초기화
+        self.confidence_attention = nn.Sequential(
+            nn.Linear(1, confidence_dim),
+            nn.ReLU(),
+            nn.Linear(confidence_dim, confidence_dim),
+            nn.Sigmoid()
+        )
+        
+        # 4. Dynamic Threshold 파라미터
+        self.dynamic_threshold = dynamic_threshold
+        self.register_buffer('min_threshold', torch.tensor(0.1))
+        self.register_buffer('max_threshold', torch.tensor(0.7))
+
     def forward(self, x, mask, query_embed, pos_embed,
-                attn_mask=None, cross_attn_mask=None, **kwargs):
+                attn_mask=None, cross_attn_mask=None, 
+                confidence_scores=None,  
+                **kwargs):
+        ############ x : bbox_image feature ###############
+        bs, n, c, h, w = x.shape # bs: number of objects, n:number of corrs matching
         
-        # x: [bs, n, c, h, w], mask: [bs, n, h, w], query_embed: [bs, n_query, c]
-        bs, n, c, h, w = x.shape
-        memory = x.permute(1, 3, 4, 0, 2).reshape(n * h * w, bs, c) # [bs, n, c, h, w] -> [n*h*w, bs, c]
-        mask = mask.view(bs, n * h * w)  # [bs, n, h, w] -> [bs, n*h*w]
-        query_embed = query_embed.permute(1, 0, 2)
-        pos_embed = pos_embed.permute(1, 3, 4, 0, 2).reshape(n * h * w, bs, c) # [bs, n, c, h, w] -> [n*h*w, bs, c]
+        if confidence_scores is not None:
+            conf_input = confidence_scores.unsqueeze(-1)
+            conf_weights = self.confidence_attention(conf_input)
+            conf_weights = conf_weights.unsqueeze(1)
+            query_embed = query_embed * conf_weights  # [n_query, 1, 256] * [n_query, 1, 256]
+            # print("Confidence stats - Min:", confidence_scores.min(), 
+            #   "Max:", confidence_scores.max(), 
+            #   "NaN:", torch.isnan(confidence_scores).any())
+        
+        # 메모리 형성 (변경 없음)
+        memory = x.permute(1, 3, 4, 0, 2).reshape(n * h * w, bs, c)
+        mask = mask.view(bs, n * h * w)
+        # Query 임베딩 차원 조정 (수정 부분)
+        query_embed = query_embed.permute(1, 0, 2).contiguous()  # [bs, n_query(num_of_obj), c] → [n_query, bs,c]
+        pos_embed = pos_embed.permute(1, 3, 4, 0, 2).contiguous().reshape(n * h * w, bs, c)
+        # query_embed = query_embed.permute(1, 0, 2)
+        # pos_embed = pos_embed.permute(1, 3, 4, 0, 2).reshape(n * h * w, bs, c)
         target = torch.zeros_like(query_embed)
+
+        # 차원 일치 처리 [N,num_corrs,h,w]
         if cross_attn_mask is not None:
-            cross_attn_mask = cross_attn_mask.flatten(1, 3)   # [n_query, n, h, w] -> [n_query, n * h * w]
-        
-        # out_dec: [num_layers, num_query, bs, dim]
+            num_heads = self.decoder.layers[0].attentions[1].attn.num_heads
+            cross_attn_mask = cross_attn_mask.unsqueeze(1)  # [bs, 1, n, h, w]
+            cross_attn_mask = cross_attn_mask.expand(-1, num_heads, -1, -1, -1)  # [bs, num_heads, n, h, w]
+            cross_attn_mask = cross_attn_mask.reshape(bs*num_heads, n, h, w)  # [bs*num_heads, n, h, w
+            # 2. 디코더 입력 형식에 맞게 변환
+            cross_attn_mask = cross_attn_mask.view(bs*num_heads, 1, n*h*w)  # [bs*num_heads, 1, n*h*w]
+   
+        # # 4. 동적 임계값 계산 부분
+        # if self.dynamic_threshold and confidence_scores is not None:
+        #     mean_conf = torch.mean(confidence_scores)
+        #     # std_conf = torch.std(confidence_scores)
+        #     std_conf = torch.std(confidence_scores) + 1e-6
+        #     # adaptive_threshold = torch.clamp(
+        #     #     mean_conf - 1.5 * std_conf,
+        #     #     min=max(self.min_threshold, 0.01),  # 최소값 >= 0.01
+        #     #     max=self.max_threshold
+        #     # )
+        #     adaptive_threshold = torch.clamp(
+        #         mean_conf - 1.2 * std_conf,
+        #         min=0.1,  # 절대 최소값 고정
+        #         max=self.max_threshold
+        #     )
+            
+        #     # Confidence 마스크 생성
+        #     conf_mask = confidence_scores > adaptive_threshold
+        #     num_heads = self.decoder.layers[0].attentions[1].attn.num_heads
+
+        #     # 차원 조정 (N*num_heads, L, L)
+        #     conf_mask = conf_mask.view(bs, 1, 1)          # [bs, 1, 1]
+        #     conf_mask = conf_mask.expand(bs, 1, n*h*w)  # [bs, 1, n*h*w]
+        #     conf_mask = conf_mask.repeat(num_heads, 1, 1)  # [bs*num_head, 1, n*h*w]
+
+        #     if (~conf_mask).all():  # 모든 요소가 True인 경우
+        #         conf_mask[0] = True  # 임의로 1개 요소 False로 설정
+
+        #     # # cross_attn_mask 처리
+        #     # if cross_attn_mask is not None:
+        #     #     cross_attn_mask = cross_attn_mask.repeat(1, num_heads//2, 1, 1)  # [81, 8, 7, 7]
+        #     #     cross_attn_mask = cross_attn_mask | ~conf_mask
+        #     # else:
+        #     #     cross_attn_mask = ~conf_mask
+        #     if cross_attn_mask is None:
+        #         cross_attn_mask = torch.zeros_like(conf_mask, dtype=torch.bool)
+        #     else:
+        #         cross_attn_mask = cross_attn_mask.to(conf_mask.device)
+            
+        #     if cross_attn_mask is not None:
+        #         cross_attn_mask = cross_attn_mask.unsqueeze(1)  # [bs, 1, n, h, w]
+        #         cross_attn_mask = cross_attn_mask.view(bs, 1, -1)  # [bs, 1, n*h*w]
+        #         cross_attn_mask = cross_attn_mask.repeat(num_heads, 1, 1)  # [bs*num_head, 1, n*h*w]
+        #         # 마스크 결합
+        #         # cross_attn_mask = cross_attn_mask | ~conf_mask
+        #         cross_attn_mask = torch.logical_or(cross_attn_mask, ~conf_mask)
+        #     for i in range(cross_attn_mask.size(0)):
+        #         if cross_attn_mask[i].all():
+        #             # 최소 1개 요소 unmask
+        #             cross_attn_mask[i, 0, 0] = False  # 첫 번째 위치 강제 해제
+
+        # assert not cross_attn_mask.all(dim=-1).any(), "전체 마스크 배치 존재!"
+        # 디코더 처리 (변경 없음)
+
         out_dec = self.decoder(
             query=target,
             key=memory,
@@ -43,8 +167,9 @@ class MV2DTransformer(PETRTransformer):
             query_pos=query_embed,
             key_padding_mask=mask,
             attn_masks=[attn_mask, cross_attn_mask],
-            **kwargs,
-            )
+            **kwargs
+        )
+        
         out_dec = out_dec.transpose(1, 2)
         memory = memory.reshape(n, h, w, bs, c).permute(3, 0, 4, 1, 2)
         return out_dec, memory
@@ -219,7 +344,7 @@ class CrossAttentionBoxHead(BaseModule):
         return outs_dec
 
     def forward(self, reference_points, x, masks, pos_embed,
-                attn_mask=None, cross_attn_mask=None, force_fp32=False, query_embeds=None,
+                attn_mask=None, cross_attn_mask=None,confidence_scores=None, force_fp32=False, query_embeds=None,
                 return_query_feats=False, **kwargs):
         if not self.pre_embed:
             query_embeds = self.position_embedding(reference_points)
@@ -227,7 +352,8 @@ class CrossAttentionBoxHead(BaseModule):
         if force_fp32:
             with torch.autocast('cuda', enabled=False):
                 outs_dec, _ = self.transformer(x.float(), masks, query_embeds.float(), pos_embed.float(),
-                                               attn_mask=attn_mask, cross_attn_mask=cross_attn_mask, **kwargs)
+                                               attn_mask=attn_mask, cross_attn_mask=cross_attn_mask,
+                                               confidence_scores=confidence_scores, **kwargs)
         else:
             outs_dec, _ = self.transformer(x, masks, query_embeds, pos_embed,
                                            attn_mask=attn_mask, cross_attn_mask=cross_attn_mask, **kwargs)

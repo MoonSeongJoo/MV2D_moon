@@ -34,6 +34,7 @@ cotr_args = easydict.EasyDict({
                 "dim_feedforward" : 1024 , 
                 "backbone" : "resnet50" ,
                 "hidden_dim" : 312 ,
+                # "hidden_dim" : 136 ,
                 "dilation" : False ,
                 "dropout" : 0.1 ,
                 "nheads" : 8 ,
@@ -47,21 +48,24 @@ cotr_args = easydict.EasyDict({
 from image_processing_unit_Ver15_0 import (find_all_depthmap_z_adv,find_rois_nonzero_z,find_rois_nonzero_z_adv,find_rois_nonzero_z_adv1,
                                            find_rois_nonzero_z_adv2,find_rois_nonzero_z_adv3,find_rois_nonzero_z_adv4,find_rois_nonzero_z_adv5,
                                            find_rois_nonzero_z_adv6,find_rois_nonzero_z_adv8,find_rois_nonzero_z_adv9,differentiable_find_rois1,
-                                           image_to_lidar_global,image_to_lidar_global_modi,image_to_lidar_global_modi1,
+                                           find_rois_nonzero_z_adv10,find_rois_nonzero_z_adv11,
+                                           image_to_lidar_global,image_to_lidar_global_modi,image_to_lidar_global_modi1,image_to_lidar_global_modi3,
                                            lidar_to_image_with_index,diff_lidar_to_image_with_index,
                                            miscalib_transform, miscalib_transform1,miscalib_transform2,
                                            points2depthmap,dense_map_gpu_optimized,colormap,dense_map_from_depth_batch,batch_colormap,differentiable_colormap,
-                                           two_images_side_by_side,two_images_side_by_side_gpu,
+                                           two_images_side_by_side,two_images_side_by_side_gpu,transform_uv_points,
                                            display_depth_maps,scale_uvz_points,normalize_uvz_points,
                                            inverse_scale_uvz_points,
-                                           trim_corrs,denormalize_points,process_queries,process_queries_adv,process_queries_adv1,differentiable_process_queries,
+                                           trim_corrs,denormalize_points,process_queries,process_queries_adv,process_queries_adv_modified,
+                                           process_queries_adv1,differentiable_process_queries,
                                            selected_image_to_lidar_global,
                                            pixel_to_normalized,center2lidar_batch,differentiable_center2lidar,
                                            project_lidar_to_image,minmax_normalize_uvz,minmax_denormalize_uvz,
                                            draw_corrs , lidar_to_image_no_filter,visualize_bboxes,
                                            geometric_propagation,trim_or_generate_points,
                                            deduplicate_obj_ids,merge_point_clouds,differentiable_deduplicate,differentiable_object_matching,
-                                           differentiable_object_matching,differentiable_merge_point_clouds)
+                                           differentiable_object_matching,differentiable_merge_point_clouds,
+                                           convert_to_bbox_coordinates_matched)
 
 # @CALIB_TRANSFORMER.register_module()
 # class CalibTransformer(PETRTransformer):
@@ -393,42 +397,537 @@ class PointDistanceLoss(nn.Module):
         
 #         return selected_imgs, trimmed_corrs, torch.unique(corrs[:,0].long())
 
-class pts_regressor(nn.Module) :
-    def __init__(self, dropout=0.0 , num_kp=100) :
-        super(pts_regressor,self).__init__()
-
-        self.num_kp = num_kp
-        self.leakyRELU = nn.LeakyReLU(0.1)
-        self.mish = nn.Mish()
+class BBoxEnhancedZEstimator(nn.Module):
+    def __init__(self, depth_shape, bbox_feat_dim=256*7*7, hidden_dim=128):
+        super().__init__()
+        self.max_u = depth_shape[1]  # 이미지 너비 (W)
+        self.max_v = depth_shape[0]  # 이미지 높이 (H)
         
-        # transformer encoder feature aggregration
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1)) # Global Average Pooling
-        self.flatten = nn.Flatten()
-        self.fc0_aggr = nn.Linear(self.num_kp*3 + 312 , 1024) # select numer of corresepondence matching point * 2 shape[0] # ========= number of kp (self.num_kp) * 4 ===========
-        self.bn0_aggr = nn.BatchNorm1d(1024)
-        self.fc = nn.Linear(1024, 300)
-        self.dropout = nn.Dropout(dropout)
+        # 1. UV 좌표 임베딩 레이어
+        self.uv_embed = nn.Embedding(self.max_u * self.max_v, 1)
+        
+        # 2. BBox 특징 MLP
+        self.bbox_mlp = nn.Sequential(
+            nn.Linear(bbox_feat_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1)
+        )
+        nn.init.xavier_uniform_(self.bbox_mlp[0].weight)
+        nn.init.constant_(self.bbox_mlp[2].bias, 0.0)
+        
+        # 3. 동적 가중치 파라미터
+        self.alpha = nn.Parameter(torch.tensor([0.7]))
+
+    def forward(self, uv, depth_map, bbox_feats):
+        """
+        Input Shapes:
+        - uv: [N, 4] (cam_id, obj_id, u, v)
+        - depth_map: [num_cams, H, W] 
+        - bbox_feats: [N, 256, 7, 7]
+        Returns: [N, 1]
+        """
+        N = uv.size(0)
+        H, W = depth_map.shape[1], depth_map.shape[2]  # [num_cams, H, W]
+
+        # 1. 입력 분해
+        cam_ids = uv[:, 0].long()  # [N]
+        u = uv[:, 2].clamp(0, W-1).long()  # [N]
+        v = uv[:, 3].clamp(0, H-1).long()  # [N]
+
+        # 2. 해당 카메라의 depth 값 조회
+        z_depth = depth_map[cam_ids, v, u]  # [N]
+
+        # 3. UV 임베딩 조회
+        indices = u * H + v  # [N]
+        z_uv = self.uv_embed(indices).squeeze(1)  # [N]
+
+        # 4. BBox 특징 처리
+        bbox_flat = bbox_feats.view(N, -1)  # [N, 256*7*7]
+        z_bbox = self.bbox_mlp(bbox_flat).squeeze(1)  # [N]
+
+        # 5. 최종 예측
+        valid_mask = z_depth > 0
+        z_final = torch.where(
+            valid_mask,
+            z_depth,
+            self.alpha * z_uv + (1 - self.alpha) * z_bbox
+        )
+
+        return z_final.unsqueeze(-1)  # [N, 1]
     
-    def forward(self, corrs_pred, enc_out):
+# class ConfidenceEstimator(nn.Module):
+#     """라이다 실측치의 신뢰도를 추정하는 모듈"""
+#     def __init__(self, input_dim=256):
+#         super().__init__()
+#         self.confidence_net = nn.Sequential(
+#             nn.Linear(input_dim, 128),
+#             nn.ReLU(inplace=True),
+#             nn.Dropout(0.2),
+#             nn.Linear(128, 64),
+#             nn.ReLU(inplace=True),
+#             nn.Linear(64, 1),
+#             nn.Sigmoid()  # 0~1 범위의 confidence
+#         )
+        
+#     def forward(self, bbox_feats, depth_context):
+#         """
+#         Args:
+#             bbox_feats: [N, 256, 7, 7] bbox features
+#             depth_context: [N, context_dim] depth 관련 context features
+#         Returns:
+#             confidence: [N, 1] confidence scores
+#         """
+#         bbox_flat = bbox_feats.view(bbox_feats.size(0), -1)
+#         combined_feats = torch.cat([bbox_flat, depth_context], dim=1)
+#         confidence = self.confidence_net(combined_feats)
+#         return confidence
+
+class DynamicWeightingNetwork(nn.Module):
+    """동적 가중치를 학습하는 네트워크"""
+    def __init__(self, feature_dim=256):
+        super().__init__()
+        self.weight_net = nn.Sequential(
+            nn.Linear(feature_dim * 2, 128),
+            nn.ReLU(inplace=True),
+            nn.Linear(128, 64),
+            nn.ReLU(inplace=True),
+            nn.Linear(64, 1),
+            nn.Sigmoid()  # 0~1 범위의 alpha 값
+        )
+        
+    def forward(self, uv_feats, bbox_feats):
         """
         Args:
-            corr_pred: [B, N, 3] (N: number of keypoints)
-            enc_out: [B, C, H, W] (C: channel, H: height, W: width)
+            uv_feats: [N, feature_dim] UV embedding features
+            bbox_feats: [N, feature_dim] BBox features  
         Returns:
-            pts_regressed: [B, N, 3]
+            alpha: [N, 1] dynamic weighting factor
         """
-        # enc_out shape: [B, C, H, W]
-        pts_avg =self.avgpool(enc_out)
-        pts_avg = self.flatten(pts_avg)
-        corrs_emb = corrs_pred.view(6, -1)
-        feature_emb=torch.cat((pts_avg,corrs_emb),dim=-1)
-        pts_x = self.mish(self.fc0_aggr(feature_emb))
-        pts_x = self.bn0_aggr(pts_x)
-        pts_x = self.dropout(pts_x)
-        pts_x = self.fc(pts_x)
-        pts_x = pts_x.view(6,100,-1)
+        combined = torch.cat([uv_feats, bbox_feats], dim=1)
+        alpha = self.weight_net(combined)
+        return alpha
+
+class ImprovedDepthEstimator(nn.Module):
+    def __init__(self, max_image_size=(2048, 2048), bbox_feat_dim=256*7*7, 
+                 hidden_dim=512, confidence_threshold=0.3,
+                 depth_scale_factor=80.0, depth_shift=0.1):  # 스케일 파라미터 추가
+        super().__init__()
         
-        return pts_x
+        # 기존 코드...
+        self.max_h, self.max_w = max_image_size
+        self.hash_embed_size = 50000
+        self.uv_embed = nn.Embedding(self.hash_embed_size, 256)
+        
+        # Depth normalization parameters
+        self.depth_scale_factor = depth_scale_factor  # 실제값 -> 정규화값 변환
+        self.depth_shift = depth_shift  # 최소값 offset
+        self.use_depth_normalization = True
+        
+        # 기존 네트워크들...
+        self.bbox_mlp = nn.Sequential(
+            nn.Linear(bbox_feat_dim, hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(hidden_dim, 256), 
+            nn.ReLU(inplace=True),
+            nn.Linear(256, 1),
+            nn.Sigmoid()  # 출력을 [0,1] 범위로 제한
+        )
+        
+        self.uv_mlp = nn.Sequential(
+            nn.Linear(256, 128),
+            nn.ReLU(inplace=True), 
+            nn.Linear(128, 1),
+            nn.Sigmoid()  # 출력을 [0,1] 범위로 제한
+        )
+        
+        # 나머지 네트워크들...
+        # self.confidence_estimator = ConfidenceEstimator(input_dim=512)
+        self.dynamic_weighter = DynamicWeightingNetwork(feature_dim=256)
+        self.lidar_confidence_net = nn.Sequential(
+            nn.Linear(3, 64),
+            nn.LeakyReLU(0.01, inplace=True),  # 음수 영역 0.01 기울기 유지
+            nn.Linear(64, 32),
+            nn.LeakyReLU(0.01, inplace=True),
+            nn.Linear(32, 1),
+            nn.Sigmoid()
+        )
+        
+        for layer in self.lidar_confidence_net:
+            if isinstance(layer, nn.Linear):
+                nn.init.xavier_uniform_(layer.weight)
+                nn.init.constant_(layer.bias, 0.01)
+        self.confidence_threshold = confidence_threshold
+        
+    def normalize_depth(self, depth_values):
+        """실제 depth 값을 정규화된 값으로 변환"""
+        # Clamp to reasonable range
+        depth_clamped = torch.clamp(depth_values, min=0.1+1e-6, max=80.0-1e-6)
+        # Normalize: (depth - min) / (max - min)  
+        normalized = (depth_clamped - self.depth_shift) / (self.depth_scale_factor - self.depth_shift)
+        return normalized
+        
+    def denormalize_depth(self, normalized_values):
+        """정규화된 값을 실제 depth 값으로 변환"""
+        # Denormalize: normalized * (max - min) + min
+        depth_values = normalized_values * (self.depth_scale_factor - self.depth_shift) + self.depth_shift
+        return torch.clamp(depth_values, min=0.1, max=80.0)
+    
+    # def normalize_depth(self, depth_values):
+    #     """더 안정적인 정규화 함수"""
+    #     # 클램핑 전 로그 변환으로 극단값 완화
+    #     depth_clamped = torch.clamp(depth_values, min=0.1, max=80.0)
+    #     depth_log = torch.log(depth_clamped + 1e-6)  # 로그 스케일링
+    #     normalized = (depth_log - self.depth_shift) / (self.depth_scale_factor - self.depth_shift + 1e-6)
+    #     return torch.clamp(normalized, 0.0, 1.0)  # 출력 범위 강제
+
+    # def denormalize_depth(self, normalized_values):
+    #     """역정규화 시 로그 복원"""
+    #     normalized = torch.clamp(normalized_values, 0.0, 1.0)
+    #     depth_log = normalized * (self.depth_scale_factor - self.depth_shift) + self.depth_shift
+    #     return torch.exp(depth_log) - 1e-6  # 지수 복원
+  
+    def get_uv_indices(self, u, v, H, W):
+        """UV coordinates를 embedding indices로 안전하게 변환"""
+        # Hash function으로 indices를 제한된 범위로 매핑
+        indices = (u.long() * 73856093 + v.long() * 19349663) % self.hash_embed_size
+        return indices.long()
+        
+    def estimate_lidar_confidence(self, depth_values, uv_coords):
+        assert not torch.isnan(uv_coords).any(), "NaN in UV coordinates"
+        assert (depth_values >= 0).all(), "Negative depth values"
+        """라이다 실측치의 신뢰도를 추정"""
+        depth_valid = (depth_values > 0).float()
+        
+        # 정규화된 depth로 변환하여 confidence 계산
+        # normalized_depth = self.normalize_depth(depth_values)
+        normalized_depth = depth_values
+        
+        coord_feats = torch.cat([
+            normalized_depth.unsqueeze(-1),  # 정규화된 depth 사용
+            uv_coords[:, 2:3].float() / 1600.0,  # UV도 정규화
+            uv_coords[:, 3:4].float() / 900.0  # UV도 정규화
+        ], dim=-1)
+        
+        confidence = self.lidar_confidence_net(coord_feats)
+        confidence = confidence * depth_valid.unsqueeze(-1)
+        
+        return confidence.squeeze(-1)
+    
+    # def forward(self, uv, depth_map, bbox_feats,training_stage='full'):
+    #     """
+    #     Args:
+    #         uv: [N, 4] (cam_id, obj_id, u, v)
+    #         depth_map: [num_cams, H, W] - 실제 LiDAR depth 값
+    #         bbox_feats: [N, 256, 7, 7]
+    #         training_stage: 'estimation_only', 'mixed', 'full'
+    #     """
+    #     N = uv.size(0)
+    #     H, W = depth_map.shape[1], depth_map.shape[2]
+
+    #     cam_ids = uv[:, 0].long()
+    #     u = uv[:, 2].clamp(0, W-1).long()
+    #     v = uv[:, 3].clamp(0, H-1).long()
+
+    #     # 1. 라이다 depth 값 조회
+    #     z_depth_real = depth_map[cam_ids, v, u]
+
+    #     # 3. LiDAR depth를 정규화
+    #     z_depth_normalized = self.normalize_depth(z_depth_real)
+    #     # 4. 라이다 confidence 추정 (정규화된 값 사용)
+    #     lidar_confidence = self.estimate_lidar_confidence(z_depth_normalized, uv)
+
+    #     # 2. 추정값 계산 (기존 estimation 로직)
+    #     indices = self.get_uv_indices(u, v, H, W)
+    #     uv_embed = self.uv_embed(indices)
+    #     z_uv = self.uv_mlp(uv_embed).squeeze(1)
+    #     bbox_flat = bbox_feats.view(N, -1)
+    #     z_bbox = self.bbox_mlp(bbox_flat).squeeze(1)
+    #     alpha = torch.sigmoid(self.dynamic_weighter(uv_embed, bbox_feats.view(N, -1)[:, :256]).squeeze(1))
+
+    #     z_estimated = alpha * z_uv + (1 - alpha) * z_bbox
+    #     z_estimated = torch.clamp(z_estimated, 0.0, 1.0)  # [0,1] 범위 강제
+    #     z_estimated_real = self.denormalize_depth(z_estimated)  # ref_points_uvz는 [N, 3] 형태로 가정
+
+    #     # 3. 라이다 값이 유효하면 그대로, 아니면 estimation 사용
+    #     valid_lidar_mask = (z_depth_real > 0)
+    #     z_final_real = torch.where(valid_lidar_mask, z_depth_real, z_estimated_real)
+
+    #     return {
+    #         'depth': z_final_real.unsqueeze(-1),  # 최종 depth (라이다 or estimation)
+    #         'z_lidar_real': z_depth_real,         # 라이다 실측값
+    #         'confidence': lidar_confidence,       # 라이다 confidence
+    #         'z_estimated_real': z_estimated_real, # 추정값
+    #         # 'alpha': alpha,                       # dynamic weighting
+    #         'lidar_mask': valid_lidar_mask,       # 라이다 사용 여부
+    #     }
+    
+    def forward(self, uv, depth_map, bbox_feats, training_stage='full'):
+        # ... (기존 코드 동일)
+        N = uv.size(0)
+        H, W = depth_map.shape[1], depth_map.shape[2]
+
+        cam_ids = uv[:, 0].long()
+        u = uv[:, 2].clamp(0, W-1).long()
+        v = uv[:, 3].clamp(0, H-1).long()
+        
+        # 1. 라이다 depth 값 조회 (변경 없음)
+        z_depth_real = depth_map[cam_ids, v, u]
+        
+        # 2. LiDAR 정규화 및 confidence 추정 (변경 없음)
+        z_depth_normalized = self.normalize_depth(z_depth_real)
+        lidar_confidence = self.estimate_lidar_confidence(z_depth_normalized, uv)
+        
+        # 3. 깊이 추정 계산 (변경 없음)
+        indices = self.get_uv_indices(u, v, H, W)
+        uv_embed = self.uv_embed(indices)
+        z_uv = self.uv_mlp(uv_embed).squeeze(1)
+        bbox_flat = bbox_feats.view(N, -1)
+        z_bbox = self.bbox_mlp(bbox_flat).squeeze(1)
+        alpha = torch.sigmoid(self.dynamic_weighter(uv_embed, bbox_feats.view(N, -1)[:, :256]).squeeze(1))
+        
+        z_estimated = alpha * z_uv + (1 - alpha) * z_bbox
+        z_estimated = torch.clamp(z_estimated, 0.0, 1.0)
+        z_estimated_real = self.denormalize_depth(z_estimated)
+        
+        # 4. 확률적 융합 적용 (핵심 변경)
+        valid_lidar_mask = (z_depth_real > 0)
+        lidar_confidence_adjusted = lidar_confidence * valid_lidar_mask.float()
+        
+        # 신뢰도 기반 가중 평균
+        z_final_real = (
+            lidar_confidence_adjusted * z_depth_real +
+            (1 - lidar_confidence_adjusted) * z_estimated_real
+        )
+        
+        return {
+            'depth': z_final_real.unsqueeze(-1),
+            'z_lidar_real': z_depth_real,
+            'confidence': lidar_confidence,
+            'z_estimated_real': z_estimated_real,
+            'lidar_mask': valid_lidar_mask,
+        }
+
+    # def forward(self, uv, depth_map, bbox_feats, training_stage='full'):
+    #     """
+    #     Args:
+    #         uv: [N, 4] (cam_id, obj_id, u, v)
+    #         depth_map: [num_cams, H, W] - 실제 LiDAR depth 값
+    #         bbox_feats: [N, 256, 7, 7]
+    #         training_stage: 'estimation_only', 'mixed', 'full'
+    #     """
+    #     N = uv.size(0)
+    #     H, W = depth_map.shape[1], depth_map.shape[2]
+
+    #     # 1. 입력 분해
+    #     cam_ids = uv[:, 0].long()
+    #     u = uv[:, 2].clamp(0, W-1).long()
+    #     v = uv[:, 3].clamp(0, H-1).long()
+
+    #     # 2. 라이다 depth 값 조회 (실제값)
+    #     z_depth_real = depth_map[cam_ids, v, u]  # 실제 LiDAR 값
+        
+    #     # 3. LiDAR depth를 정규화
+    #     z_depth_normalized = self.normalize_depth(z_depth_real)
+        
+    #     # 4. 라이다 confidence 추정 (정규화된 값 사용)
+    #     lidar_confidence = self.estimate_lidar_confidence(z_depth_normalized, uv)
+        
+    #     # 5. Feature extraction
+    #     indices = self.get_uv_indices(u, v, H, W)
+    #     uv_embed = self.uv_embed(indices)  # [N, 256]
+    #     z_uv = self.uv_mlp(uv_embed).squeeze(1)  # [N] - 정규화된 출력
+        
+    #     # BBox features  
+    #     bbox_flat = bbox_feats.view(N, -1)
+    #     z_bbox = self.bbox_mlp(bbox_flat).squeeze(1)  # [N] - 정규화된 출력
+        
+    #     # 6. Dynamic weighting
+    #     alpha = self.dynamic_weighter(uv_embed, 
+    #                                 bbox_feats.view(N, -1)[:, :256]).squeeze(1)
+        
+    #     # 7. Confidence-based depth estimation (모든 값이 정규화된 상태)
+    #     if training_stage == 'estimation_only':
+    #         z_final_normalized = alpha * z_uv + (1 - alpha) * z_bbox
+            
+    #     elif training_stage == 'mixed':
+    #         high_confidence_mask = (lidar_confidence > self.confidence_threshold) & (z_depth_real > 0)
+    #         z_estimated_normalized = alpha * z_uv + (1 - alpha) * z_bbox
+    #         z_final_normalized = torch.where(high_confidence_mask, z_depth_normalized, z_estimated_normalized)
+            
+    #     else:  # 'full'
+    #         valid_lidar_mask = (z_depth_real > 0)
+    #         z_estimated_normalized = alpha * z_uv + (1 - alpha) * z_bbox
+            
+    #         lidar_weight = lidar_confidence * valid_lidar_mask.float()
+    #         z_final_normalized = lidar_weight * z_depth_normalized + (1 - lidar_weight) * z_estimated_normalized
+        
+    #     # 8. 최종 출력을 실제 스케일로 변환
+    #     z_final_real = self.denormalize_depth(z_final_normalized)
+        
+    #     return {
+    #         'depth': z_final_real.unsqueeze(-1),  # 실제 스케일 depth
+    #         'depth_normalized': z_final_normalized.unsqueeze(-1),  # 정규화된 depth (디버깅용)
+    #         'confidence': lidar_confidence,
+    #         'alpha': alpha,
+    #         'lidar_weight': lidar_confidence * (z_depth_real > 0).float() if training_stage == 'full' else None,
+    #         'z_lidar_real': z_depth_real,  # 디버깅용
+    #         'lidar_depth_normalized': z_depth_normalized  # 디버깅용
+    #     }
+
+# class pts_regressor(nn.Module) :
+#     def __init__(self, dropout=0.0 , num_kp=100) :
+#         super(pts_regressor,self).__init__()
+
+#         self.num_kp = num_kp
+#         self.leakyRELU = nn.LeakyReLU(0.1)
+#         self.mish = nn.Mish()
+        
+#         # transformer encoder feature aggregration
+#         self.avgpool = nn.AdaptiveAvgPool2d((1, 1)) # Global Average Pooling
+#         self.flatten = nn.Flatten()
+#         self.fc0_aggr = nn.Linear(self.num_kp*3 + 312 , 1024) # select numer of corresepondence matching point * 2 shape[0] # ========= number of kp (self.num_kp) * 4 ===========
+#         self.bn0_aggr = nn.BatchNorm1d(1024)
+#         self.fc = nn.Linear(1024, 300)
+#         self.dropout = nn.Dropout(dropout)
+    
+#     def forward(self, corrs_pred, enc_out):
+#         """
+#         Args:
+#             corr_pred: [B, N, 3] (N: number of keypoints)
+#             enc_out: [B, C, H, W] (C: channel, H: height, W: width)
+#         Returns:
+#             pts_regressed: [B, N, 3]
+#         """
+#         # enc_out shape: [B, C, H, W]
+#         pts_avg =self.avgpool(enc_out)
+#         pts_avg = self.flatten(pts_avg)
+#         corrs_emb = corrs_pred.view(6, -1)
+#         feature_emb=torch.cat((pts_avg,corrs_emb),dim=-1)
+#         pts_x = self.mish(self.fc0_aggr(feature_emb))
+#         pts_x = self.bn0_aggr(pts_x)
+#         pts_x = self.dropout(pts_x)
+#         pts_x = self.fc(pts_x)
+#         pts_x = pts_x.view(6,100,-1)
+        
+#         return pts_x
+
+class SimplifiedDepthEstimator(nn.Module):
+    def __init__(self, bbox_feat_dim=256*7*7, depth_scale_factor=80.0, depth_shift=0.1):
+        super().__init__()
+        
+        # 단일 MLP로 단순화
+        self.depth_predictor = nn.Sequential(
+            nn.Linear(bbox_feat_dim + 2, 256),  # bbox_feat + uv coordinates
+            nn.ReLU(),
+            nn.Linear(256, 64),
+            nn.ReLU(), 
+            nn.Linear(64, 1),
+            nn.Sigmoid()  # 0~1 범위로 제한
+        )
+        
+        # **확률적 융합을 위한 LiDAR confidence 네트워크 추가**
+        self.lidar_confidence_net = nn.Sequential(
+            nn.Linear(3, 64),  # depth + normalized UV coordinates
+            nn.LeakyReLU(0.01, inplace=True),
+            nn.Linear(64, 32),
+            nn.LeakyReLU(0.01, inplace=True),
+            nn.Linear(32, 1),
+            nn.Sigmoid()  # 0~1 범위의 confidence
+        )
+        
+        # Depth normalization parameters (기존 코드에서 가져옴)
+        self.depth_scale_factor = depth_scale_factor
+        self.depth_shift = depth_shift
+        
+        # 네트워크 초기화
+        for layer in self.lidar_confidence_net:
+            if isinstance(layer, nn.Linear):
+                nn.init.xavier_uniform_(layer.weight)
+                nn.init.constant_(layer.bias, 0.01)
+    
+    def normalize_depth(self, depth_values):
+        """실제 depth 값을 정규화된 값으로 변환"""
+        depth_clamped = torch.clamp(depth_values, min=0.1+1e-6, max=80.0-1e-6)
+        normalized = (depth_clamped - self.depth_shift) / (self.depth_scale_factor - self.depth_shift)
+        return normalized
+        
+    def denormalize_depth(self, normalized_values):
+        """정규화된 값을 실제 depth 값으로 변환"""
+        depth_values = normalized_values * (self.depth_scale_factor - self.depth_shift) + self.depth_shift
+        return torch.clamp(depth_values, min=0.1, max=80.0)
+    
+    def estimate_lidar_confidence(self, depth_values, uv_coords):
+        """라이다 실측치의 신뢰도를 추정"""
+        # NaN 및 음수 값 검증
+        assert not torch.isnan(uv_coords).any(), "NaN in UV coordinates"
+        assert (depth_values >= 0).all(), "Negative depth values"
+        
+        depth_valid = (depth_values > 0).float()
+        
+        # 정규화된 depth 사용
+        normalized_depth = self.normalize_depth(depth_values)
+        
+        # UV 좌표도 정규화 (이미지 크기에 맞게)
+        coord_feats = torch.cat([
+            normalized_depth.unsqueeze(-1),
+            uv_coords[:, 2:3].float() / 1600.0,  # u 좌표 정규화
+            uv_coords[:, 3:4].float() / 900.0   # v 좌표 정규화
+        ], dim=-1)  # [N, 3]
+        
+        confidence = self.lidar_confidence_net(coord_feats)
+        confidence = confidence * depth_valid.unsqueeze(-1)
+        
+        return confidence.squeeze(-1)  # [N]
+        
+    def forward(self, uv, depth_map, bbox_feats):
+        """
+        Args:
+            uv: [N, 4] (cam_id, obj_id, u, v)
+            depth_map: [num_cams, H, W] 
+            bbox_feats: [N, 256, 7, 7]
+        Returns:
+            dict with 'depth' and other info
+        """
+        N = uv.size(0)
+        H, W = depth_map.shape[1], depth_map.shape[2]
+        
+        # 1. 직접적인 depth 조회
+        cam_ids = uv[:, 0].long()
+        u = uv[:, 2].clamp(0, W-1).long()
+        v = uv[:, 3].clamp(0, H-1).long()
+        
+        z_depth_real = depth_map[cam_ids, v, u]  # 실제 LiDAR 값
+        
+        # 2. **LiDAR confidence 추정 (확률적 융합을 위해)**
+        lidar_confidence = self.estimate_lidar_confidence(z_depth_real, uv)
+        
+        # 3. **Depth 추정 (depth가 없는 경우를 위해)**
+        bbox_flat = bbox_feats.view(N, -1)
+        uv_coords = uv[:, 2:4].float() / torch.tensor([W, H], device=uv.device)
+        combined_input = torch.cat([bbox_flat, uv_coords], dim=1)
+        
+        z_estimated_normalized = self.depth_predictor(combined_input).squeeze(1)  # [N] (0~1)
+        z_estimated_real = self.denormalize_depth(z_estimated_normalized)  # 실제 스케일로 변환
+        
+        # 4. **확률적 융합 적용 (핵심 변경)**
+        valid_lidar_mask = (z_depth_real > 0)
+        lidar_confidence_adjusted = lidar_confidence * valid_lidar_mask.float()
+        
+        # **신뢰도 기반 가중 평균**
+        z_final_real = (
+            lidar_confidence_adjusted * z_depth_real +
+            (1 - lidar_confidence_adjusted) * z_estimated_real
+        )
+        
+        return {
+            'depth': z_final_real.unsqueeze(-1),           # 최종 depth 값 [N, 1]
+            'z_lidar_real': z_depth_real,                  # 원본 LiDAR 값 [N]
+            'confidence': lidar_confidence,                # LiDAR 신뢰도 [N]
+            'z_estimated_real': z_estimated_real,          # 추정된 depth [N]
+            'lidar_mask': valid_lidar_mask,               # 유효한 LiDAR 마스크 [N]
+            'confidence_weights': lidar_confidence_adjusted  # 실제 적용된 가중치 [N]
+        }
 
 @HEADS.register_module()
 class MV2DSHead(MV2DHead):
@@ -451,16 +950,62 @@ class MV2DSHead(MV2DHead):
         self.denoise_weight = denoise_weight
         self.denoise_split = denoise_split
         
-        self.corr_loss = CorrelationCycleLoss(corr_weight=2.0 , cycle_weight=1.0)
-        # self.point_distance_loss = PointDistanceLoss(distance_weight=50.0)
+        # self.corr_loss = CorrelationCycleLoss(corr_weight=2.0 , cycle_weight=1.0)
+        # self.point_distance_loss = PointDistanceLoss(distance_weight=1.0)
         
-        self.num_kp = 100 
-        self.corr = COTR(self.num_kp)
+        # self.num_kp = 100 
+        # self.conf_loss_weight = 0.5
+        # self.corr = COTR(self.num_kp)
+       
+        # self.z_estimator = ZValueEstimator(depth_shape=(900, 1600))
+        # self.z_estimator = BBoxEnhancedZEstimator(depth_shape=(900, 1600))  # 예시로 depth_shape 설정
+        # self.z_estimator = ImprovedDepthEstimator()
+        self.z_estimator = SimplifiedDepthEstimator()
         # self.pts_regressor = pts_regressor()
         # self.query_selector = DifferentiableQueryProcessor(num_cameras=6,max_objects=100, num_points=100)
 
         # # Deformable SPN 레이어 추가
         # self.deform_spn = DeformableSPN()
+    
+    def create_confidence_cross_attention_mask(self, confidence_scores, confidence_threshold=0.3):
+        """
+        Confidence 기반 cross-attention mask 생성
+        Args:
+            confidence_scores: [N] tensor, confidence values (0~1)
+            confidence_threshold: float, confidence threshold
+        Returns:
+            cross_attn_mask: [N, num_corrs, H, W] boolean mask
+        """
+        # High confidence mask (True = attend, False = mask out)
+        high_confidence_mask = confidence_scores > confidence_threshold
+        
+        return high_confidence_mask
+
+    def apply_confidence_to_corr_feats(self, corr_feats, confidence_scores, confidence_threshold=0.3):
+        """
+        Confidence 기반으로 correlation features에 가중치 적용
+        Args:
+            corr_feats: [num_rois, num_corrs, c, h, w]
+            confidence_scores: [num_rois] 
+        Returns:
+            weighted_corr_feats: confidence로 가중치가 적용된 features
+        """
+        N, num_corrs, c, h, w = corr_feats.shape
+        
+        # Confidence를 feature dimension에 맞게 확장
+        conf_weights = confidence_scores.view(N, 1, 1, 1, 1).expand(N, num_corrs, c, h, w)
+        
+        # Confidence threshold 적용
+        conf_weights = torch.where(
+            confidence_scores.view(N, 1, 1, 1, 1).expand(N, num_corrs, c, h, w) > confidence_threshold,
+            conf_weights,
+            torch.zeros_like(conf_weights)
+        )
+        
+        # Feature에 confidence 가중치 적용
+        weighted_corr_feats = corr_feats * conf_weights
+        
+        return weighted_corr_feats
 
     def prepare_for_dn(self, batch_size, reference_points, img_metas, ref_num, eps=1e-4):
         if self.training:
@@ -557,6 +1102,7 @@ class MV2DSHead(MV2DHead):
             proposal_list = [proposal] + proposal_list[1:]
 
         rois = bbox2roi(proposal_list)
+        uv_set = gt_KT_3by4 # uv value setting (u,v,u',v')
         object_indices = torch.arange(start=0,end=rois.size(0),dtype=torch.int32,device=rois.device).unsqueeze(1)
         rois_part1 = rois[:, :1]   # 이미지 인덱스 [3,1]
         rois_part2 = rois[:, 1:]    # 좌표 정보 [3,4]
@@ -580,94 +1126,160 @@ class MV2DSHead(MV2DHead):
         )
 
         ###### SJ MOON 수정 #############
-        with torch.no_grad():
-            dense_depth_map = dense_map_from_depth_batch(lidar_depth_mis,grid=3,iterations=3)
-            dense_depth_img_mis = dense_depth_map.to(dtype=torch.uint8)
-            dense_depth_img_color_mis = batch_colormap(dense_depth_img_mis)
-            # dense_depth_img_color_mis = differentiable_colormap(dense_depth_img_mis)
-            
-            img_resized = F.interpolate(img, size=[192, 640], mode="bilinear")
-            lidar_depth_mis_resized = F.interpolate(dense_depth_img_color_mis, size=[192, 640], mode="bilinear")
-            lidar_depth_mis_resized = tvtf.normalize(lidar_depth_mis_resized, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-            # lidar_depth_mis_resized = F.interpolate(lidar_depth_mis, size=[h, w], mode="bilinear")
-            
-            # Deformable SPN 적용 (주요 수정 부분)
-            # dense_depth = self.deform_spn(lidar_depth_mis_resized)
-            # dense_depth = geometric_propagation(lidar_depth_mis_resized)
-
-            # sbs_img = two_images_side_by_side(img_resized, lidar_depth_mis_resized)
-            # sbs_img = torch.from_numpy(sbs_img).permute(0,3,1,2)
-            sbs_img = two_images_side_by_side_gpu(img_resized, lidar_depth_mis_resized)
-            sbs_img = sbs_img.permute(0,3,1,2)
-            # sbs_img = tvtf.normalize(sbs_img, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-            # ############## input display ##########################
-            # visualize_bboxes(img,proposal_list,output_path='bbox_display.png')
-            # display_depth_maps(img,dense_depth_img_color_mis,sbs_img)
-            # print("input dispaly end")
-            
-            detection_nonzero_uvz_with_ObjectID =find_rois_nonzero_z_adv8(rois_with_indices,uvz_gt)
-            # detection_nonzero_uvz_with_ObjectID =differentiable_find_rois1(rois_with_indices,uvz_gt)
-            gt_KT = gt_KT
-            detection_nonzero_xyz = image_to_lidar_global_modi1(detection_nonzero_uvz_with_ObjectID,gt_KT) # 교정되어진 lidar좌표계 pc
-            detection_real_mask = (detection_nonzero_uvz_with_ObjectID[:,5] == 1.0) | (detection_nonzero_uvz_with_ObjectID[:,5] == 0.7) 
-            # detection_pred_mask = (detection_nonzero_uvz_with_ObjectID[:,5] == 0.7)
-            detection_uvz_lidar = detection_nonzero_uvz_with_ObjectID[detection_real_mask]
-            detection_xyz_lidar = detection_nonzero_xyz[detection_real_mask]
-            
-            gt_xyz = miscalib_transform2(detection_nonzero_xyz,mis_Rt)
-            gt_xyz_lidar = gt_xyz[detection_real_mask]
-
-            detection_xyz = detection_xyz_lidar[:,2:5].clone()
-            pts_lidar_mis = gt_xyz_lidar[:,2:5].clone()
-            pts_lidar_mis_normalized = pts_lidar_mis.clone()
-
-            pts_lidar_mis_normalized[..., 0:1] = (pts_lidar_mis_normalized[..., 0:1] - self.pc_range[0]) / (
-                self.pc_range[3] - self.pc_range[0])
-            pts_lidar_mis_normalized[..., 1:2] = (pts_lidar_mis_normalized[..., 1:2] - self.pc_range[1]) / (
-                    self.pc_range[4] - self.pc_range[1])
-            pts_lidar_mis_normalized[..., 2:3] = (pts_lidar_mis_normalized[..., 2:3] - self.pc_range[2]) / (
-                    self.pc_range[5] - self.pc_range[2])
-            pts_lidar_mis_normalized = pts_lidar_mis_normalized.clamp(min=0, max=1)
-            pts_lidar_mis_normalized_with_index = torch.cat([gt_xyz_lidar[...,0:2],pts_lidar_mis_normalized],dim=1)
-            
-            det_xyz_hom_with_index = torch.cat([detection_xyz_lidar[:,0:1],detection_xyz],dim=1)
-            # pts_hom = torch.cat([pts_lidar_mis, torch.ones_like(pts_lidar_mis[:, :1])], dim=1)
-            pts_hom_with_index = torch.cat([gt_xyz_lidar[:,0:1],pts_lidar_mis],dim=1)
-            
-            points_lidar2img, mask_valid = lidar_to_image_with_index(det_xyz_hom_with_index,gt_KT,img_shape=(900,1600))
-            points_lidar2img_mis ,mask_valid_mis = lidar_to_image_with_index(pts_hom_with_index,gt_KT,img_shape=(900,1600))
-            common_mask = mask_valid & mask_valid_mis 
-            # common_mask= (mask_valid > 0.5) & (mask_valid_mis > 0.5)
-
-            points_lidar2img = points_lidar2img[common_mask]
-            # points_lidar2img_mis = points_lidar2img_mis[common_mask]
-
-            assert points_lidar2img.shape[0] == points_lidar2img_mis.shape[0], "points_lidar2img and points_lidar2img_mis shape mismatch"
-
-            scaled_points_lidar2img = scale_uvz_points(points_lidar2img[:,1:],original_size=(928,1600),target_size=(192,640))
-            scaled_points_lidar2img_mis = scale_uvz_points(points_lidar2img_mis[:,1:],original_size=(900,1600),target_size=(192,640))
-            
-            normal_points_lidar2img_mis = normalize_uvz_points(scaled_points_lidar2img_mis)
-            normal_points_lidar2img_mis[:, 0] += 0.5
-            normal_points_lidar2img = normalize_uvz_points(scaled_points_lidar2img)
-            # corrs_points = torch.cat([detection_xyz_lidar[mask_valid_mis][:,0:2],normal_points_lidar2img,normal_points_lidar2img_mis],dim=1)
-            corrs_points = torch.cat([detection_xyz_lidar[common_mask][:,0:2],
-                                    normal_points_lidar2img,
-                                    normal_points_lidar2img_mis,
-                                    pts_lidar_mis_normalized_with_index[common_mask][:,2:5],
-                                    detection_xyz_lidar[common_mask][:,5:6]],
-                                    dim=1)
+        # with torch.no_grad():
+        dense_depth_map_gt = dense_map_from_depth_batch(uvz_gt.squeeze(0),grid=3,iterations=3)
+        # dense_depth_map = dense_map_from_depth_batch(lidar_depth_mis,grid=3,iterations=3)
+        # dense_depth_img_mis = dense_depth_map.to(dtype=torch.uint8)
+        # dense_depth_img_color_mis = batch_colormap(dense_depth_img_mis)
+        # dense_depth_img_color_mis = differentiable_colormap(dense_depth_img_mis)
         
-            selected_imgs, trimed_corrs ,original_camera_ids = process_queries_adv(corrs_points,sbs_img)
-        # selected_imgs, trimed_corrs ,original_camera_ids = differentiable_process_queries(corrs_points.float(),sbs_img)
+        # img_resized = F.interpolate(img, size=[192, 640], mode="bilinear")
+        # lidar_depth_mis_resized = F.interpolate(dense_depth_img_color_mis, size=[192, 640], mode="bilinear")
+        # lidar_depth_mis_resized = tvtf.normalize(lidar_depth_mis_resized, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+       
+        # lidar_depth_mis_resized = F.interpolate(lidar_depth_mis, size=[h, w], mode="bilinear")
+        
+        # Deformable SPN 적용 (주요 수정 부분)
+        # dense_depth = self.deform_spn(lidar_depth_mis_resized)
+        # dense_depth = geometric_propagation(lidar_depth_mis_resized)
 
-        ########### corr transformer sjmoon ###########
-        query_input = trimed_corrs[...,2:5]
-        corr_target = trimed_corrs[...,5:8]
-        pts_target = trimed_corrs[...,8:11]
+        # sbs_img = two_images_side_by_side(img_resized, lidar_depth_mis_resized)
+        # sbs_img = torch.from_numpy(sbs_img).permute(0,3,1,2)
+       
+        # sbs_img = two_images_side_by_side_gpu(img_resized, lidar_depth_mis_resized)
+        # sbs_img = sbs_img.permute(0,3,1,2)
+       
+        # sbs_img = tvtf.normalize(sbs_img, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+        # ############## input display ##########################
+        # visualize_bboxes(img,proposal_list,output_path='bbox_display.png')
+        
+        # display_depth_maps(img,dense_depth_img_color_mis,sbs_img,uv_set)
+        # print("input dispaly end")
+
+        # ### query generator
+        # ref_points_uvz,reference_points,return_feats = self.query_generator(bbox_feats, intrinsics, extrinsics, extra_feats)
+        # reference_points_with_indices = torch.cat([rois_with_indices[:,0:2],ref_points_uvz],dim=1)
+        # reference_points_raw = reference_points.clone()
+        # reference_points[..., 0:1] = (reference_points[..., 0:1] - self.pc_range[0]) / (
+        #         self.pc_range[3] - self.pc_range[0])
+        # reference_points[..., 1:2] = (reference_points[..., 1:2] - self.pc_range[1]) / (
+        #         self.pc_range[4] - self.pc_range[1])
+        # reference_points[..., 2:3] = (reference_points[..., 2:3] - self.pc_range[2]) / (
+        #         self.pc_range[5] - self.pc_range[2])
+        # reference_points = reference_points.clamp(min=0, max=1)
+        # reference_points_with_indices= torch.cat([rois_with_indices[:,0:2],reference_points],dim=1)
+        # reference_points_with_indices1= torch.cat([rois_with_indices[:,0:1],reference_points_raw],dim=1)
+        # points_lidar2img, mask_valid = lidar_to_image_with_index(reference_points_with_indices1,gt_KT,img_shape=(928,1600))
+        
+        transformed_uv = transform_uv_points(rois_with_indices,uv_set)
+        # esitmated_z = self.z_estimator(transformed_uv[...,:4], dense_depth_map_gt,bbox_feats,ref_points_uvz)
+        esitmated_z = self.z_estimator(transformed_uv[...,:4], dense_depth_map_gt,bbox_feats)
+        # **Confidence 정보 추출**
+        confidence_scores = esitmated_z['confidence']  # [N]
+        # z_depth_real = esitmated_z['z_lidar_real']  # [N]
+        esitmated_uvz =torch.cat([transformed_uv[...,:4],esitmated_z['depth']],dim=1)
+
+        # # Confidence 손실 계산
+        # conf_loss = F.binary_cross_entropy(
+        #     esitmated_z['confidence'], 
+        #     (z_depth_real > 0.1).float(),  # 유효한 depth가 있는 경우 1, 없는 경우 0
+        #     reduction='mean'
+        # )
+
+        detection_nonzero_xyz = image_to_lidar_global_modi3(esitmated_uvz,gt_KT) # 교정되어진 lidar좌표계 pc
+        
+        # scaled_transformed_uv = scale_uvz_points(transformed_uv[...,2:4],original_size=(928,1600),target_size=(192,640))
+        # scaled_transformed_uv_prime = scale_uvz_points(transformed_uv[...,6:],original_size=(900,1600),target_size=(192,640))
+        # scaled_transformed_uv_set = torch.cat([transformed_uv[...,:2],scaled_transformed_uv,scaled_transformed_uv_prime],dim=1)
+
+        # detection_nonzero_uvz_with_ObjectID =find_rois_nonzero_z_adv8(rois_with_indices,dense_depth_map_gt.unsqueeze(0))
+        # # detection_nonzero_uvz_with_ObjectID =differentiable_find_rois1(rois_with_indices,uvz_gt)
+        # detection_nonzero_xyz = image_to_lidar_global_modi3(esitmated_uvz,gt_KT) # 교정되어진 lidar좌표계 pc
+        # detection_real_mask = (detection_nonzero_uvz_with_ObjectID[:,5] == 1.0) \
+        #                     | (detection_nonzero_uvz_with_ObjectID[:,5] == 0.7) \
+        #                     | (detection_nonzero_uvz_with_ObjectID[:,5] == 0.3) \
+        #                     # | (detection_nonzero_uvz_with_ObjectID[:,5] == 0.3) \
+        #                     # | (detection_nonzero_uvz_with_ObjectID[:,5] == 0.1) \
+        # # detection_pred_mask = (detection_nonzero_uvz_with_ObjectID[:,5] == 0.7)
+        # detection_uvz_lidar = detection_nonzero_uvz_with_ObjectID[detection_real_mask]
+        # detection_xyz_lidar = detection_nonzero_xyz[detection_real_mask]
+        
+        # assert detection_xyz_lidar.shape[0] == rois_with_indices.shape[0], "detection_uvz_lidar and reference_points_with_indices shape mismatch"
+
+        # # merge_xyz = merge_point_clouds(reference_points_with_indices, detection_xyz_lidar[...,:5])
+        
+        # ########### corr 예측을 위한 preprocessing ###########
+        # gt_xyz = miscalib_transform2(detection_xyz_lidar,mis_Rt)
+        # gt_xyz_lidar = gt_xyz[detection_real_mask]
+
+        detection_xyz = detection_nonzero_xyz[:,2:5].clone()
+        # pts_lidar_mis = gt_xyz_lidar[:,2:5].clone()
+        detection_xyz_normalized = detection_xyz.clone()
+        # pts_lidar_mis_normalized = pts_lidar_mis.clone()
+
+        detection_xyz_normalized[..., 0:1] = (detection_xyz_normalized[..., 0:1] - self.pc_range[0]) / (
+            self.pc_range[3] - self.pc_range[0])
+        detection_xyz_normalized[..., 1:2] = (detection_xyz_normalized[..., 1:2] - self.pc_range[1]) / (
+                self.pc_range[4] - self.pc_range[1])
+        detection_xyz_normalized[..., 2:3] = (detection_xyz_normalized[..., 2:3] - self.pc_range[2]) / (
+                self.pc_range[5] - self.pc_range[2])
+        detection_xyz_normalized = detection_xyz_normalized.clamp(min=0, max=1)
+
+        # pts_lidar_mis_normalized[..., 0:1] = (pts_lidar_mis_normalized[..., 0:1] - self.pc_range[0]) / (
+        #     self.pc_range[3] - self.pc_range[0])
+        # pts_lidar_mis_normalized[..., 1:2] = (pts_lidar_mis_normalized[..., 1:2] - self.pc_range[1]) / (
+        #         self.pc_range[4] - self.pc_range[1])
+        # pts_lidar_mis_normalized[..., 2:3] = (pts_lidar_mis_normalized[..., 2:3] - self.pc_range[2]) / (
+        #         self.pc_range[5] - self.pc_range[2])
+        # pts_lidar_mis_normalized = pts_lidar_mis_normalized.clamp(min=0, max=1)
+        # pts_lidar_mis_normalized_with_index = torch.cat([gt_xyz_lidar[...,0:2],pts_lidar_mis_normalized],dim=1)
+        
+        # det_xyz_hom_with_index = torch.cat([detection_xyz_lidar[:,0:1],detection_xyz],dim=1)
+        # # pts_hom = torch.cat([pts_lidar_mis, torch.ones_like(pts_lidar_mis[:, :1])], dim=1)
+        # pts_hom_with_index = torch.cat([gt_xyz_lidar[:,0:1],pts_lidar_mis],dim=1)
+        
+        # points_lidar2img, mask_valid = lidar_to_image_with_index(det_xyz_hom_with_index,gt_KT,img_shape=(900,1600))
+        # points_lidar2img_mis ,mask_valid_mis = lidar_to_image_with_index(pts_hom_with_index,gt_KT,img_shape=(900,1600))
+        # common_mask = mask_valid & mask_valid_mis 
+        # # common_mask= (mask_valid > 0.5) & (mask_valid_mis > 0.5)
+
+        # points_lidar2img = points_lidar2img[common_mask]
+        # # points_lidar2img_mis = points_lidar2img_mis[common_mask]
+
+        # assert points_lidar2img.shape[0] == points_lidar2img_mis.shape[0], "points_lidar2img and points_lidar2img_mis shape mismatch"
+
+        # scaled_points_lidar2img = scale_uvz_points(points_lidar2img[:,1:],original_size=(928,1600),target_size=(192,640))
+        # scaled_points_lidar2img_mis = scale_uvz_points(points_lidar2img_mis[:,1:],original_size=(900,1600),target_size=(192,640))
+        
+        # normal_points_lidar2img_mis = normalize_uvz_points(scaled_points_lidar2img_mis)
+        # normal_points_lidar2img_mis[:, 0] += 0.5
+        # normal_points_lidar2img = normalize_uvz_points(scaled_points_lidar2img)
+        # # corrs_points = torch.cat([detection_xyz_lidar[mask_valid_mis][:,0:2],normal_points_lidar2img,normal_points_lidar2img_mis],dim=1)
+        # corrs_points = torch.cat([detection_xyz_lidar[common_mask][:,0:2],
+        #                         normal_points_lidar2img,
+        #                         normal_points_lidar2img_mis,
+        #                         pts_lidar_mis_normalized_with_index[common_mask][:,2:5],
+        #                         detection_xyz_lidar[common_mask][:,5:6]],
+        #                         dim=1)
     
-        corrs_pred, cycle, corr_mask, enc_out = self.corr(selected_imgs, query_input)
-        corr_loss = self.corr_loss(corrs_pred, corr_target, cycle, query_input, corr_mask)
+        # selected_imgs, trimed_corrs ,original_camera_ids = process_queries_adv(corrs_points,sbs_img)
+        # selected_imgs, trimed_corrs ,original_camera_ids = process_queries_adv_modified(scaled_transformed_uv_set,sbs_img)
+        # # selected_imgs, trimed_corrs ,original_camera_ids = differentiable_process_queries(corrs_points.float(),sbs_img)
+
+        # # ########### corr transformer sjmoon ###########
+        # query_input = trimed_corrs[...,:2]
+        # corr_target = trimed_corrs[...,2:]
+        # # pts_target = trimed_corrs[...,8:11]
+    
+        # corrs_pred, cycle, corr_mask, enc_out = self.corr(selected_imgs, query_input)
+        # corr_loss = self.corr_loss(corrs_pred, corr_target, cycle, query_input, corr_mask)
+       
+        # corrs_pred_with_index = torch.cat([trimed_corrs[...,0:2],corrs_pred],dim=2)
+        # deduplicated_corrs_pred = deduplicate_obj_ids(corrs_pred_with_index)
+        # denormal_corrs_pred = denormalize_points(deduplicated_corrs_pred[...,2:])
+        # descale_corrs_pred = inverse_scale_uvz_points(denormal_corrs_pred,original_size=(928, 1600), target_size=(192, 640))
+        # descale_corrs_pred_with_indices = torch.cat([deduplicated_corrs_pred[:,0:2],descale_corrs_pred],dim=1)
+        # bbox_pred_uvz = convert_to_bbox_coordinates_matched(rois_with_indices,descale_corrs_pred_with_indices,self.roi_size)
 
         # pts_x = self.pts_regressor(corrs_pred,enc_out)
         # pc_distance_loss = self.point_distance_loss(pts_x,pts_target)
@@ -678,70 +1290,74 @@ class MV2DSHead(MV2DHead):
         
         # skip_detection_xyz_normal = self.skip_connection(detection_xyz_normal[...,2:],enc_out)
        
-        with torch.no_grad():  # 객체 ID는 미분 흐름에서 제외
-            denormal_pred_uvz = denormalize_points(corrs_pred)
-            descale_pre_uvz = inverse_scale_uvz_points(denormal_pred_uvz)
-            descale_pre_uvz_with_index = torch.cat([trimed_corrs[...,0:2],descale_pre_uvz],dim=2)
-            pixel_normal_uvz = pixel_to_normalized(descale_pre_uvz_with_index,intrinsics)
-            detection_xyz_adv_with_index, detection_xyz_adv ,lidar2img = center2lidar_batch(pixel_normal_uvz,intrinsics,extrinsics)
-            filtered_tensor = deduplicate_obj_ids(detection_xyz_adv_with_index)
-            detection_xyz_normal = filtered_tensor.clone().float()
-            # ## query generator by SJMOON : 카메라에서 제대로 나온 라이다 xyz points 
-            detection_xyz_normal[..., 2:3] = (detection_xyz_normal[..., 2:3] - self.pc_range[0]) / (
-                    self.pc_range[3] - self.pc_range[0])
-            detection_xyz_normal[..., 3:4] = (detection_xyz_normal[..., 3:4] - self.pc_range[1]) / (
-                    self.pc_range[4] - self.pc_range[1])
-            detection_xyz_normal[..., 4:5] = (detection_xyz_normal[..., 4:5] - self.pc_range[2]) / (
-                    self.pc_range[5] - self.pc_range[2])
-            detection_xyz_normal[...,2:] = detection_xyz_normal[...,2:].clamp(min=0, max=1)
-             # # # 객체 ID 기반 정렬 및 필터링
-            det_obj_ids = detection_xyz_normal[:,1].int()
-            pts_obj_ids = pts_lidar_mis_normalized_with_index[:,1].int()
-            det_unique = torch.unique(det_obj_ids)
-            pts_unique = torch.unique(pts_obj_ids)
-            common_ids = det_unique[torch.isin(det_unique, pts_unique)]
-            # 공통 ID에 대한 마스크 생성
-            det_mask = torch.isin(det_obj_ids, common_ids)
-            pts_mask = torch.isin(pts_obj_ids, common_ids)
-            pred_pts = detection_xyz_normal[det_mask]
-            gt_pts = pts_lidar_mis_normalized_with_index[pts_mask]
+        # with torch.no_grad():  # 객체 ID는 미분 흐름에서 제외
 
+        #############
+        # denormal_pred_uvz = denormalize_points(corrs_pred)
+        # descale_pre_uvz = inverse_scale_uvz_points(denormal_pred_uvz,original_size=(928, 1600), target_size=(192, 640))
+        # descale_pre_uvz_with_index = torch.cat([trimed_corrs[...,0:2],descale_pre_uvz],dim=2)
+        # detection_xyz_adv_with_index = image_to_lidar_global_modi2(descale_pre_uvz_with_index,gt_KT,original_camera_ids) # 교정되어진 lidar좌표계 pc
+        ##########
+        
+        # pixel_normal_uvz = pixel_to_normalized(descale_pre_uvz_with_index,intrinsics)
+        # detection_xyz_adv_with_index, detection_xyz_adv ,lidar2img = center2lidar_batch(pixel_normal_uvz,intrinsics,extrinsics)
+        # filtered_tensor = deduplicate_obj_ids(detection_xyz_adv_with_index)
+        
+        #     # # # 객체 ID 기반 정렬 및 필터링
+        # det_obj_ids = detection_xyz_normal[:,1].int()
+        # pts_obj_ids = pts_lidar_mis_normalized_with_index[:,1].int()
+        # det_unique = torch.unique(det_obj_ids)
+        # pts_unique = torch.unique(pts_obj_ids)
+        # common_ids = det_unique[torch.isin(det_unique, pts_unique)]
+        # # 공통 ID에 대한 마스크 생성
+        # det_mask = torch.isin(det_obj_ids, common_ids)
+        # pts_mask = torch.isin(pts_obj_ids, common_ids)
+        # pred_pts = detection_xyz_normal[det_mask]
+        # gt_pts = pts_lidar_mis_normalized_with_index[pts_mask]
         
         # detection_xyz_adv_with_index, detection_xyz_adv ,lidar2img = differentiable_center2lidar(pixel_normal_uvz,intrinsics,extrinsics)
+        
+        #######
         # filtered_tensor = differentiable_deduplicate(detection_xyz_adv_with_index, temperature=0.1)
+        # detection_xyz_normal = filtered_tensor.clone().float()
+        ##########
+        
         # detection_xyz_normal = torch.where(
         #     torch.isnan(detection_xyz_normal),
         #     torch.zeros_like(detection_xyz_normal),
         #     detection_xyz_normal
         # )
 
-        # # pred_pts, gt_pts = differentiable_object_matching(
-        # #                 detection_xyz_normal, 
-        # #                 pts_lidar_mis_normalized_with_index,
-        # #                 # obj_id_dim=1,
-        # #                 # temp=0.1
-        # #                 )
+        # ## query generator by SJMOON : 카메라에서 제대로 나온 라이다 xyz points 
+        # detection_xyz_normal = torch.cat([
+        #     detection_xyz_normal[..., :2],
+        #     (detection_xyz_normal[..., 2:3] - self.pc_range[0]) / (self.pc_range[3] - self.pc_range[0]),
+        #     (detection_xyz_normal[..., 3:4] - self.pc_range[1]) / (self.pc_range[4] - self.pc_range[1]),
+        #     (detection_xyz_normal[..., 4:5] - self.pc_range[2]) / (self.pc_range[5] - self.pc_range[2])
+        # ], dim=-1)
 
-        # ### query generator
-        ref_points_uvz,reference_points,return_feats = self.query_generator(bbox_feats, intrinsics, extrinsics, extra_feats)
-        # reference_points_with_indices = torch.cat([rois_with_indices[:,0:2],ref_points_uvz],dim=1)
-        reference_points[..., 0:1] = (reference_points[..., 0:1] - self.pc_range[0]) / (
-                self.pc_range[3] - self.pc_range[0])
-        reference_points[..., 1:2] = (reference_points[..., 1:2] - self.pc_range[1]) / (
-                self.pc_range[4] - self.pc_range[1])
-        reference_points[..., 2:3] = (reference_points[..., 2:3] - self.pc_range[2]) / (
-                self.pc_range[5] - self.pc_range[2])
-        reference_points = reference_points.clamp(min=0, max=1)
-        reference_points_with_indices= torch.cat([rois_with_indices[:,0:2],reference_points],dim=1)
+        # detection_xyz_normal = torch.cat([
+        #                                     detection_xyz_normal[..., :2],
+        #                                     detection_xyz_normal[..., 2:].clamp(min=0, max=1)
+        #                                 ], dim=-1)
+
+        # pred_pts, gt_pts = differentiable_object_matching(
+        #                 detection_xyz_normal, 
+        #                 pts_lidar_mis_normalized_with_index,
+        #                 # obj_id_dim=1,
+        #                 # temp=0.1
+        #                 )
         
+        # pc_distance_loss = self.point_distance_loss(pred_pts[...,2:],gt_pts[...,2:])
+
         # ref_points_with_index = merge_point_clouds(reference_points_with_indices, detection_xyz_normal)
-        ref_points_with_index = differentiable_merge_point_clouds(reference_points_with_indices, gt_pts)
-        ref_points = ref_points_with_index[...,2:]
+        # ref_points_with_index = differentiable_merge_point_clouds(reference_points_with_indices, gt_pts)
+        ref_points = detection_xyz_normalized
          
         # ##### 검증용 display ######
         # from image_processing_unit_Ver15_0 import draw_correspondences
         # # corrs_pred_norm = self.inverse_layer_norm(corrs_pred, self.final_ln)
-        # pred_corrs = torch.cat([query_input,corrs_pred],dim=2)
+        # # pred_corrs = torch.cat([query_input,corrs_pred],dim=2)
         # int_ids = original_camera_ids.to(torch.long).cpu()
         # if len(int_ids) < 6:
         #     print ("len(int_ids) < 6")
@@ -750,21 +1366,21 @@ class MV2DSHead(MV2DHead):
         # for cid in int_ids :
         #     idx = id_to_idx[cid.item()]
         #     draw_correspondences(
-        #         trimed_corrs=trimed_corrs[idx][:2,2:],  # 첫 번째 배치 선택
+        #         trimed_corrs=trimed_corrs[idx][:2,:],  # 첫 번째 배치 선택
         #         sbs_img=sbs_img,
         #         camera_idx=cid,
         #         save_path='correspondence_visualization_gt.jpg'
         #     )
-        #     draw_correspondences(
-        #         trimed_corrs=pred_corrs[idx][:2,:],  # 첫 번째 배치 선택
-        #         sbs_img=sbs_img,
-        #         camera_idx=cid,
-        #         save_path='correspondence_visualization_pred.jpg'
-        #     )
+        #     # draw_correspondences(
+        #     #     trimed_corrs=pred_corrs[idx][:2,:],  # 첫 번째 배치 선택
+        #     #     sbs_img=sbs_img,
+        #     #     camera_idx=cid,
+        #     #     save_path='correspondence_visualization_pred.jpg'
+        #     # )
         #     print ("end")
-         
         # generate box correlation
         corr, mask = self.box_corr_module.gen_box_roi_correlation(rois, [len(p) for p in proposal_list], img_metas)
+        # corr, mask = self.box_corr_module.gen_box_roi_correlation(rois_with_indices,pred_pts, [len(p) for p in proposal_list], img_metas)
 
         # depth_x_feats, dapth_pe = depth_x[0].split([ 512 // 2, 512 // 2], dim=1)
 
@@ -792,8 +1408,13 @@ class MV2DSHead(MV2DHead):
         # pred_xyz = torch.cat([autocal_pred_xyz, detection_xyz_pred_normal],dim=0)
 
         # ####### input 검증용 #############
-        # for i in range(6):
-        #     ######## aligned ##########
+        # int_ids = original_camera_ids.to(torch.long).cpu()
+        # if len(int_ids) < 6:
+        #     print ("len(int_ids) < 6")
+        # # 카메라 ID ↔ 인덱스 매핑 생성
+        # id_to_idx = {cid.item(): idx for idx, cid in enumerate(original_camera_ids)}
+        # for cid in int_ids :
+        #     i = id_to_idx[cid.item()]
         #     ref_lidar_img = detection_xyz.matmul(gt_KT[i][:3, :3].T) + gt_KT[i][:3, 3].unsqueeze(0)
         #     ref_lidar_img = torch.cat([ref_lidar_img[:, :2] / ref_lidar_img[:, 2:3], ref_lidar_img[:, 2:3]], 1)
         #     depth , ref_uv,ref_z, valid_indices = points2depthmap(ref_lidar_img , img_metas[0]['img_shape'][0] ,img_metas[0]['img_shape'][1])
@@ -814,7 +1435,7 @@ class MV2DSHead(MV2DHead):
         #     dense_depth_img_color_mis_comp = colormap(dense_depth_img_mi_comp)
 
         #     #### 예측값 디스플레이 ####
-        #     denormalized_pts = ref_points.clone().double()
+        #     denormalized_pts = ref_points.clone()
         #     denormalized_pts[..., 0:1] = ref_points[..., 0:1] * (self.pc_range[3] - self.pc_range[0]) + self.pc_range[0]
         #     denormalized_pts[..., 1:2] = ref_points[..., 1:2] * (self.pc_range[4] - self.pc_range[1]) + self.pc_range[1]
         #     denormalized_pts[..., 2:3] = ref_points[..., 2:3] * (self.pc_range[5] - self.pc_range[2]) + self.pc_range[2]
@@ -829,7 +1450,6 @@ class MV2DSHead(MV2DHead):
 
         #     ###### 검증용 display########
         #     import matplotlib.pyplot as plt
-        #     import matplotlib.patches as patches
         #     img_np = img[i].permute(1, 2, 0).detach().cpu().numpy()
         #     # lidar_depth_mis_np = lidar_depth_mis[0].permute(1, 2, 0).detach().cpu().numpy()
         #     if img_np.dtype == np.float32 or img_np.dtype == np.float64:
@@ -911,15 +1531,44 @@ class MV2DSHead(MV2DHead):
             # output_size = corr_feats.shape[0] * 3
             # # dynamic_linear = nn.Linear(600 * 3, output_size).to(corr_feats.device)
             # # reference_points_modified = dynamic_linear(reference_points_modified)
-            
-            all_cls_scores, all_bbox_preds = self.bbox_head(reference_points[:, None],
-                                                            corr_feats,
-                                                            ~mask[..., None, None].expand_as(corr_feats[:, :, 0]),
+
+            # **Confidence 기반 Feature Weighting 적용**
+            confidence_threshold = 0.5  # 임계값 설정
+            weighted_corr_feats = self.apply_confidence_to_corr_feats(
+                corr_feats, confidence_scores, confidence_threshold
+            )
+            # **Confidence 기반 Cross-Attention Mask 생성**
+            confidence_mask = self.create_confidence_cross_attention_mask(
+                confidence_scores, confidence_threshold
+            )
+            # Cross-attention mask를 corr_feats 차원에 맞게 확장
+            N, num_corrs, c, h, w = corr_feats.shape
+            # 신뢰도 낮은 영역을 직접 마스킹 (True=마스킹 대상)
+            cross_attn_mask = confidence_mask[:, None, None, None].expand(-1, num_corrs, h, w) # 객체단위 전체 masking
+
+            # 패딩 마스크와 신뢰도 마스크 결합 (and 연산)
+            padding_mask = ~mask[..., None, None].expand_as(corr_feats[:, :, 0])
+            combined_mask = padding_mask  | cross_attn_mask  # 패딩 or 낮은 신뢰도 → 마스킹
+
+            ## **Modified bbox_head forward with confidence-based masking**
+            all_cls_scores, all_bbox_preds = self.bbox_head(ref_points[:, None],
+                                                            corr_feats,  # confidence로 가중치가 적용된 features
+                                                            padding_mask,        # 기존 mask + confidence mask
                                                             corr_pe,
                                                             attn_mask=None,
-                                                            cross_attn_mask=None,
-                                                            force_fp32=self.force_fp32, )
-            torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=3)
+                                                            cross_attn_mask=None,  # confidence 기반 cross-attention mask
+                                                            confidence_scores=confidence_scores,  # confidence_scores 추가
+                                                            force_fp32=self.force_fp32,)
+
+            # all_cls_scores, all_bbox_preds = self.bbox_head(ref_points[:, None],
+            #                                                 corr_feats,
+            #                                                 ~mask[..., None, None].expand_as(corr_feats[:, :, 0]),
+            #                                                 corr_pe,
+            #                                                 attn_mask=None,
+            #                                                 cross_attn_mask=None,
+            #                                                 force_fp32=self.force_fp32, )
+            
+            # torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=3)
 
         if mask_dict and mask_dict['pad_size'] > 0:
             output_known_class = all_cls_scores[:, :, :mask_dict['pad_size'], :]
@@ -939,15 +1588,22 @@ class MV2DSHead(MV2DHead):
             intrinsics=intrinsics, extrinsics=extrinsics, rois=rois, dn_mask_dict=mask_dict,
         )
 
-        return bbox_results , corr_loss #,pc_distance_loss
+        # bbox_results = dict(
+        #     cls_scores=cls_scores, bbox_preds=bbox_preds, bbox_feats=bbox_feats, return_feats=return_feats,
+        #     intrinsics=intrinsics, extrinsics=extrinsics, rois=rois, dn_mask_dict=mask_dict,
+        #     conf_loss=conf_loss * self.conf_loss_weight,
+        # )
+
+        return bbox_results  #, corr_loss ,pc_distance_loss
         # return bbox_results
 
     # def _bbox_forward(self, x, proposal_list, img_metas): # for original 
     def _bbox_forward(self,img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4): ### this modified moon
         # bbox_results = self._bbox_forward_denoise(x, proposal_list, img_metas) # for original 
-        bbox_results ,loss_corr = self._bbox_forward_denoise(img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON 
-        return bbox_results ,loss_corr # ,loss_pc_distance
-        # return bbox_results
+        # bbox_results ,loss_corr , loss_pc_distance = self._bbox_forward_denoise(img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON 
+        bbox_results = self._bbox_forward_denoise(img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON 
+        # return bbox_results ,loss_corr ,loss_pc_distance
+        return bbox_results
 
     def prepare_for_dn_loss(self, mask_dict):
         """
@@ -1014,14 +1670,19 @@ class MV2DSHead(MV2DHead):
             img_metas[0]['gt_bboxes_3d'] = ori_gt_bboxes_3d[0]
             img_metas[0]['gt_labels_3d'] = ori_gt_labels_3d[0]
 
-        results_from_last , loss_corr = self._bbox_forward_train(img,img_metas,lidar_depth_mis, x, proposal_boxes, uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJ MOON 
+        # results_from_last , loss_corr,loss_pc_distance = self._bbox_forward_train(img,img_metas,lidar_depth_mis, x, proposal_boxes, uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJ MOON 
+        results_from_last = self._bbox_forward_train(img,img_metas,lidar_depth_mis, x, proposal_boxes, uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
         # results_from_last = self._bbox_forward_train(x, proposal_boxes, img_metas) # for original 
         preds = results_from_last['pred']
+        # Confidence 손실 추출
+        # conf_loss = results_from_last['conf_loss']
 
         cls_scores = preds['cls_scores']
         bbox_preds = preds['bbox_preds']
         loss_weights = copy.deepcopy(self.stage_loss_weights)
 
+        # Confidence 손실 추가 (가중치 0.5 적용 예시)
+        # losses['conf_loss'] = conf_loss * 0.5  # 가중치는 실험적으로 조정
         # use the matching results from last stage for loss calculation
         loss_stage = []
         num_layers = len(cls_scores)
@@ -1049,7 +1710,8 @@ class MV2DSHead(MV2DHead):
             for k, v in loss_stage[layer].items():
                 losses[f'l{layer}.{k}'] = v * lw if 'loss' in k else v
 
-        return losses , loss_corr #, loss_pc_distance
+        # return losses , loss_corr , loss_pc_distance
+        return losses
     
     def simple_test(self,img,img_metas, lidar_depth_mis, x,proposal_list, uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4,rescale=False):
         assert self.with_bbox, 'Bbox head must be implemented.'
@@ -1065,8 +1727,9 @@ class MV2DSHead(MV2DHead):
         results_from_last = dict()
 
         results_from_last['batch_size'] = len(img_metas) // img_metas[0]['num_views']
-        results_from_last ,_ = self._bbox_forward(img,img_metas, lidar_depth_mis,x,proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
-
+        # results_from_last ,_ = self._bbox_forward(img,img_metas, lidar_depth_mis,x,proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
+        results_from_last = self._bbox_forward(img,img_metas, lidar_depth_mis,x,proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
+        
         ## original
         cls_scores = results_from_last['cls_scores'][-1]
         bbox_preds = results_from_last['bbox_preds'][-1]

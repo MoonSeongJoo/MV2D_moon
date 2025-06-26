@@ -191,6 +191,77 @@ class BoxCorrelation(nn.Module):
         valid_mask = pad_sequence(valid_mask[valid_mask].split(num_valid_per_roi, 0), batch_first=True)  # [num_rois_b, max_valid]
 
         return matched_roi_ids, valid_mask
+    
+    # @torch.no_grad()
+    # def gen_box_roi_correlation(self, rois_with_indices, pred_pts, num_proposals_per_img, img_metas):
+    #     """
+    #     GPU 최적화된 ROI 상관관계 생성 함수 (에러 수정 버전)
+        
+    #     Args:
+    #         rois_with_indices (Tensor): [N, 6] (cam_id, obj_id, x1, y1, x2, y2)
+    #         pred_pts (Tensor): [M, 5] (cam_id, obj_id, u, v, z)
+    #         num_proposals_per_img (list): 원본 제안 개수 [p1, p2,...]
+    #         img_metas (list): 이미지 메타데이터
+            
+    #     Returns:
+    #         Tuple[Tensor, Tensor]: (matched_roi_ids, valid_mask)
+    #     """
+    #     # 1. 유효 객체 ID 추출
+    #     valid_obj_ids = self._get_valid_obj_ids(rois_with_indices, pred_pts)
+        
+    #     # 2. ROI 필터링 및 정렬
+    #     filtered_rois, keep_indices = self._filter_rois_by_obj_id(rois_with_indices, valid_obj_ids)
+        
+    #     # 조기 반환 처리
+    #     if filtered_rois.numel() == 0:
+    #         return (filtered_rois.new_zeros((0,0), dtype=torch.int64), 
+    #                 filtered_rois.new_zeros((0,0), dtype=torch.bool))
+
+    #     # 3. 카메라 ID 기준 정렬 (중요!)
+    #     sorted_indices = filtered_rois[:,0].argsort()
+    #     filtered_rois = filtered_rois[sorted_indices]
+    #     keep_indices = keep_indices[sorted_indices]
+
+    #     # 4. 카메라 파라미터 계산
+    #     image_shape = img_metas[0]['pad_shape']
+    #     lidar2img = torch.stack([torch.from_numpy(x['lidar2img']).to(filtered_rois.device) 
+    #                         for x in img_metas], dim=0).double()
+    #     img2lidar = torch.inverse(lidar2img)
+    #     trans_mats = torch.matmul(lidar2img[None], img2lidar[:, None])
+
+    #     # 5. 제안 개수 동적 재계산 (정렬 필수)
+    #     unique_cams, counts = torch.unique_consecutive(filtered_rois[:,0], return_counts=True)
+    #     new_num_proposals = torch.zeros(len(num_proposals_per_img), 
+    #                                 dtype=torch.long,
+    #                                 device=filtered_rois.device)
+        
+    #     # 유효 카메라 마스킹
+    #     valid_cam_mask = (unique_cams < len(num_proposals_per_img))
+    #     new_num_proposals[unique_cams[valid_cam_mask].long()] = counts[valid_cam_mask]
+    #     num_proposals_per_img = new_num_proposals.tolist()
+
+    #     # 6. 에피폴라 매칭 수행
+    #     matched_roi_ids_epipolar, valid_mask_epipolar = self.epipolar_in_box(
+    #         filtered_rois, image_shape, trans_mats, num_proposals_per_img, img_metas
+    #     )
+
+    #     # 7. 원본 인덱스 매핑 (정렬 보정)
+    #     matched_roi_ids = keep_indices[matched_roi_ids_epipolar]
+
+    #     return matched_roi_ids, valid_mask_epipolar
+
+    # def _get_valid_obj_ids(self, rois, pred_pts):
+    #     """두 텐서의 obj_id 교집합 계산"""
+    #     roi_obj_ids = rois[:, 1].unique()
+    #     pred_obj_ids = pred_pts[:, 1].unique()
+    #     return torch.tensor(list(set(roi_obj_ids.tolist()) & set(pred_obj_ids.tolist())), 
+    #                     device=rois.device)
+
+    # def _filter_rois_by_obj_id(self, rois, valid_obj_ids):
+    #     """유효한 obj_id를 가진 ROI 필터링"""
+    #     mask = torch.isin(rois[:, 1], valid_obj_ids)
+    #     return rois[mask], torch.nonzero(mask).squeeze(1)
+
 
     @torch.no_grad()
     def gen_sample_points_in_rois(self, rois):

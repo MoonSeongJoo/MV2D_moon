@@ -175,57 +175,99 @@ def points2depthmap_cpu(points, height, width, downsample=1):
     
     return depth_map, coor, depth, valid_indices
 
+# def points2depthmap_gpu(points, height, width, grid_config, downsample=1):
+#     device = points.device
+#     # grid_config = {
+#     #     'x': [-51.2, 51.2, 0.8],
+#     #     'y': [-51.2, 51.2, 0.8],
+#     #     'z': [-5, 3, 8],
+#     #     # 'depth': [1.0, 60.0, 0.5],
+#     #     'depth': [0.0, 60.0, 0.5],
+#     # }
+#     height, width = height // downsample, width // downsample
+#     depth_map = torch.zeros((height, width), dtype=torch.float32, device=device)
+    
+#     # 모든 연산을 GPU에서 수행하도록 명시적으로 device 지정
+#     coor = torch.round(points[:, :2] / downsample).to(device)
+#     depth = points[:, 2].to(device)
+    
+#     # 벡터화된 연산으로 kept1 계산
+#     kept1 = ((coor[:, 0] >= 0) & (coor[:, 0] < width) &
+#              (coor[:, 1] >= 0) & (coor[:, 1] < height) &
+#              (depth < grid_config['depth'][1]) &
+#              (depth >= grid_config['depth'][0]))
+    
+#     coor, depth = coor[kept1], depth[kept1]
+    
+#     # width를 텐서로 변환하여 GPU에서 연산
+#     width_tensor = torch.tensor(width, device=device)
+#     ranks = coor[:, 0] + coor[:, 1] * width_tensor
+    
+#     # argsort 연산은 이미 GPU에서 수행됨
+#     # sort = (ranks + depth / 100.).argsort()
+#     # 수정 코드 (Z값 정상화)
+#     # sort = (ranks - depth / 100.).argsort(descending=True)  # 내림차순 정렬
+#     sort = (ranks - depth).argsort(descending=True)
+    
+#     coor, depth, ranks = coor[sort], depth[sort], ranks[sort]
+
+#     # 벡터화된 연산으로 kept2 계산
+#     kept2 = torch.ones(coor.shape[0], device=device, dtype=torch.bool)
+#     kept2[1:] = (ranks[1:] != ranks[:-1])
+    
+#     coor, depth = coor[kept2], depth[kept2]
+    
+#     coor = coor.to(torch.long)
+    
+#     # GPU에서 인덱싱 연산 수행
+#     depth_map[coor[:, 1], coor[:, 0]] = depth
+
+#     # # 최종 유효 인덱스 계산
+#     valid_indices = torch.where(kept1)[0][kept2]
+    
+#     return depth_map ,coor, depth, valid_indices
+
 def points2depthmap_gpu(points, height, width, grid_config, downsample=1):
     device = points.device
-    # grid_config = {
-    #     'x': [-51.2, 51.2, 0.8],
-    #     'y': [-51.2, 51.2, 0.8],
-    #     'z': [-5, 3, 8],
-    #     # 'depth': [1.0, 60.0, 0.5],
-    #     'depth': [0.0, 60.0, 0.5],
-    # }
     height, width = height // downsample, width // downsample
     depth_map = torch.zeros((height, width), dtype=torch.float32, device=device)
     
-    # 모든 연산을 GPU에서 수행하도록 명시적으로 device 지정
+    # 원본 포인트 인덱스 초기화 (0부터 순차적)
+    original_indices = torch.arange(points.size(0), device=device)
+    
     coor = torch.round(points[:, :2] / downsample).to(device)
     depth = points[:, 2].to(device)
     
-    # 벡터화된 연산으로 kept1 계산
+    # 1차 필터링 (좌표 범위 및 깊이 조건)
     kept1 = ((coor[:, 0] >= 0) & (coor[:, 0] < width) &
              (coor[:, 1] >= 0) & (coor[:, 1] < height) &
              (depth < grid_config['depth'][1]) &
              (depth >= grid_config['depth'][0]))
     
     coor, depth = coor[kept1], depth[kept1]
+    original_indices = original_indices[kept1]  # 인덱스 추적
     
-    # width를 텐서로 변환하여 GPU에서 연산
+    # 랭크 계산 및 정렬
     width_tensor = torch.tensor(width, device=device)
     ranks = coor[:, 0] + coor[:, 1] * width_tensor
-    
-    # argsort 연산은 이미 GPU에서 수행됨
-    # sort = (ranks + depth / 100.).argsort()
-    # 수정 코드 (Z값 정상화)
-    # sort = (ranks - depth / 100.).argsort(descending=True)  # 내림차순 정렬
     sort = (ranks - depth).argsort(descending=True)
     
     coor, depth, ranks = coor[sort], depth[sort], ranks[sort]
-
-    # 벡터화된 연산으로 kept2 계산
+    original_indices = original_indices[sort]  # 정렬된 인덱스
+    
+    # 2차 필터링 (중복 좌표 제거)
     kept2 = torch.ones(coor.shape[0], device=device, dtype=torch.bool)
     kept2[1:] = (ranks[1:] != ranks[:-1])
     
     coor, depth = coor[kept2], depth[kept2]
+    final_original_indices = original_indices[kept2]  # 최종 인덱스
     
     coor = coor.to(torch.long)
-    
-    # GPU에서 인덱싱 연산 수행
     depth_map[coor[:, 1], coor[:, 0]] = depth
-
-    # # 최종 유효 인덱스 계산
+    
     valid_indices = torch.where(kept1)[0][kept2]
     
-    return depth_map ,coor, depth, valid_indices
+    return depth_map, coor, depth, valid_indices, final_original_indices  # 인덱스 추가 반환
 
 def add_calibration(lidar2img, points_lidar): 
     points_img = points_lidar.tensor[:, :3].matmul(lidar2img[:3, :3].T) + lidar2img[:3, 3].unsqueeze(0)
@@ -836,6 +878,42 @@ def colormap(disp):
     colormapped_tensor = torch.from_numpy(colormapped_im).to(dtype=torch.float32)
     return colormapped_tensor
 
+def find_exact_correspondences(valid_indices_gt, valid_indices, gt_uv, uv):
+    """정확한 대응쌍을 찾는 함수"""
+    device = gt_uv.device
+    
+    # GPU 텐서를 CPU로 변환
+    valid_gt_cpu = valid_indices_gt.cpu().numpy()
+    valid_mis_cpu = valid_indices.cpu().numpy()
+    
+    matched_pairs = []
+    
+    # 각 GT 인덱스에 대해 대응되는 MIS 인덱스 찾기
+    for i, gt_idx in enumerate(valid_gt_cpu):
+        # GT 인덱스가 MIS에도 존재하는지 확인
+        mis_positions = np.where(valid_mis_cpu == gt_idx)[0]
+        
+        if len(mis_positions) > 0:
+            # 대응되는 첫 번째 위치 사용
+            mis_pos = mis_positions[0]
+            
+            # 대응쌍 저장: (gt_position, mis_position, common_index)
+            matched_pairs.append((i, mis_pos, gt_idx))
+    
+    if len(matched_pairs) == 0:
+        return torch.empty((0, 4), device=device)
+    
+    # 매칭된 좌표 추출
+    matched_gt_indices = [pair[0] for pair in matched_pairs]
+    matched_mis_indices = [pair[1] for pair in matched_pairs]
+    
+    matched_gt_uv = gt_uv[matched_gt_indices]
+    matched_mis_uv = uv[matched_mis_indices]
+    
+    # 4열로 연결: [u_gt, v_gt, u_mis, v_mis]
+    matched_uv_set = torch.cat([matched_gt_uv, matched_mis_uv], dim=1)
+    
+    return matched_uv_set
 
 def trim_corrs(points ,num_kp=30000):
     length = points.shape[0]

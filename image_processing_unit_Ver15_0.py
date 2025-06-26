@@ -63,57 +63,108 @@ def visualize_bboxes(img_tensor, proposal_list, output_path='output.png', dpi=15
     plt.close()  # 메모리 해제
 
 
-def display_depth_maps(imgs, mis_calibrated_depth_map, sbs_img):
-    # """
-    # 이미지 위에 depth map과 mis_calibrated depth map을 오버레이하여 디스플레이하는 함수
-    # """
+# def display_depth_maps(imgs, mis_calibrated_depth_map, sbs_img):
+#     # """
+#     # 이미지 위에 depth map과 mis_calibrated depth map을 오버레이하여 디스플레이하는 함수
+#     # """
 
+#     for cid in range(imgs.shape[0]):
+
+#         img_np = imgs.squeeze()[cid].cpu().detach().numpy()
+#         # depth_gt_np = depth_map.squeeze()[cid].cpu().detach().numpy() 
+#         depth_mis_np = mis_calibrated_depth_map.squeeze()[cid].cpu().detach().numpy()
+#         sbs_img_np = sbs_img.squeeze()[cid].cpu().detach().numpy()
+#         img_np = np.transpose(img_np,(1,2,0))
+#         # depth_gt_np = np.transpose(depth_gt_np,(1,2,0))
+#         depth_mis_np = np.transpose(depth_mis_np,(1,2,0))
+#         sbs_img_np = np.transpose(sbs_img_np,(1,2,0))
+#         # # 이미지 데이터가 float 타입인 경우 0과 1 사이로 정규화
+#         # if img_np.dtype == np.float32 or img_np.dtype == np.float64:
+#         #     img_np = (img_np - img_np.min()) / (img_np.max() - img_np.min())
+#         #     # depth_gt_np = (depth_gt_np - depth_gt_np.min()) / (depth_gt_np.max() - depth_gt_np.min())
+#         #     depth_mis_np = (depth_mis_np - depth_mis_np.min()) / (depth_mis_np.max() - depth_mis_np.min())
+#         #     sbs_img_np = (sbs_img_np - sbs_img_np.min()) / (sbs_img_np.max() - sbs_img_np.min())
+
+#         # input display
+#         ###### display input signal #########        
+#         plt.figure(figsize=(20, 20))
+#         plt.subplot(311)
+#         plt.imshow(img_np)
+#         plt.title("camera_input", fontsize=15)
+#         plt.axis('off')
+
+#         # plt.subplot(312)
+#         # plt.imshow( depth_gt_np, cmap='magma')
+#         # plt.title("calibrated_lidar_input", fontsize=15)
+#         # plt.axis('off') 
+
+#         plt.subplot(312)
+#         plt.imshow( depth_mis_np, cmap='magma')
+#         plt.title("mis-calibrated_lidar_input", fontsize=15)
+#         plt.axis('off')
+
+#         plt.subplot(313)
+#         plt.imshow( sbs_img_np)
+#         plt.title("sbs_img_input", fontsize=15)
+#         plt.axis('off')
+        
+#         plt.tight_layout(pad=0)  # 여백 제거
+#         plt.savefig(f'raw_input_image_{cid+1}.png', dpi=300, bbox_inches='tight')
+#         plt.close('all')
+    
+#     print ('display end')
+#     # ############ end of display input signal ###################
+
+def display_depth_maps(imgs, mis_calibrated_depth_map, sbs_img, uv_set):
+    # Convert UV coordinates to numpy once
+    uv_set_np = uv_set.cpu().detach().numpy()
+    
     for cid in range(imgs.shape[0]):
-
+        # Existing image processing
         img_np = imgs.squeeze()[cid].cpu().detach().numpy()
-        # depth_gt_np = depth_map.squeeze()[cid].cpu().detach().numpy() 
         depth_mis_np = mis_calibrated_depth_map.squeeze()[cid].cpu().detach().numpy()
         sbs_img_np = sbs_img.squeeze()[cid].cpu().detach().numpy()
-        img_np = np.transpose(img_np,(1,2,0))
-        # depth_gt_np = np.transpose(depth_gt_np,(1,2,0))
-        depth_mis_np = np.transpose(depth_mis_np,(1,2,0))
-        sbs_img_np = np.transpose(sbs_img_np,(1,2,0))
-        # # 이미지 데이터가 float 타입인 경우 0과 1 사이로 정규화
-        # if img_np.dtype == np.float32 or img_np.dtype == np.float64:
-        #     img_np = (img_np - img_np.min()) / (img_np.max() - img_np.min())
-        #     # depth_gt_np = (depth_gt_np - depth_gt_np.min()) / (depth_gt_np.max() - depth_gt_np.min())
-        #     depth_mis_np = (depth_mis_np - depth_mis_np.min()) / (depth_mis_np.max() - depth_mis_np.min())
-        #     sbs_img_np = (sbs_img_np - sbs_img_np.min()) / (sbs_img_np.max() - sbs_img_np.min())
+        
+        # Transpose dimensions for plotting
+        img_np = np.transpose(img_np, (1,2,0))
+        depth_mis_np = np.transpose(depth_mis_np, (1,2,0))
+        sbs_img_np = np.transpose(sbs_img_np, (1,2,0))
 
-        # input display
-        ###### display input signal #########        
+        # Create figure and subplots
         plt.figure(figsize=(20, 20))
+        
+        # Camera image with original UV points
         plt.subplot(311)
         plt.imshow(img_np)
-        plt.title("camera_input", fontsize=15)
+        plt.scatter(uv_set_np[:, 0], uv_set_np[:, 1], 
+                   s=2, c='cyan', marker='o', 
+                   alpha=0.6, label='Original Projection')
+        plt.title("Camera Image with Original LiDAR Projection", fontsize=15)
+        plt.legend(loc='upper right', markerscale=3)
         plt.axis('off')
 
-        # plt.subplot(312)
-        # plt.imshow( depth_gt_np, cmap='magma')
-        # plt.title("calibrated_lidar_input", fontsize=15)
-        # plt.axis('off') 
-
+        # Mis-calibrated depth map with misaligned UV points
         plt.subplot(312)
-        plt.imshow( depth_mis_np, cmap='magma')
-        plt.title("mis-calibrated_lidar_input", fontsize=15)
+        plt.imshow(depth_mis_np, cmap='magma')
+        plt.scatter(uv_set_np[:, 2], uv_set_np[:, 3], 
+                   s=2, c='lime', marker='x', 
+                   alpha=0.6, label='Misaligned Projection')
+        plt.title("Mis-calibrated LiDAR Depth Map", fontsize=15)
+        plt.legend(loc='upper right', markerscale=3)
         plt.axis('off')
 
+        # Side-by-side comparison image
         plt.subplot(313)
-        plt.imshow( sbs_img_np)
-        plt.title("sbs_img_input", fontsize=15)
+        plt.imshow(sbs_img_np)
+        plt.title("Sensor Fusion Comparison", fontsize=15)
         plt.axis('off')
-        
-        plt.tight_layout(pad=0)  # 여백 제거
-        plt.savefig(f'raw_input_image_{cid+1}.png', dpi=300, bbox_inches='tight')
+
+        # Save and close
+        plt.tight_layout(pad=0)
+        plt.savefig(f'calibration_visualization_{cid+1}.png', dpi=300, bbox_inches='tight')
         plt.close('all')
     
-    print ('display end')
-    # ############ end of display input signal ###################
+    print('Visualization completed')
 
 def normalize_uvz_points(points_lidar2img):
     
@@ -124,7 +175,7 @@ def normalize_uvz_points(points_lidar2img):
         normal_points_lidar2img[:, 2] = (normal_points_lidar2img[:, 2]-torch.min(normal_points_lidar2img[:, 2]))\
             /(torch.max(normal_points_lidar2img[:, 2]) - torch.min(normal_points_lidar2img[:, 2]))
     else :
-        normal_points_lidar2img[:, 2] = (normal_points_lidar2img[:, 2]-0)/(60 - 0)
+        normal_points_lidar2img[:, 2] = (normal_points_lidar2img[:, 2]-0)/(80 - 0)
 
     return normal_points_lidar2img
 
@@ -149,7 +200,7 @@ def scale_uvz_points(uvz_tensor, original_size=(900, 1600), target_size=(192, 64
     
     return scaled_uvz
 
-def inverse_scale_uvz_points(scaled_uvz, original_size=(900, 1600), target_size=(192, 640)):
+def inverse_scale_uvz_points(scaled_uvz, original_size=(928, 1600), target_size=(192, 640)):
     """
     스케일링된 UVZ 좌표를 원본 크기로 역변환
     Args:
@@ -608,6 +659,120 @@ def process_queries_adv(corrs, sbs_img, num_points=100):
     processed_queries = torch.stack(grouped_queries, dim=0)
     original_camera_ids = torch.stack(camera_indices)
     
+    return selected_imgs, processed_queries, original_camera_ids
+
+
+def process_queries_adv_modified(corrs, sbs_img, num_points=100):
+    device = corrs.device
+
+    # 0. 입력 데이터 검증 강화
+    if corrs.numel() == 0 or corrs.dim() != 2 or corrs.size(1) < 8:
+        return (
+            torch.empty(0, *sbs_img.shape[1:], device=device),
+            torch.empty(0, num_points, 4, device=device),
+            torch.empty(0, device=device)
+        )
+
+    # 1. 유효 카메라 인덱스 필터링 (0 ≤ cam_id ≤ max_cam)
+    max_cam_id = sbs_img.size(0) - 1
+    valid_cam_mask = (corrs[:, 0] >= 0) & (corrs[:, 0] <= max_cam_id)
+    corrs = corrs[valid_cam_mask]
+
+    # 2. 고유 카메라 추출 시 차원 검증
+    if corrs.size(0) == 0:
+        return (
+            torch.empty(0, *sbs_img.shape[1:], device=device),
+            torch.empty(0, num_points, 4, device=device),
+            torch.empty(0, device=device)
+        )
+
+    # 3. 안전한 unique_cams 추출 (long 타입 강제 변환)
+    unique_cams = torch.unique(corrs[:, 0].to(torch.long), sorted=False)
+
+    # 4. 이미지 선택 (인덱스 범위 강제 제한)
+    selected_imgs = sbs_img[unique_cams.clamp(0, max_cam_id)]
+
+    # 5. 카메라별 처리
+    grouped_queries = []
+    camera_indices = []
+
+    for cam in unique_cams:
+        # 5-1. 마스크 생성 및 차원 검증
+        mask = (corrs[:, 0].to(torch.long) == cam)
+        if not mask.any():
+            continue
+
+        # 5-2. 쿼리 추출 (차원 보호)
+        cam_queries = corrs[mask]
+        if cam_queries.size(1) < 8:
+            continue  # 컬럼 부족 시 스킵
+
+        # 5-3. 객체별 샘플링 (인덱스 범위 검증)
+        if cam_queries.size(0) >= num_points:
+            object_ids = cam_queries[:, 1]
+            unique_objs, obj_counts = torch.unique(object_ids, return_counts=True)
+            sorted_objs = unique_objs[torch.argsort(-obj_counts)]
+
+            selected_indices = []
+            for obj in sorted_objs:
+                obj_mask = (object_ids == obj)
+                obj_indices = torch.where(obj_mask)[0]
+                if len(selected_indices) < num_points:
+                    idx = torch.randint(0, len(obj_indices), (1,), device=device)
+                    selected_indices.append(obj_indices[idx])
+
+            # 남은 슬롯 채우기
+            remaining = num_points - len(selected_indices)
+            if remaining > 0:
+                all_indices = torch.arange(len(object_ids), device=device)
+                mask = torch.ones(len(object_ids), dtype=torch.bool, device=device)
+                selected_indices = torch.cat(selected_indices).to(device)
+                mask[selected_indices] = False
+                remaining_indices = all_indices[mask]
+                if len(remaining_indices) > 0:
+                    idx = torch.randperm(len(remaining_indices), device=device)[:remaining]
+                    selected_remaining = remaining_indices[idx]
+                    selected_indices = torch.cat([selected_indices, selected_remaining])
+
+            # 최종 선택 및 충돌 방지
+            selected_indices = selected_indices[:num_points]
+            selected = cam_queries[selected_indices]
+        else:
+            # 5-4. 안전한 패딩 (빈 데이터 방지)
+            padding_size = num_points - cam_queries.size(0)
+            if padding_size > 0:
+                if cam_queries.size(0) == 0:
+                    # 빈 쿼리 처리
+                    selected = torch.zeros((num_points, 8), device=device, dtype=corrs.dtype)
+                else:
+                    # 중복 허용 패딩
+                    idx = torch.randint(0, cam_queries.size(0), (padding_size,), device=device)
+                    padding_samples = cam_queries[idx]
+                    selected = torch.cat([cam_queries, padding_samples], dim=0)
+            else:
+                selected = cam_queries
+
+        # 5-5. 좌표 검증 및 클램핑
+        selected_trimmed = selected[:, [2, 3, 6, 7]].clamp(0, 1e5)  # 실제 이미지 크기에 맞게 조정 필요
+
+        # 5-6. 차원 보정 (NaN/Inf 방지)
+        selected_trimmed = torch.nan_to_num(selected_trimmed, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # 5-7. 차원 보정 (정확히 num_points로 맞추기)
+        if selected_trimmed.size(0) < num_points:
+            pad_size = num_points - selected_trimmed.size(0)
+            pad_tensor = torch.zeros((pad_size, 4), device=device, dtype=selected_trimmed.dtype)
+            selected_trimmed = torch.cat([selected_trimmed, pad_tensor], dim=0)
+        elif selected_trimmed.size(0) > num_points:
+            selected_trimmed = selected_trimmed[:num_points]
+
+        grouped_queries.append(selected_trimmed)
+        camera_indices.append(cam)
+
+    # 6. 배치 차원 생성 (빈 데이터 처리)
+    processed_queries = torch.stack(grouped_queries, dim=0) if grouped_queries else torch.empty((0, num_points, 4), device=device)
+    original_camera_ids = torch.stack(camera_indices) if camera_indices else torch.empty((0,), device=device)
+
     return selected_imgs, processed_queries, original_camera_ids
 
 
@@ -1989,10 +2154,9 @@ def find_rois_nonzero_z_adv3(detections, depth_map):
     batch_size, num_cam, h, w = depth_map.shape
     depth_map_re = depth_map.view(batch_size * num_cam, h, w)
     
-    # 통계값 및 신뢰도 스코어 초기화
+    # 통계값 초기화
     cam_means = torch.zeros(batch_size * num_cam, device=device, dtype=torch.float32)
     cam_medians = torch.zeros(batch_size * num_cam, device=device, dtype=torch.float32)
-    confidence_scores = torch.zeros(len(detections), device=device, dtype=torch.float32)
     
     # 배치 평균 계산
     non_zero_mask = depth_map_re > 0
@@ -2011,7 +2175,8 @@ def find_rois_nonzero_z_adv3(detections, depth_map):
 
     # Detection 처리
     cam_indices = detections[:, 0].long().to(device)
-    bboxes = detections[:, 1:].to(device)
+    obj_indices = detections[:, 1].long().to(device)
+    bboxes = detections[:, 2:].to(device)
     x_min, y_min, x_max, y_max = bboxes.long().t()
     
     x_min = torch.clamp(x_min, 0, w-1)
@@ -2026,9 +2191,11 @@ def find_rois_nonzero_z_adv3(detections, depth_map):
         valid_depths = window[window > 0]
         return valid_depths.mean() if len(valid_depths) > 0 else 0
     
-    result = []
+    all_points = []
+    
     for i in range(len(detections)):
-        cid = cam_indices[i]
+        cid = cam_indices[i].item()
+        oid = obj_indices[i].item()
         bbox_width = x_max[i] - x_min[i] + 1
         bbox_height = y_max[i] - y_min[i] + 1
         
@@ -2048,7 +2215,6 @@ def find_rois_nonzero_z_adv3(detections, depth_map):
             # 2단계: 동적 윈도우 기반 bbox 검색
             bbox_area = depth_map_re[cid, y_min[i]:y_max[i]+1, x_min[i]:x_max[i]+1]
             if bbox_area.numel() > 0:
-                # 깊이 값의 연속성을 고려한 가중치 맵 생성
                 std_val = bbox_area.std()
                 if std_val > 0:
                     diff = torch.abs(bbox_area - bbox_area.mean())
@@ -2062,8 +2228,8 @@ def find_rois_nonzero_z_adv3(detections, depth_map):
                     max_pos = torch.nonzero(weighted_depths == max_z).float().mean(dim=0)
                     center_y = y_min[i] + int(max_pos[0])
                     center_x = x_min[i] + int(max_pos[1])
-                    center_z = max_z
-                    confidence_score = 0.8
+                    center_z = max_z.item()
+                    confidence_score = 0.7
         
         if center_z == 0:
             # 3단계: 확장된 동적 서치
@@ -2076,29 +2242,31 @@ def find_rois_nonzero_z_adv3(detections, depth_map):
             if expanded_area.numel() > 0:
                 valid_depths = expanded_area[expanded_area > 0]
                 if len(valid_depths) > 0:
-                    center_z = torch.median(valid_depths)  # 중앙값 사용
+                    center_z = torch.median(valid_depths).item()
                     valid_pos = torch.nonzero(expanded_area > 0).float().mean(dim=0)
                     center_y = y_start + int(valid_pos[0])
                     center_x = x_start + int(valid_pos[1])
-                    confidence_score = 0.6
+                    confidence_score = 0.5
         
         if center_z == 0:
             # 최종 fallback: 통계값 사용
             if cam_medians[cid] > 0:
-                center_z = cam_medians[cid]
-                confidence_score = 0.4
+                center_z = cam_medians[cid].item()
+                confidence_score = 0.3
             elif cam_means[cid] > 0:
-                center_z = cam_means[cid]
+                center_z = cam_means[cid].item()
                 confidence_score = 0.2
             else:
-                center_z = batch_mean
+                center_z = batch_mean.item()
                 confidence_score = 0.1
             center_x, center_y = original_center_x, original_center_y
         
-        confidence_scores[i] = confidence_score
-        result.append(torch.tensor([cid, center_x, center_y, center_z, confidence_score], device=device))
+        point = torch.tensor([
+            [cid, oid, float(center_x), float(center_y), float(center_z), confidence_score]
+        ], device=device)
+        all_points.append(point)
     
-    return torch.stack(result), confidence_scores
+    return torch.cat(all_points, dim=0) if all_points else torch.empty((0, 6), device=device)
 
 def find_rois_nonzero_z_adv4(detections, depth_map, model_pred_z):
     device = depth_map.device
@@ -2379,7 +2547,7 @@ def find_rois_nonzero_z_adv8(detections, depth_map):
                 conf = 0.7  # 주변부 신뢰도
             else:
                 # 유효한 z값이 없는 경우
-                center_z = 0.0
+                center_z = 40
                 conf = 0.3  # 신뢰도 0
         
         # 결과 포인트 추가 (항상 중심점 사용)
@@ -2481,6 +2649,96 @@ def find_rois_nonzero_z_adv9(detections, depth_map, model_pred_z):
         confidence_scores[i] = conf
     
     return torch.stack(result) if result else torch.empty((0, 6), device=device), confidence_scores
+
+def find_rois_nonzero_z_adv10(detections, depth_map, model_pred_z):
+    device = depth_map.device
+    batch_size, num_cam, h, w = depth_map.shape
+    depth_map = depth_map.view(batch_size * num_cam, h, w)
+    
+    # 데이터 추출
+    cam_ids = detections[:, 0].long().to(device)
+    obj_ids = detections[:, 1].long().to(device)
+    bboxes = detections[:, 2:].clamp(0, torch.tensor([w-1, h-1, w-1, h-1], device=device))
+    
+    # 중심점 계산 (정수 → 실수)
+    cx = (bboxes[:, 0] + bboxes[:, 2]) / 2
+    cy = (bboxes[:, 1] + bboxes[:, 3]) / 2
+    
+    # 깊이 맵에서 값 추출 (바일리니어 보간)
+    depth_vals = F.grid_sample(
+        depth_map[cam_ids].unsqueeze(1),
+        torch.stack([cx/(w-1)*2-1, cy/(h-1)*2-1], -1).unsqueeze(1),
+        mode='bilinear', align_corners=False
+    ).squeeze()
+
+    # 모델 예측 좌표 (정규화 해제)
+    pred_cx = model_pred_z[:, 0] * (w-1)
+    pred_cy = model_pred_z[:, 1] * (h-1)
+    pred_z = model_pred_z[:, 2]
+    
+    # 조건 마스크
+    invalid_mask = (depth_vals <= 0) | torch.isnan(depth_vals)
+    final_cx = torch.where(invalid_mask, pred_cx, cx)
+    final_cy = torch.where(invalid_mask, pred_cy, cy)
+    final_z = torch.where(invalid_mask, pred_z, depth_vals)
+    
+    # 신뢰도 계산 (확장 가능)
+    conf = torch.where(invalid_mask, 0.7, 1.0)
+    
+    return torch.stack([cam_ids, obj_ids, final_cx, final_cy, final_z, conf], dim=1)
+
+def find_rois_nonzero_z_adv11(detections, depth_map):
+    device = depth_map.device
+    batch_size, num_cam, h, w = depth_map.shape
+    depth_map_re = depth_map.view(batch_size * num_cam, h, w)
+    
+    cam_indices = detections[:, 0].long().to(device)
+    obj_indices = detections[:, 1].long().to(device)
+    bboxes = detections[:, 2:].to(device)
+    
+    x_min, y_min, x_max, y_max = bboxes.long().t()
+    
+    x_min = torch.clamp(x_min, 0, w-1)
+    y_min = torch.clamp(y_min, 0, h-1)
+    x_max = torch.clamp(x_max, 0, w-1)
+    y_max = torch.clamp(y_max, 0, h-1)
+    
+    all_points = []
+    
+    for i in range(len(detections)):
+        cid = cam_indices[i].item()
+        oid = obj_indices[i].item()
+        
+        # BBox 중심 좌표 계산
+        cx = (x_min[i] + x_max[i]) // 2
+        cy = (y_min[i] + y_max[i]) // 2
+        
+        # 중심점 깊이 값 확인
+        center_z = depth_map_re[cid, cy, cx]
+        conf = 1.0  # 기본 신뢰도
+        
+        if center_z <= 0:
+            # # 중심점이 유효하지 않으면 bbox 내에서 z값 탐색
+            # bbox_area = depth_map_re[cid, y_min[i]:y_max[i]+1, x_min[i]:x_max[i]+1]
+            # nonzero_indices = (bbox_area > 0).nonzero()
+            
+            # if nonzero_indices.size(0) > 0:
+            #     # 유효한 z값이 있는 경우 평균 계산
+            #     z_values = bbox_area[nonzero_indices[:, 0], nonzero_indices[:, 1]]
+            #     center_z = z_values.mean().item()
+            #     conf = 0.7  # 주변부 신뢰도
+            # else:
+            # 유효한 z값이 없는 경우
+            center_z = 0.0
+            conf = 0.3  # 신뢰도 0
+        
+        # 결과 포인트 추가 (항상 중심점 사용)
+        point = torch.tensor([
+            [cid, oid, float(cx), float(cy), center_z, conf]
+        ], device=device)
+        all_points.append(point)
+    
+    return torch.cat(all_points, dim=0) if all_points else torch.empty((0, 6), device=device)
 
 def differentiable_find_rois(detections, depth_map, model_pred_z):
     device = depth_map.device
@@ -2723,6 +2981,113 @@ def image_to_lidar_global_modi1(det_uvz, gt_KT):
         xyz_global_torch = torch.empty(0, 6, device=det_uvz.device)  # Adjust shape to [0, 5]
     
     return xyz_global_torch
+
+def image_to_lidar_global_modi2(
+    det_uvz: torch.Tensor, 
+    gt_KT: torch.Tensor,
+    original_camera_ids: torch.Tensor  # [K,] 실제 사용할 카메라 ID 텐서 (예: [0, 1, 3, 5])
+) -> torch.Tensor:
+    """
+    det_uvz: [B, N, 5] (B=전체 카메라 수)
+    gt_KT: [B, 4, 4]
+    original_camera_ids: [K,] 실제 처리할 카메라 ID (0-based 인덱스)
+    """
+    device = det_uvz.device
+    inverse_gt_kt = torch.inverse(gt_KT).float()
+    
+    list_xyz_global = []
+    list_cam_ids = []
+    list_obj_ids = []
+    
+    # 실제 처리할 카메라 ID 추출
+    camera_indices = original_camera_ids.int().tolist()
+    
+    for cid in camera_indices:
+        # 유효한 카메라 인덱스인지 확인
+        if cid >= det_uvz.size(0) or cid >= gt_KT.size(0):
+            continue
+            
+        # 현재 카메라 데이터 추출
+        img2lidar = inverse_gt_kt[cid]
+        camera_det = det_uvz[cid]  # [N, 5]
+        
+        # 유효한 탐지 필터링 (z > 0)
+        valid_mask = camera_det[:, 4] > 1e-6
+        if not valid_mask.any():
+            continue
+            
+        # 데이터 추출
+        uvz = camera_det[valid_mask, 2:5]  # [M, 3]
+        obj_ids = camera_det[valid_mask, 1]  # [M]
+        
+        # 좌표 변환
+        normalize_uvz = torch.cat([
+            uvz[:, :2] * uvz[:, 2:3],  # u*z, v*z
+            uvz[:, 2:3]
+        ], dim=1)
+        
+        # 동차 좌표 변환
+        uvz_homo = torch.cat([
+            normalize_uvz,
+            torch.ones_like(normalize_uvz[:, :1])
+        ], dim=1)
+        
+        # 3D 변환
+        xyz_global = (uvz_homo[:, :3] @ img2lidar[:3, :3].T) + img2lidar[:3, 3]
+        
+        # 결과 저장
+        list_xyz_global.append(xyz_global)
+        list_cam_ids.append(torch.full((xyz_global.size(0),), cid, device=device))
+        list_obj_ids.append(obj_ids)
+    
+    # 결과 병합
+    if list_xyz_global:
+        xyz_global = torch.cat(list_xyz_global, dim=0)
+        cam_ids = torch.cat(list_cam_ids, dim=0).unsqueeze(1)
+        obj_ids = torch.cat(list_obj_ids, dim=0).unsqueeze(1)
+        return torch.cat([cam_ids, obj_ids, xyz_global], dim=1)
+    else:
+        return torch.empty((0, 5), device=device)
+    
+def image_to_lidar_global_modi3(det_uvz, gt_KT):
+    inverse_gt_kt = torch.inverse(gt_KT).float()
+    
+    list_xyz_global = []
+    list_indices = []
+    # list_confidence = []  # New list for confidence scores
+    list_object_indices =[]
+    
+    for cid in range(6):
+        img2lidar = inverse_gt_kt[cid]
+        mask = (det_uvz[:, 0] == cid)
+        if mask.any():
+            detection_uvz = det_uvz[mask, 2:5]  # Only take x,y,z coordinates (excluding confidence)
+            # confidence = det_uvz[mask, 5]  # Get confidence scores
+            ob_id = det_uvz[mask,1]
+            id = det_uvz[mask,0]
+            
+            normalize_uvz = torch.cat([detection_uvz[:, :2] * detection_uvz[:, 2:3], detection_uvz[:, 2:3]], dim=1).float()
+            uvz_homogeneous = torch.cat([normalize_uvz, normalize_uvz.new_ones([normalize_uvz.shape[0], 1])], dim=1)
+            xyz_global = torch.matmul(img2lidar[:3, :3], uvz_homogeneous[:, :3].T).T + img2lidar[:3, 3]
+            
+            list_xyz_global.append(xyz_global)
+            list_indices.append(id)
+            list_object_indices.append(ob_id)
+            # list_confidence.append(confidence)  # Store confidence scores
+    
+    if list_xyz_global:
+        xyz_global_torch = torch.cat(list_xyz_global, dim=0)
+        indices_torch = torch.cat(list_indices, dim=0).unsqueeze(1)
+        # confidence_torch = torch.cat(list_confidence, dim=0).unsqueeze(1)  # Add confidence scores
+        ob_id_torch = torch.cat(list_object_indices, dim=0).unsqueeze(1)
+        
+        # Concatenate indices, xyz_global, and confidence scores
+        xyz_global_torch = torch.cat([indices_torch, ob_id_torch, xyz_global_torch], dim=1)
+    else:
+        xyz_global_torch = torch.empty(0, 5, device=det_uvz.device)  # Adjust shape to [0, 5]
+    
+    return xyz_global_torch
+
 
 # def lidar_to_image_with_index(det_xyz, gt_KT, img_shape=(900,1600)):
 #     """
@@ -3316,7 +3681,7 @@ def points2depthmap(points, height, width ,downsample=1):
         # 'depth': [1.0, 80.0, 0.5],
     }
     height, width = height // downsample, width // downsample
-    depth_map = torch.zeros((height, width), dtype=torch.float64, device=device)
+    depth_map = torch.zeros((height, width), dtype=points.dtype, device=device)
     coor = torch.round(points[:, :2] / downsample)
     depth = points[:, 2]
     kept1 = (coor[:, 0] >= 0) & (coor[:, 0] < width) & (
@@ -3346,20 +3711,20 @@ def dense_map_gpu_optimized(Pts, n, m, grid):
     epsilon = 1e-8  # 작은 값 추가하여 0으로 나누는 상황 방지
     # import pdb; pdb.set_trace()
     # 초기 텐서를 GPU로 이동
-    mX = torch.full((m, n), float('inf'), dtype=torch.float64, device=device)
-    mY = torch.full((m, n), float('inf'), dtype=torch.float64, device=device)
-    mD = torch.zeros((m, n), dtype=torch.float64, device=device)
+    mX = torch.full((m, n), float('inf'), dtype=Pts.dtype, device=device)
+    mY = torch.full((m, n), float('inf'), dtype=Pts.dtype, device=device)
+    mD = torch.zeros((m, n), dtype=Pts.dtype, device=device)
 
-    mX_idx = Pts[1].clone().detach().to(dtype=torch.int64, device=device)
-    mY_idx = Pts[0].clone().detach().to(dtype=torch.int64, device=device)
+    mX_idx = Pts[1].clone().detach().to(dtype=torch.int32, device=device)
+    mY_idx = Pts[0].clone().detach().to(dtype=torch.int32, device=device)
 
     mX[mX_idx, mY_idx] = Pts[0] - torch.round(Pts[0])
     mY[mX_idx, mY_idx] = Pts[1] - torch.round(Pts[1])
     mD[mX_idx, mY_idx] = Pts[2]
 
-    KmX = torch.zeros((ng, ng, m - ng, n - ng), dtype=torch.float64, device=device)
-    KmY = torch.zeros((ng, ng, m - ng, n - ng), dtype=torch.float64, device=device)
-    KmD = torch.zeros((ng, ng, m - ng, n - ng), dtype=torch.float64, device=device)
+    KmX = torch.zeros((ng, ng, m - ng, n - ng), dtype=Pts.dtype, device=device)
+    KmY = torch.zeros((ng, ng, m - ng, n - ng), dtype=Pts.dtype, device=device)
+    KmD = torch.zeros((ng, ng, m - ng, n - ng), dtype=Pts.dtype, device=device)
 
     # KmX = torch.zeros((ng, ng), dtype=torch.float32, device=device)
     # KmY = torch.zeros((ng, ng), dtype=torch.float32, device=device)
@@ -3382,7 +3747,7 @@ def dense_map_gpu_optimized(Pts, n, m, grid):
             S += s
 
     S[S == 0] = 1
-    out = torch.zeros((m, n), dtype=torch.float64, device=device)
+    out = torch.zeros((m, n), dtype=Pts.dtype, device=device)
     out[grid + 1: -grid, grid + 1: -grid] = Y / S
     # return out.cpu()  # 최종 결과를 CPU로 이동
     return out # 최종 결과를 GPU
@@ -3544,7 +3909,7 @@ def denormalize_points(normal_points, z_min=None, z_max=None):
         z_range = z_max - z_min
         denorm_points[..., 2] = denorm_points[..., 2] * z_range + z_min
     else:  # 기본 범위 사용 (0~80)
-        denorm_points[..., 2] = denorm_points[..., 2] * 60
+        denorm_points[..., 2] = denorm_points[..., 2] * 80
         
     return denorm_points
 
@@ -3702,13 +4067,13 @@ def draw_correspondences(trimed_corrs, sbs_img, camera_idx=0, save_path='corresp
     # 2. 좌표 추출 및 스케일 복원
     H, W = img_np.shape[:2]
     left_pts = trimed_corrs[:, :2].detach().cpu().numpy()  # 정규화 좌표 [N,2] (0~1)
-    right_pts = trimed_corrs[:, 3:5].detach().cpu().numpy()
+    right_pts = trimed_corrs[:, 2:].detach().cpu().numpy()
     
-    # 3. 정규화 → 픽셀 좌표 변환 (원본 알고리즘 반영)
-    left_pts[:, 0] = left_pts[:, 0] * 640  # u = (norm_u - 0.5)*640 
-    left_pts[:, 1] = left_pts[:, 1] * 192  # v = norm_v * 192
-    right_pts[:, 0] = (right_pts[:, 0] - 0.5) * 640 + 640  # 우측 오프셋 적용
-    right_pts[:, 1] = right_pts[:, 1] * 192
+    # # 3. 정규화 → 픽셀 좌표 변환 (원본 알고리즘 반영)
+    # left_pts[:, 0] = left_pts[:, 0] * 640  # u = (norm_u - 0.5)*640 
+    # left_pts[:, 1] = left_pts[:, 1] * 192  # v = norm_v * 192
+    # right_pts[:, 0] = (right_pts[:, 0] - 0.5) * 640 + 640  # 우측 오프셋 적용
+    # right_pts[:, 1] = right_pts[:, 1] * 192
 
     # 4. 좌표 클리핑 및 필터링
     left_pts[:, 0] = np.clip(left_pts[:, 0], 0, W-1)
@@ -4122,7 +4487,56 @@ def differentiable_object_matching(pred_points, gt_points):
 
     return pred_points, matched_gt
 
+def convert_to_bbox_coordinates_matched(
+    rois_with_indices: torch.Tensor,  # [N, 6] (cam_id, obj_id, x1, y1, x2, y2)
+    descale_corrs_pred_with_indices: torch.Tensor,  # [M, 5] (cam_id, obj_id, u, v, z)
+    roi_size: tuple = (7, 7)
+) -> torch.Tensor:
+    """
+    전체 이미지 좌표계 → ROI 정규화 좌표계 변환
+    Returns: [M_valid, 3] (u_roi, v_roi, z)
+    """
+    device = rois_with_indices.device
+    
+    # 1. ROI 파라미터 사전 생성
+    roi_dict = {}
+    for roi in rois_with_indices:
+        cam_id = int(roi[0].item())
+        obj_id = int(roi[1].item())
+        x1, y1, x2, y2 = roi[2:6]
+        bbox_w = x2 - x1
+        bbox_h = y2 - y1
+        
+        # 수치 안정성을 위한 epsilon 추가
+        if bbox_w < 1e-6 or bbox_h < 1e-6:
+            continue
+            
+        scale_x = roi_size[0] / bbox_w
+        scale_y = roi_size[1] / bbox_h
+        roi_dict[(cam_id, obj_id)] = (x1, y1, scale_x, scale_y)
 
+    # 2. 좌표 변환 수행
+    matched_coords = []
+    for corr in descale_corrs_pred_with_indices:
+        cam_id = int(corr[0].item())
+        obj_id = int(corr[1].item())
+        key = (cam_id, obj_id)
+        
+        if key not in roi_dict:
+            continue
+            
+        x1, y1, scale_x, scale_y = roi_dict[key]
+        u_full = corr[2]
+        v_full = corr[3]
+        z = corr[4]
+        
+        # CORT 변환 공식 적용
+        u_roi = (u_full - x1) * scale_x - 0.5  # -0.5는 중심 정렬을 위한 오프셋
+        v_roi = (v_full - y1) * scale_y - 0.5
+        
+        matched_coords.append(torch.stack([u_roi, v_roi, z]))
+
+    return torch.stack(matched_coords) if matched_coords else torch.empty((0,3), device=device)
 
    # ####### 검증용 corrs display ########
         # for camera_idx in range(6):
@@ -4204,3 +4618,53 @@ def differentiable_object_matching(pred_points, gt_points):
         #     plt.savefig('correspond.jpg', dpi=300, bbox_inches='tight')
         #     plt.close()
         #     print ("end")
+
+def transform_uv_points(rois_with_indices, uv_set):
+    device = rois_with_indices.device
+    num_rois = rois_with_indices.size(0)
+    
+    cam_ids = rois_with_indices[:, 0].long()
+    obj_ids = rois_with_indices[:, 1].long()
+    x_min, y_min = rois_with_indices[:, 2], rois_with_indices[:, 3]
+    x_max, y_max = rois_with_indices[:, 4], rois_with_indices[:, 5]
+    
+    b_box_cx = (x_min + x_max) / 2.0
+    b_box_cy = (y_min + y_max) / 2.0
+
+    transformed_points = torch.zeros((num_rois, 8), device=device)
+
+    for i in range(num_rois):
+        cam_id = cam_ids[i]
+        obj_id = obj_ids[i]
+        target_cx = b_box_cx[i]
+        target_cy = b_box_cy[i]
+
+        camera_uv = uv_set[cam_id]
+        
+        u_diff = camera_uv[:, 0] - target_cx
+        v_diff = camera_uv[:, 1] - target_cy
+        distances = u_diff.pow(2) + v_diff.pow(2)
+        min_idx = torch.argmin(distances)
+
+        original_u = camera_uv[min_idx, 0]
+        original_v = camera_uv[min_idx, 1]
+        
+        # 변위 계산 (target으로 이동하기 위한)
+        delta_u = target_cx - original_u
+        delta_v = target_cy - original_v
+
+        # 변환 적용
+        transformed_u = original_u + delta_u  # = target_cx
+        transformed_v = original_v + delta_v  # = target_cy
+        transformed_u_prime = camera_uv[min_idx, 2] + delta_u
+        transformed_v_prime = camera_uv[min_idx, 3] + delta_v
+
+        transformed_points[i] = torch.tensor([
+            cam_id, obj_id,
+            target_cx, target_cy,
+            transformed_u, transformed_v,
+            transformed_u_prime, transformed_v_prime
+        ], device=device)
+
+    return transformed_points
+
