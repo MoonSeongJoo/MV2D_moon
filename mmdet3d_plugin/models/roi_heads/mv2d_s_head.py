@@ -56,7 +56,7 @@ from image_processing_unit_Ver15_0 import (find_all_depthmap_z_adv,find_rois_non
                                            two_images_side_by_side,two_images_side_by_side_gpu,transform_uv_points,
                                            display_depth_maps,scale_uvz_points,normalize_uvz_points,
                                            inverse_scale_uvz_points,
-                                           trim_corrs,denormalize_points,process_queries,process_queries_adv,process_queries_adv_modified,
+                                           trim_corrs,batched_trim_corrs,denormalize_points,process_queries,process_queries_adv,process_queries_adv_modified,
                                            process_queries_adv1,differentiable_process_queries,
                                            selected_image_to_lidar_global,
                                            pixel_to_normalized,center2lidar_batch,differentiable_center2lidar,
@@ -65,7 +65,8 @@ from image_processing_unit_Ver15_0 import (find_all_depthmap_z_adv,find_rois_non
                                            geometric_propagation,trim_or_generate_points,
                                            deduplicate_obj_ids,merge_point_clouds,differentiable_deduplicate,differentiable_object_matching,
                                            differentiable_object_matching,differentiable_merge_point_clouds,
-                                           convert_to_bbox_coordinates_matched)
+                                           convert_to_bbox_coordinates_matched, get_center_points,
+                                           batch_rois_center_by_cam_id,remove_duplicate_objs)
 
 # @CALIB_TRANSFORMER.register_module()
 # class CalibTransformer(PETRTransformer):
@@ -929,6 +930,110 @@ class SimplifiedDepthEstimator(nn.Module):
             'confidence_weights': lidar_confidence_adjusted  # 실제 적용된 가중치 [N]
         }
 
+
+class ZEstimator(nn.Module):
+    def __init__(self, enc_channels=312, bbox_channels=256, uv_dim=2, hidden_dim=512):
+        super().__init__()
+        # enc_out 특징 압축
+        self.enc_adaptor = nn.Sequential(
+            nn.Conv2d(enc_channels, 128, kernel_size=1),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d((1, 1))
+        )
+        
+        # bbox_feats 처리
+        self.bbox_adaptor = nn.Sequential(
+            nn.Conv2d(bbox_channels, 128, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool2d((1, 1))
+        )
+        
+        # UV 좌표 임베딩
+        self.uv_embed = nn.Linear(uv_dim, 64)
+        
+        # 최종 융합 및 깊이 예측
+        self.fusion = nn.Sequential(
+            nn.Linear(128 + 128 + 64, hidden_dim),
+            nn.ReLU(),
+            nn.LayerNorm(hidden_dim)
+        )
+        self.depth_predictor = nn.Sequential(
+            nn.Linear(hidden_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, 1)
+        )
+
+    def forward(self, uv, depth_map, bbox_feats, enc_out):
+        """
+        Args:
+            uv: [N, 4] (cam_id, obj_id, u, v)
+            depth_map: [num_cams, H, W] 
+            bbox_feats: [N, 256, 7, 7]
+            enc_out: [B, C, H, W] = [6, 312, 12, 64]
+        """
+        N = uv.size(0)
+        
+        # 1. cam_ids 추출 (uv의 첫 번째 열)
+        cam_ids = uv[:, 0].long()  # [N]
+        
+        # 2. enc_out 특징 처리
+        enc_reduced = self.enc_adaptor(enc_out)  # [6, 128, 1, 1]
+        enc_reduced = enc_reduced.squeeze(-1).squeeze(-1)  # [6, 128]
+        
+        # 객체별 enc 특징 선택
+        object_enc = enc_reduced[cam_ids]  # [N, 128]
+        
+        # 3. bbox_feats 처리
+        bbox_reduced = self.bbox_adaptor(bbox_feats)  # [N, 128, 1, 1]
+        bbox_reduced = bbox_reduced.squeeze(-1).squeeze(-1)  # [N, 128]
+        
+        # 4. UV 좌표 처리 (uv의 3-4열 사용)
+        uv_coords = uv[:, 2:4]  # [N, 2]
+        uv_embedded = self.uv_embed(uv_coords)  # [N, 64]
+        
+        # 5. 특징 융합
+        combined = torch.cat([object_enc, bbox_reduced, uv_embedded], dim=1)
+        fused = self.fusion(combined)
+        
+        # 6. 깊이 예측
+        z_estimated_normalized = self.depth_predictor(fused).squeeze(1)
+        z_estimated_real = self.denormalize_depth(z_estimated_normalized)
+        
+        # 7. 실제 LiDAR 깊이 조회
+        H, W = depth_map.shape[1], depth_map.shape[2]
+        u = uv[:, 2].clamp(0, W-1).long()
+        v = uv[:, 3].clamp(0, H-1).long()
+        z_depth_real = depth_map[cam_ids, v, u]
+        
+        # 8. 신뢰도 기반 융합
+        lidar_confidence = self.estimate_lidar_confidence(z_depth_real)
+        valid_lidar_mask = (z_depth_real > 0)
+        lidar_confidence_adjusted = lidar_confidence * valid_lidar_mask.float()
+        
+        z_final_real = (
+            lidar_confidence_adjusted * z_depth_real +
+            (1 - lidar_confidence_adjusted) * z_estimated_real
+        )
+        
+        return {
+            'depth': z_final_real.unsqueeze(-1),
+            'z_lidar_real': z_depth_real,
+            'confidence': lidar_confidence,
+            'z_estimated_real': z_estimated_real
+        }
+
+    def denormalize_depth(self, normalized_depth):
+        """정규화된 깊이를 실제 스케일로 변환"""
+        # 실제 구현시 데이터셋 통계 기반 조정
+        return normalized_depth * 80.0  # 예시: 0~1 → 0~80m
+
+    def estimate_lidar_confidence(self, z_depth_real):
+        """LiDAR 신뢰도 추정 (깊이 기반)"""
+        # 실제 구현시 깊이, 강도 등 활용
+        confidence = torch.sigmoid(0.1 * (50 - z_depth_real))
+        return confidence
+
+
 @HEADS.register_module()
 class MV2DSHead(MV2DHead):
     def __init__(self,
@@ -953,14 +1058,15 @@ class MV2DSHead(MV2DHead):
         # self.corr_loss = CorrelationCycleLoss(corr_weight=2.0 , cycle_weight=1.0)
         # self.point_distance_loss = PointDistanceLoss(distance_weight=1.0)
         
-        # self.num_kp = 100 
+        self.num_kp =200
         # self.conf_loss_weight = 0.5
-        # self.corr = COTR(self.num_kp)
+        self.corr = COTR(self.num_kp)   
        
         # self.z_estimator = ZValueEstimator(depth_shape=(900, 1600))
         # self.z_estimator = BBoxEnhancedZEstimator(depth_shape=(900, 1600))  # 예시로 depth_shape 설정
         # self.z_estimator = ImprovedDepthEstimator()
-        self.z_estimator = SimplifiedDepthEstimator()
+        # self.z_estimator = SimplifiedDepthEstimator()
+        self.z_estimator = ZEstimator(enc_channels=312, bbox_channels=256, uv_dim=2, hidden_dim=512)
         # self.pts_regressor = pts_regressor()
         # self.query_selector = DifferentiableQueryProcessor(num_cameras=6,max_objects=100, num_points=100)
 
@@ -1107,7 +1213,8 @@ class MV2DSHead(MV2DHead):
         rois_part1 = rois[:, :1]   # 이미지 인덱스 [3,1]
         rois_part2 = rois[:, 1:]    # 좌표 정보 [3,4]
         rois_with_indices = torch.cat([rois_part1, object_indices, rois_part2], dim=1)
-        
+        rois_center = get_center_points(rois_with_indices)
+
         intrinsics, extrinsics = self.get_box_params(proposal_list,
                                                      [img_meta['intrinsics'] for img_meta in img_metas],
                                                      [img_meta['extrinsics'] for img_meta in img_metas])
@@ -1128,14 +1235,14 @@ class MV2DSHead(MV2DHead):
         ###### SJ MOON 수정 #############
         # with torch.no_grad():
         dense_depth_map_gt = dense_map_from_depth_batch(uvz_gt.squeeze(0),grid=3,iterations=3)
-        # dense_depth_map = dense_map_from_depth_batch(lidar_depth_mis,grid=3,iterations=3)
-        # dense_depth_img_mis = dense_depth_map.to(dtype=torch.uint8)
-        # dense_depth_img_color_mis = batch_colormap(dense_depth_img_mis)
+        dense_depth_map = dense_map_from_depth_batch(lidar_depth_mis,grid=3,iterations=3)
+        dense_depth_img_mis = dense_depth_map.to(dtype=torch.uint8)
+        dense_depth_img_color_mis = batch_colormap(dense_depth_img_mis)
         # dense_depth_img_color_mis = differentiable_colormap(dense_depth_img_mis)
         
-        # img_resized = F.interpolate(img, size=[192, 640], mode="bilinear")
-        # lidar_depth_mis_resized = F.interpolate(dense_depth_img_color_mis, size=[192, 640], mode="bilinear")
-        # lidar_depth_mis_resized = tvtf.normalize(lidar_depth_mis_resized, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+        img_resized = F.interpolate(img, size=[192, 640], mode="bilinear")
+        lidar_depth_mis_resized = F.interpolate(dense_depth_img_color_mis, size=[192, 640], mode="bilinear")
+        lidar_depth_mis_resized = tvtf.normalize(lidar_depth_mis_resized, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
        
         # lidar_depth_mis_resized = F.interpolate(lidar_depth_mis, size=[h, w], mode="bilinear")
         
@@ -1143,11 +1250,11 @@ class MV2DSHead(MV2DHead):
         # dense_depth = self.deform_spn(lidar_depth_mis_resized)
         # dense_depth = geometric_propagation(lidar_depth_mis_resized)
 
-        # sbs_img = two_images_side_by_side(img_resized, lidar_depth_mis_resized)
-        # sbs_img = torch.from_numpy(sbs_img).permute(0,3,1,2)
+        sbs_img = two_images_side_by_side(img_resized, lidar_depth_mis_resized)
+        sbs_img = torch.from_numpy(sbs_img).permute(0,3,1,2)
        
-        # sbs_img = two_images_side_by_side_gpu(img_resized, lidar_depth_mis_resized)
-        # sbs_img = sbs_img.permute(0,3,1,2)
+        sbs_img = two_images_side_by_side_gpu(img_resized, lidar_depth_mis_resized)
+        sbs_img = sbs_img.permute(0,3,1,2)
        
         # sbs_img = tvtf.normalize(sbs_img, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
         # ############## input display ##########################
@@ -1171,13 +1278,40 @@ class MV2DSHead(MV2DHead):
         # reference_points_with_indices1= torch.cat([rois_with_indices[:,0:1],reference_points_raw],dim=1)
         # points_lidar2img, mask_valid = lidar_to_image_with_index(reference_points_with_indices1,gt_KT,img_shape=(928,1600))
         
-        transformed_uv = transform_uv_points(rois_with_indices,uv_set)
+        # # ########### corr transformer sjmoon ###########
+        trimed_center_pts =batch_rois_center_by_cam_id(rois_center,batch_size=200)
+        # trimed_uvset = batched_trim_corrs(uv_set).to(dtype=torch.float32, device=img.device)
+        # 객체 ID 보존 텐서
+        object_ids = trimed_center_pts[..., 1].clone()  # [num_cams, batch_size]
+
+        # 쿼리 입력 생성 (좌표만 정규화)
+        query_input = trimed_center_pts[..., 2:].clone()  # [num_cams, batch_size, 2]
+        query_input[..., 0] /= 1600.0
+        query_input[..., 1] /= 928.0
+
+        # corr_target = trimed_cener_pts[...,2:]
+        # corr_target[...,0] = corr_target[...,0] / 1600.0 + 0.5
+        # corr_target[...,1] = corr_target[...,1] / 920.0
+
+        corrs_pred, cycle, corr_mask, enc_out = self.corr(sbs_img, query_input)
+        # 객체 ID 정보를 예측 결과에 연결
+        corrs_pred_with_obj = torch.cat([
+            object_ids.unsqueeze(-1),  # [num_cams, batch_size, 1]
+            corrs_pred                  # [num_cams, batch_size, 2]
+        ], dim=-1)  # [num_cams, batch_size, 3
+        # corr_loss = self.corr_loss(corrs_pred, corr_target, cycle, query_input, corr_mask)
+        pred_center_pts = remove_duplicate_objs(corrs_pred_with_obj)
+        pred_center_pts[..., 2] *= 1600.0
+        pred_center_pts[..., 3] *= 928.0
+
+        # transformed_uv = transform_uv_points(rois_with_indices,uv_set)      
         # esitmated_z = self.z_estimator(transformed_uv[...,:4], dense_depth_map_gt,bbox_feats,ref_points_uvz)
-        esitmated_z = self.z_estimator(transformed_uv[...,:4], dense_depth_map_gt,bbox_feats)
+        # esitmated_z = self.z_estimator(pred_center_pts, dense_depth_map_gt,bbox_feats)
+        esitmated_z = self.z_estimator(pred_center_pts, dense_depth_map_gt,bbox_feats, enc_out)
         # **Confidence 정보 추출**
         confidence_scores = esitmated_z['confidence']  # [N]
         # z_depth_real = esitmated_z['z_lidar_real']  # [N]
-        esitmated_uvz =torch.cat([transformed_uv[...,:4],esitmated_z['depth']],dim=1)
+        esitmated_uvz =torch.cat([pred_center_pts,esitmated_z['depth']],dim=1)
 
         # # Confidence 손실 계산
         # conf_loss = F.binary_cross_entropy(

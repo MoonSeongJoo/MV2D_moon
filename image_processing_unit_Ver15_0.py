@@ -16,7 +16,7 @@ from pyquaternion import Quaternion
 from nuscenes.nuscenes import NuScenes
 from nuscenes.utils.data_classes import LidarPointCloud
 from nuscenes.utils.geometry_utils import view_points
-from geomloss import SamplesLoss
+# from geomloss import SamplesLoss
 
 def visualize_bboxes(img_tensor, proposal_list, output_path='output.png', dpi=150):
     """
@@ -352,6 +352,48 @@ def trim_corrs(in_corrs, num_kp=100):
         # 부족분 채우기 (복원 추출)
         mask = torch.randint(0, length, (num_kp - length,), device=device)
         return torch.cat([in_corrs, in_corrs[mask]], dim=0)
+
+
+def batched_trim_corrs(in_corrs, num_kp=100):
+    """
+    배치 처리된 correspondence 포인트 트리밍 함수
+    Args:
+        in_corrs: [batch_size, num_points, 4] 형태의 입력 텐서
+        num_kp: 최종 출력 포인트 수 (기본값 100)
+    Returns:
+        [batch_size, num_kp, 4] 형태의 출력 텐서
+    """
+    device = in_corrs.device
+    batch_size = in_corrs.size(0)
+    results = []
+
+    for i in range(batch_size):
+        batch_data = in_corrs[i]  # [num_points, 4]
+        num_points = batch_data.size(0)
+
+        # Case 1: 충분한 포인트 (> num_kp)
+        if num_points >= num_kp:
+            idx = torch.randperm(num_points, device=device)[:num_kp]
+            trimmed = batch_data[idx]
+        
+        # Case 2: 빈 입력
+        elif num_points == 0:
+            trimmed = torch.rand(num_kp, 4, device=device)
+        
+        # Case 3: 부족한 포인트 (< num_kp)
+        else:
+            # 기존 포인트 유지
+            trimmed = batch_data
+            
+            # 추가 샘플링 (복원 추출)
+            extra_needed = num_kp - num_points
+            idx = torch.randint(0, num_points, (extra_needed,), device=device)
+            trimmed = torch.cat([trimmed, batch_data[idx]], dim=0)
+        
+        results.append(trimmed)
+
+    return torch.stack(results, dim=0)
+
 
 # def process_queries(corrs, sbs_img, num_points=100):
 #     device = corrs.device
@@ -4667,4 +4709,199 @@ def transform_uv_points(rois_with_indices, uv_set):
         ], device=device)
 
     return transformed_points
+
+def get_center_points(rois_with_indices):
+    """
+    Args:
+        rois_with_indices: Tensor of shape [num_obj, 6] (cam_id, obj_id, x_min, y_min, x_max, y_max)
+    Returns:
+        center_points: Tensor of shape [num_obj, 4] (cam_id, obj_id, center_x, center_y)
+    """
+    cam_ids = rois_with_indices[:, 0]
+    obj_ids = rois_with_indices[:, 1]
+    x_min = rois_with_indices[:, 2]
+    y_min = rois_with_indices[:, 3]
+    x_max = rois_with_indices[:, 4]
+    y_max = rois_with_indices[:, 5]
+
+    center_x = (x_min + x_max) / 2.0
+    center_y = (y_min + y_max) / 2.0
+
+    center_points = torch.stack([cam_ids, obj_ids, center_x, center_y], dim=1)
+    return center_points
+
+# def batch_rois_center_by_cam_id(rois_center, num_cams=6, batch_size=100):
+#     device = rois_center.device
+#     batched_centers = torch.zeros((num_cams, batch_size, 4), device=device)  # [cam_id, obj_id, center_x, center_y]
+    
+#     for cam_id in range(num_cams):
+#         cam_mask = (rois_center[:, 0] == cam_id)
+#         cam_centers = rois_center[cam_mask]  # [n, 4] (cam_id, obj_id, cx, cy)
+        
+#         n = cam_centers.size(0)
+        
+#         if n == 0:
+#             continue
+#         elif n < batch_size:
+#             repeat_factor = (batch_size + n - 1) // n
+#             cam_centers = cam_centers.repeat(repeat_factor, 1)[:batch_size]
+#         else:
+#             cam_centers = cam_centers[:batch_size]
+        
+#         # 모든 정보 보존
+#         batched_centers[cam_id, :, :] = cam_centers
+    
+#     return batched_centers
+
+
+def batch_rois_center_by_cam_id(rois_center, num_cams=6, batch_size=100):
+    device = rois_center.device
+    batched_centers = torch.zeros((num_cams, batch_size, 4), device=device)
+    
+    # 원본 객체 ID 저장
+    original_obj_ids = rois_center[:, 1].cpu().numpy()
+    
+    for cam_id in range(num_cams):
+        cam_mask = (rois_center[:, 0] == cam_id)
+        cam_centers = rois_center[cam_mask]
+        n = cam_centers.size(0)
+        
+        if n == 0:
+            continue
+            
+        # 고유한 객체 ID 추출
+        obj_ids = cam_centers[:, 1].cpu().numpy()
+        unique_obj_ids = np.unique(obj_ids)
+        num_unique_objs = len(unique_obj_ids)
+        
+        if num_unique_objs <= batch_size:
+            selected_indices = torch.arange(n, device=device)
+            
+            if n < batch_size:
+                repeat_factor = (batch_size + n - 1) // n
+                cam_centers = cam_centers.repeat(repeat_factor, 1)[:batch_size]
+            else:
+                pass
+        else:
+            selected_indices = []
+            for obj_id in unique_obj_ids:
+                obj_indices = np.where(obj_ids == obj_id)[0]
+                selected_idx = np.random.choice(obj_indices)
+                selected_indices.append(selected_idx)
+                
+            if len(selected_indices) < batch_size:
+                remaining = batch_size - len(selected_indices)
+                extra_indices = np.random.choice(
+                    np.setdiff1d(np.arange(n), selected_indices),
+                    size=remaining,
+                    replace=False
+                )
+                selected_indices.extend(extra_indices)
+                
+            selected_indices = torch.tensor(selected_indices, device=device)
+            cam_centers = cam_centers[selected_indices]
+        
+        batched_centers[cam_id, :cam_centers.size(0)] = cam_centers[:batch_size]
+    
+    # ===== 객체 ID 검증 코드 =====
+    # 1. 원본과 배치된 객체 ID 추출
+    batched_obj_ids = batched_centers[:, :, 1].flatten().cpu().numpy()
+    
+    # 2. 값 동일 여부 검증
+    original_set = set(original_obj_ids)
+    batched_set = set(batched_obj_ids)
+    
+    # 0 값 제외 (패딩 값)
+    original_set_nonzero = original_set - {0}
+    batched_set_nonzero = batched_set - {0}
+    
+    # 3. 연속성 검증 함수
+    def check_continuity(arr):
+        if len(arr) == 0:
+            return True
+        sorted_arr = np.sort(arr)
+        return np.all(np.diff(sorted_arr) == 1)
+    
+    # 4. 원본 객체 ID 연속성 검증
+    original_continuous = check_continuity(np.array(list(original_set_nonzero)))
+    
+    # 5. 배치된 객체 ID 연속성 검증
+    batched_continuous = check_continuity(np.array(list(batched_set_nonzero)))
+    
+    # 6. 값 동일 여부 검증
+    same_values = original_set_nonzero == batched_set_nonzero
+    
+    # # 7. 결과 출력
+    # print(f"[객체 ID 검증]")
+    # print(f"원본 객체 수: {len(original_set_nonzero)}, 배치된 객체 수: {len(batched_set_nonzero)}")
+    # print(f"원본 연속성: {original_continuous}, 배치 연속성: {batched_continuous}")
+    # print(f"객체 ID 동일 여부: {same_values}")
+    
+    # if not same_values:
+    #     missing = original_set_nonzero - batched_set_nonzero
+    #     extra = batched_set_nonzero - original_set_nonzero
+    #     print(f"누락된 객체 ID: {missing}")
+    #     print(f"추가된 객체 ID: {extra}")
+    #     print("누락되었습니다")
+    
+    # if not batched_continuous:
+    #     batched_sorted = np.sort(list(batched_set_nonzero))
+    #     gaps = np.where(np.diff(batched_sorted) > 1)[0]
+    #     print(f"배치 객체 ID 불연속 지점: {batched_sorted[gaps]}")
+    
+    return batched_centers
+
+def remove_duplicate_objs(corrs_pred_with_obj):
+    """
+    객체 ID 기준 중복 제거 및 결과 포맷 변환
+    - PyTorch 버전 호환성 해결
+    - 객체 ID 연속성 체크 추가
+    - 텐서 크기 불일치 해결
+    
+    Args:
+        corrs_pred_with_obj: [num_cams, batch_size, 3] 텐서 
+            (obj_id, center_pred_x, center_pred_y)
+            
+    Returns:
+        [number_of_unique_obj, 4] 텐서 
+        (cam_id, obj_id, center_pred_x, center_pred_y)
+    """
+    num_cams, batch_size, _ = corrs_pred_with_obj.shape
+    
+    # 1. 카메라 ID 텐서 생성
+    cam_ids = torch.arange(num_cams, device=corrs_pred_with_obj.device)
+    cam_ids = cam_ids.view(-1, 1, 1).expand(-1, batch_size, 1)
+    
+    # 2. 모든 정보 결합 [cam_id, obj_id, pred_x, pred_y]
+    combined = torch.cat([cam_ids.float(), corrs_pred_with_obj], dim=-1)
+    
+    # 3. 배치 차원 병합 [num_cams * batch_size, 4]
+    flat_combined = combined.view(-1, 4)
+    
+    # 4. 객체 ID 추출 및 연속성 체크
+    obj_ids = flat_combined[:, 1]
+    unique_ids, counts = torch.unique(obj_ids, return_counts=True)
+    
+    # 5. 객체 ID 연속성 검증
+    if not torch.all(torch.diff(unique_ids) == 1):
+        print("경고: 객체 ID가 연속적이지 않음. 누락된 객체 존재 가능")
+    
+    # 6. 중복 제거 (첫 번째 발생만 유지)
+    _, unique_indices = torch.unique(obj_ids, return_inverse=True)
+    first_occurrence = torch.zeros_like(obj_ids, dtype=torch.bool)
+    
+    for obj_id in unique_ids:
+        indices = (obj_ids == obj_id).nonzero(as_tuple=True)[0]
+        if indices.numel() > 0:
+            first_occurrence[indices[0]] = True
+    
+    # 7. 고유 객체 선택
+    unique_objs = flat_combined[first_occurrence]
+    
+    # 8. 크기 검증
+    if unique_objs.size(0) != unique_ids.size(0):
+        print(f"크기 불일치: 고유 객체 {unique_ids.size(0)}개, 결과 {unique_objs.size(0)}개")
+    
+    return unique_objs
+
 
