@@ -53,20 +53,20 @@ class MV2D(Base3DDetector):
         os.makedirs(self.save_dir, exist_ok=True)
         
         # 초기 학습 시 나머지 네트워크 freeze
-        freeze_backbone = False
+        freeze_backbone = True
         if freeze_backbone:
             self._freeze_backbone_modules()
     
     def _freeze_backbone_modules(self):
         """corr 네트워크 제외한 모든 모듈 동결"""
         
-        # 1. Base Detector 동결
-        for param in self.base_detector.parameters():
-            param.requires_grad = False
+        # # 1. Base Detector 동결
+        # for param in self.base_detector.parameters():
+        #     param.requires_grad = False
             
-        # 2. Neck 동결
-        for param in self.neck.parameters():
-            param.requires_grad = False
+        # # 2. Neck 동결
+        # for param in self.neck.parameters():
+        #     param.requires_grad = False
             
         # # 3. ROI Head 내 corr 제외 동결
         # for name, param in self.roi_head.named_parameters():
@@ -79,10 +79,10 @@ class MV2D(Base3DDetector):
         #     if 'corr' not in name and 'pts_regressor' not in name:
         #         param.requires_grad = False
         
-        # # # 4. ROI Head 내 corr 만 동결 
-        # for name, param in self.roi_head.named_parameters():
-        #     if 'corr' in name:  # ← 핵심 변경점
-        #         param.requires_grad = False 
+        # # 4. ROI Head 내 corr 만 동결 
+        for name, param in self.roi_head.named_parameters():
+            if 'corr' in name:  # ← 핵심 변경점
+                param.requires_grad = False 
         
         # # ROI Head 전체 동결
         # for param in self.roi_head.parameters():
@@ -283,7 +283,7 @@ class MV2D(Base3DDetector):
                                     ori_gt_bboxes_3d, ori_gt_labels_3d,
                                     attr_labels, None)
        
-        # losses['loss_corr'] = loss_corr
+        # losses['loss_corr'] = roi_losses['loss_corr']
         # losses['loss_pc_distance'] = loss_pc_distance
         losses.update(roi_losses)
         # 그래디언트 클리핑 적용

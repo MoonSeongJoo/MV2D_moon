@@ -54,7 +54,8 @@ from image_processing_unit_Ver15_0 import (find_all_depthmap_z_adv,find_rois_non
                                            miscalib_transform, miscalib_transform1,miscalib_transform2,
                                            points2depthmap,dense_map_gpu_optimized,colormap,dense_map_from_depth_batch,batch_colormap,differentiable_colormap,
                                            two_images_side_by_side,two_images_side_by_side_gpu,transform_uv_points,
-                                           display_depth_maps,scale_uvz_points,normalize_uvz_points,
+                                           display_depth_maps,scale_uvz_points,descale_uvz_points,
+                                           normalize_uvz_points,normalize_uv_points,denormalize_uv_points,
                                            inverse_scale_uvz_points,
                                            trim_corrs,batched_trim_corrs,denormalize_points,process_queries,process_queries_adv,process_queries_adv_modified,
                                            process_queries_adv1,differentiable_process_queries,
@@ -996,8 +997,8 @@ class ZEstimator(nn.Module):
         fused = self.fusion(combined)
         
         # 6. 깊이 예측
-        z_estimated_normalized = self.depth_predictor(fused).squeeze(1)
-        z_estimated_real = self.denormalize_depth(z_estimated_normalized)
+        z_estimated_real = self.depth_predictor(fused).squeeze(1)
+        # z_estimated_real = self.denormalize_depth(z_estimated_normalized)
         
         # 7. 실제 LiDAR 깊이 조회
         H, W = depth_map.shape[1], depth_map.shape[2]
@@ -1034,6 +1035,630 @@ class ZEstimator(nn.Module):
         return confidence
 
 
+# class SelfSupervisedCorrespondenceLoss(nn.Module):
+#     """
+#     Camera-LiDAR Correspondence를 위한 Self-supervised Loss 클래스
+#     GT correspondence 없이 geometric, photometric consistency 활용
+#     """
+    
+#     def __init__(self, 
+#                  cycle_weight=1.0, 
+#                  photo_weight=0.3, 
+#                  geom_weight=0.2, 
+#                  smooth_weight=0.1, 
+#                  range_weight=0.05,
+#                  temporal_weight=0.3):
+#         super(SelfSupervisedCorrespondenceLoss, self).__init__()
+        
+#         # Loss 가중치 설정
+#         self.cycle_weight = cycle_weight
+#         self.photo_weight = photo_weight
+#         self.geom_weight = geom_weight
+#         self.smooth_weight = smooth_weight
+#         self.range_weight = range_weight
+#         self.temporal_weight = temporal_weight
+        
+#         # 이전 프레임 정보 저장용
+#         self.prev_pred = None
+#         self.prev_query = None
+        
+#         # Edge detection을 위한 Sobel 필터
+#         self.register_buffer('sobel_x', torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], 
+#                                                     dtype=torch.float32).view(1, 1, 3, 3))
+#         self.register_buffer('sobel_y', torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], 
+#                                                     dtype=torch.float32).view(1, 1, 3, 3))
+
+#     def compute_cycle_consistency(self, pred, query_points, corr_network=None):
+#         """
+#         개선된 Cycle Consistency - 역방향 네트워크 없이 구현
+#         Args:
+#             pred: [B, N, 2] 예측된 correspondence points
+#             query_points: [B, N, 2] 원본 query points
+#             corr_network: correspondence network (self-consistency용)
+#         """
+#         # Option 1: Self-consistency (같은 네트워크 사용)
+#         if corr_network is not None:
+#             # pred를 새로운 query로 사용하여 역방향 예측
+#             reconstructed_query = corr_network(pred)  # 네트워크가 pred를 query로 처리
+#             cycle_loss = F.mse_loss(reconstructed_query, query_points)
+#         else:
+#             # Simplified cycle consistency - identity mapping 가정
+#             cycle_loss = F.mse_loss(pred, query_points)
+        
+#         # Option 2: Temporal consistency (연속 프레임 활용)
+#         if self.prev_pred is not None and self.prev_query is not None:
+#             temporal_cycle = F.mse_loss(
+#                 pred - self.prev_pred, 
+#                 query_points - self.prev_query
+#             )
+#             cycle_loss += self.temporal_weight * temporal_cycle
+        
+#         # 현재 값들을 다음 프레임을 위해 저장
+#         self.prev_pred = pred.detach().clone()
+#         self.prev_query = query_points.detach().clone()
+        
+#         return cycle_loss
+
+#     def compute_photometric_consistency(self, pred, query_points, camera_img, depth_map):
+#         """
+#         실제 구현 가능한 Photometric Consistency
+#         RGB intensity와 depth value 간의 구조적 유사성 평가
+#         """
+#         # Grid sampling을 이용한 feature 추출
+#         query_rgb = F.grid_sample(
+#             camera_img, 
+#             query_points.unsqueeze(2) * 2 - 1,  # [0,1] -> [-1,1] 범위로 변환
+#             align_corners=False,
+#             mode='bilinear',
+#             padding_mode='border'
+#         ).squeeze(-1).transpose(1, 2)  # [B, N, 3]
+        
+#         pred_depth = F.grid_sample(
+#             depth_map.unsqueeze(1), 
+#             pred.unsqueeze(2) * 2 - 1,
+#             align_corners=False,
+#             mode='bilinear',
+#             padding_mode='border'
+#         ).squeeze(-1).transpose(1, 2)  # [B, N, 1]
+        
+#         # Structural similarity 기반 consistency
+#         # RGB intensity와 depth value 간의 구조적 유사성 평가
+#         rgb_intensity = torch.mean(query_rgb, dim=-1, keepdim=True)  # Grayscale conversion
+        
+#         # Normalization for better correlation
+#         normalized_depth = (pred_depth - pred_depth.mean(dim=1, keepdim=True)) / (pred_depth.std(dim=1, keepdim=True) + 1e-6)
+#         normalized_rgb = (rgb_intensity - rgb_intensity.mean(dim=1, keepdim=True)) / (rgb_intensity.std(dim=1, keepdim=True) + 1e-6)
+        
+#         # Cross-correlation 기반 consistency
+#         photo_loss = 1.0 - F.cosine_similarity(
+#             normalized_rgb.flatten(1), 
+#             normalized_depth.flatten(1), 
+#             dim=1
+#         ).mean()
+        
+#         return photo_loss
+
+#     def compute_geometric_consistency(self, pred, query_points, depth_map=None):
+#         """
+#         단순화된 Geometric Consistency
+#         상대적 거리 보존 원칙 활용
+#         """
+#         B, N = query_points.shape[:2]
+        
+#         if N < 2:
+#             return torch.tensor(0.0, device=pred.device)
+        
+#         # Query points 간 거리 계산
+#         query_flat = query_points.view(B, N, 2)
+#         query_dist = torch.cdist(query_flat, query_flat)  # [B, N, N]
+        
+#         # Predicted points 간 거리 계산  
+#         pred_flat = pred.view(B, N, 2)
+#         pred_dist = torch.cdist(pred_flat, pred_flat)  # [B, N, N]
+        
+#         # 거리 비율 보존 loss (대각선 제외)
+#         mask = ~torch.eye(N, device=pred.device, dtype=torch.bool)
+#         mask = mask.unsqueeze(0).expand(B, -1, -1)
+        
+#         query_dist_masked = query_dist[mask]
+#         pred_dist_masked = pred_dist[mask]
+        
+#         # Normalize distances to prevent scale issues
+#         query_dist_norm = query_dist_masked / (query_dist_masked.max() + 1e-6)
+#         pred_dist_norm = pred_dist_masked / (pred_dist_masked.max() + 1e-6)
+        
+#         geom_loss = F.mse_loss(query_dist_norm, pred_dist_norm)
+        
+#         return geom_loss
+
+#     def compute_spatial_smoothness(self, pred, query_points, camera_img):
+#         """
+#         Edge-aware spatial smoothness 적용
+#         물체 경계에서는 smoothness 완화, 평면 영역에서는 강화
+#         """
+#         B, N = query_points.shape[:2]
+        
+#         if N < 2:
+#             return torch.tensor(0.0, device=pred.device)
+        
+#         # 이미지 gradient 계산 (edge detection)
+#         gray_img = torch.mean(camera_img, dim=1, keepdim=True)  # [B, 1, H, W]
+        
+#         # Sobel edge detection
+#         grad_x = F.conv2d(gray_img, self.sobel_x, padding=1)
+#         grad_y = F.conv2d(gray_img, self.sobel_y, padding=1)
+#         edge_magnitude = torch.sqrt(grad_x**2 + grad_y**2 + 1e-6)
+        
+#         # Query points에서 edge strength 샘플링
+#         edge_weight = F.grid_sample(
+#             edge_magnitude,
+#             query_points.unsqueeze(2) * 2 - 1,
+#             align_corners=False,
+#             mode='bilinear',
+#             padding_mode='border'
+#         ).squeeze(-1).squeeze(1)  # [B, N]
+        
+#         # Edge가 약한 영역에서만 smoothness 적용
+#         query_diff = query_points[:, 1:] - query_points[:, :-1]  # [B, N-1, 2]
+#         pred_diff = pred[:, 1:] - pred[:, :-1]  # [B, N-1, 2]
+        
+#         # Edge weight 기반 adaptive smoothness
+#         edge_threshold = 0.1
+#         edge_mask = (edge_weight[:, :-1] < edge_threshold).float()  # Low edge regions
+        
+#         # Smoothness loss with edge awareness
+#         smooth_loss = torch.mean(
+#             edge_mask.unsqueeze(-1) * (pred_diff - query_diff) ** 2
+#         )
+        
+#         return smooth_loss
+
+#     def compute_range_penalty(self, pred, x_range=(0.4, 1.0), y_range=(-0.1, 1.0)):
+#         """
+#         적응적 범위 제약 - 학습 초기에는 완화된 범위 적용
+#         """
+#         x_min, x_max = x_range
+#         y_min, y_max = y_range
+        
+#         range_penalty = torch.mean(
+#             0.1 * F.relu(x_min - pred[..., 0]) +  # x 좌표 하한
+#             F.relu(pred[..., 0] - x_max) +        # x 좌표 상한
+#             F.relu(y_min - pred[..., 1]) +        # y 좌표 하한  
+#             F.relu(pred[..., 1] - y_max)          # y 좌표 상한
+#         )
+        
+#         return range_penalty
+
+#     def forward(self, pred, query_points, camera_img, depth_map, corr_network=None):
+#         """
+#         통합 Self-supervised Loss 계산
+#         Args:
+#             pred: [B, N, 2] 예측된 correspondence points
+#             query_points: [B, N, 2] 원본 query points  
+#             camera_img: [B, 3, H, W] 카메라 이미지
+#             depth_map: [B, H, W] LiDAR depth map
+#             corr_network: correspondence network (optional)
+#         """
+#         # 1. Cycle Consistency Loss
+#         cycle_loss = self.compute_cycle_consistency(pred, query_points, corr_network)
+        
+#         # 2. Photometric Consistency Loss
+#         photo_loss = self.compute_photometric_consistency(pred, query_points, camera_img, depth_map)
+        
+#         # 3. Geometric Consistency Loss
+#         geom_loss = self.compute_geometric_consistency(pred, query_points, depth_map)
+        
+#         # 4. Edge-aware Spatial Smoothness Loss
+#         smooth_loss = self.compute_spatial_smoothness(pred, query_points, camera_img)
+        
+#         # 5. Adaptive Range Penalty
+#         range_penalty = self.compute_range_penalty(pred)
+        
+#         # 가중 합산
+#         total_loss = (self.cycle_weight * cycle_loss + 
+#                      self.photo_weight * photo_loss + 
+#                      self.geom_weight * geom_loss + 
+#                      self.smooth_weight * smooth_loss + 
+#                      self.range_weight * range_penalty)
+        
+#         # 상세 손실 정보 반환
+#         loss_dict = {
+#             'total': total_loss.item(),
+#             'cycle': cycle_loss.item(),
+#             'photo': photo_loss.item(), 
+#             'geom': geom_loss.item(),
+#             'smooth': smooth_loss.item(),
+#             'range': range_penalty.item()
+#         }
+        
+#         return total_loss, loss_dict
+
+#     def update_weights(self, epoch, total_epochs):
+#         """
+#         학습 단계에 따른 가중치 적응적 조정
+#         """
+#         progress = epoch / total_epochs
+        
+#         if progress < 0.3:  # 초기 단계: cycle consistency 중심
+#             self.cycle_weight = 1.0
+#             self.photo_weight = 0.1
+#             self.geom_weight = 0.1
+#         elif progress < 0.7:  # 중간 단계: photometric consistency 추가
+#             self.cycle_weight = 0.8
+#             self.photo_weight = 0.3
+#             self.geom_weight = 0.2
+#         else:  # 후기 단계: 모든 loss 균형
+#             self.cycle_weight = 0.6
+#             self.photo_weight = 0.3
+#             self.geom_weight = 0.2
+
+#     def reset_temporal_memory(self):
+#         """
+#         새로운 시퀀스 시작 시 temporal consistency 메모리 초기화
+#         """
+#         self.prev_pred = None
+#         self.prev_query = None
+
+
+class SelfSupervisedCorrespondenceLoss(nn.Module):
+    """
+    Camera-LiDAR Correspondence를 위한 Self-supervised Loss 클래스
+    GT correspondence 없이 geometric, photometric consistency 활용
+    """
+    
+    def __init__(self, 
+                 cycle_weight=1.0, 
+                 photo_weight=0.3, 
+                 geom_weight=0.2, 
+                 smooth_weight=0.1, 
+                 range_weight=0.05,
+                 temporal_weight=0.3):
+        super(SelfSupervisedCorrespondenceLoss, self).__init__()
+        
+        # Loss 가중치 설정
+        self.cycle_weight = cycle_weight
+        self.photo_weight = photo_weight
+        self.geom_weight = geom_weight
+        self.smooth_weight = smooth_weight
+        self.range_weight = range_weight
+        self.temporal_weight = temporal_weight
+        
+        # 이전 프레임 정보 저장용
+        self.prev_pred = None
+        self.prev_query = None
+        
+        # Edge detection을 위한 Sobel 필터
+        self.register_buffer('sobel_x', torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], 
+                                                    dtype=torch.float32).view(1, 1, 3, 3))
+        self.register_buffer('sobel_y', torch.tensor([[-1, -2, -1], [0, 0, 0], [1, 2, 1]], 
+                                                    dtype=torch.float32).view(1, 1, 3, 3))
+
+    # def compute_cycle_consistency(self, pred, query_points, corr_network=None):
+    #     """
+    #     개선된 Cycle Consistency - 역방향 네트워크 없이 구현
+    #     Args:
+    #         pred: [B, N, 2] 예측된 correspondence points
+    #         query_points: [B, N, 2] 원본 query points
+    #         corr_network: correspondence network (self-consistency용)
+    #     """
+    #     # Option 1: Self-consistency (같은 네트워크 사용)
+    #     if corr_network is not None:
+    #         # pred를 새로운 query로 사용하여 역방향 예측
+    #         reconstructed_query = corr_network(pred)  # 네트워크가 pred를 query로 처리
+    #         cycle_loss = F.mse_loss(reconstructed_query, query_points)
+    #     else:
+    #         # Simplified cycle consistency - identity mapping 가정
+    #         cycle_loss = F.mse_loss(pred, query_points)
+        
+    #     # Option 2: Temporal consistency (연속 프레임 활용)
+    #     if self.prev_pred is not None and self.prev_query is not None:
+    #         temporal_cycle = F.mse_loss(
+    #             pred - self.prev_pred, 
+    #             query_points - self.prev_query
+    #         )
+    #         cycle_loss += self.temporal_weight * temporal_cycle
+        
+    #     # 현재 값들을 다음 프레임을 위해 저장
+    #     self.prev_pred = pred.detach().clone()
+    #     self.prev_query = query_points.detach().clone()
+        
+    #     return cycle_loss
+    
+    def compute_cycle_consistency(self, pred, query_points):
+        """
+        실제 구현 가능한 cycle consistency
+        u: [0.5,1] (pred), [0,0.5] (query)
+        v: [0,1] (both)
+        """
+        # Option 1: Range-aware identity mapping (u 좌표만 변환)
+        # pred_u: [0.5,1] -> [-1,1], query_u: [0,0.5] -> [-1,1]
+        u_pred_normalized = (pred[..., 0] - 0.75) / 0.25
+        u_query_normalized = query_points[..., 0] * 4 - 1
+        
+        # v 좌표는 동일 범위 [0,1]이므로 정규화 없이 직접 비교
+        v_pred = pred[..., 1]
+        v_query = query_points[..., 1]
+        
+        # u와 v를 별도로 계산 후 합산
+        u_loss = F.mse_loss(u_pred_normalized, u_query_normalized)
+        v_loss = F.mse_loss(v_pred, v_query)
+        range_loss = (u_loss + v_loss) / 2.0
+
+        # Option 2: Contrastive learning 기반 (u 좌표만 offset 적용)
+        # u: query + 0.5 -> [0.5,1] 범위로 변환
+        # v: 동일 범위 유지
+        contrastive_points = query_points.clone()
+        contrastive_points[..., 0] += 0.5  # u 좌표만 0.5 이동
+        
+        # Cosine 유사도 계산 (차원 유지)
+        similarity = F.cosine_similarity(pred, contrastive_points, dim=-1)
+        contrastive_loss = 1.0 - similarity.mean()
+
+        # 두 옵션을 결합 (가중치 조정 가능)
+        cycle_loss = 0.7 * range_loss + 0.3 * contrastive_loss
+        
+        return cycle_loss
+
+
+    def compute_photometric_consistency(self, pred, query_points, camera_img, depth_map):
+        """
+        실제 구현 가능한 Photometric Consistency
+        RGB intensity와 depth value 간의 구조적 유사성 평가
+        """
+        # Grid sampling을 이용한 feature 추출
+        query_rgb = F.grid_sample(
+            camera_img, 
+            query_points.unsqueeze(2) * 2 - 1,  # [0,1] -> [-1,1] 범위로 변환
+            align_corners=False,
+            mode='bilinear',
+            padding_mode='border'
+        ).squeeze(-1).transpose(1, 2)  # [B, N, 3]
+        
+        pred_depth = F.grid_sample(
+            depth_map.unsqueeze(1), 
+            pred.unsqueeze(2) * 2 - 1,
+            align_corners=False,
+            mode='bilinear',
+            padding_mode='border'
+        ).squeeze(-1).transpose(1, 2)  # [B, N, 1]
+        
+        # Structural similarity 기반 consistency
+        # RGB intensity와 depth value 간의 구조적 유사성 평가
+        rgb_intensity = torch.mean(query_rgb, dim=-1, keepdim=True)  # Grayscale conversion
+        
+        # Normalization for better correlation
+        normalized_depth = (pred_depth - pred_depth.mean(dim=1, keepdim=True)) / (pred_depth.std(dim=1, keepdim=True) + 1e-6)
+        normalized_rgb = (rgb_intensity - rgb_intensity.mean(dim=1, keepdim=True)) / (rgb_intensity.std(dim=1, keepdim=True) + 1e-6)
+        
+        # Cross-correlation 기반 consistency
+        photo_loss = 1.0 - F.cosine_similarity(
+            normalized_rgb.flatten(1), 
+            normalized_depth.flatten(1), 
+            dim=1
+        ).mean()
+        
+        return photo_loss
+
+    def compute_geometric_consistency(self, pred, query_points, depth_map=None):
+        """
+        단순화된 Geometric Consistency
+        상대적 거리 보존 원칙 활용
+        """
+        B, N = query_points.shape[:2]
+        
+        if N < 2:
+            return torch.tensor(0.0, device=pred.device)
+        
+        # Query points 간 거리 계산
+        query_flat = query_points.view(B, N, 2)
+        query_dist = torch.cdist(query_flat, query_flat)  # [B, N, N]
+        
+        # Predicted points 간 거리 계산  
+        pred_flat = pred.view(B, N, 2)
+        pred_dist = torch.cdist(pred_flat, pred_flat)  # [B, N, N]
+        
+        # 거리 비율 보존 loss (대각선 제외)
+        mask = ~torch.eye(N, device=pred.device, dtype=torch.bool)
+        mask = mask.unsqueeze(0).expand(B, -1, -1)
+        
+        query_dist_masked = query_dist[mask]
+        pred_dist_masked = pred_dist[mask]
+        
+        # Normalize distances to prevent scale issues
+        query_dist_norm = query_dist_masked / (query_dist_masked.max() + 1e-6)
+        pred_dist_norm = pred_dist_masked / (pred_dist_masked.max() + 1e-6)
+        
+        geom_loss = F.mse_loss(query_dist_norm, pred_dist_norm)
+        
+        return geom_loss
+
+    def compute_spatial_smoothness(self, pred, query_points, camera_img):
+        """
+        Edge-aware spatial smoothness 적용
+        물체 경계에서는 smoothness 완화, 평면 영역에서는 강화
+        """
+        B, N = query_points.shape[:2]
+        
+        if N < 2:
+            return torch.tensor(0.0, device=pred.device)
+        
+        # 이미지 gradient 계산 (edge detection)
+        gray_img = torch.mean(camera_img, dim=1, keepdim=True)  # [B, 1, H, W]
+        
+        # Sobel edge detection
+        grad_x = F.conv2d(gray_img, self.sobel_x, padding=1)
+        grad_y = F.conv2d(gray_img, self.sobel_y, padding=1)
+        edge_magnitude = torch.sqrt(grad_x**2 + grad_y**2 + 1e-6)
+        
+        # Query points에서 edge strength 샘플링
+        edge_weight = F.grid_sample(
+            edge_magnitude,
+            query_points.unsqueeze(2) * 2 - 1,
+            align_corners=False,
+            mode='bilinear',
+            padding_mode='border'
+        ).squeeze(-1).squeeze(1)  # [B, N]
+        
+        # Edge가 약한 영역에서만 smoothness 적용
+        query_diff = query_points[:, 1:] - query_points[:, :-1]  # [B, N-1, 2]
+        pred_diff = pred[:, 1:] - pred[:, :-1]  # [B, N-1, 2]
+        
+        # Edge weight 기반 adaptive smoothness
+        edge_threshold = 0.1
+        edge_mask = (edge_weight[:, :-1] < edge_threshold).float()  # Low edge regions
+        
+        # Smoothness loss with edge awareness
+        smooth_loss = torch.mean(
+            edge_mask.unsqueeze(-1) * (pred_diff - query_diff) ** 2
+        )
+        
+        return smooth_loss
+
+    def compute_range_penalty(self, pred, x_range=(0.4, 1.0), y_range=(-0.1, 1.0)):
+        """
+        적응적 범위 제약 - 학습 초기에는 완화된 범위 적용
+        """
+        x_min, x_max = x_range
+        y_min, y_max = y_range
+        
+        range_penalty = torch.mean(
+            0.1 * F.relu(x_min - pred[..., 0]) +  # x 좌표 하한
+            F.relu(pred[..., 0] - x_max) +        # x 좌표 상한
+            F.relu(y_min - pred[..., 1]) +        # y 좌표 하한  
+            F.relu(pred[..., 1] - y_max)          # y 좌표 상한
+        )
+        
+        return range_penalty
+
+    def forward(self, pred, query_points, camera_img, depth_map, corr_network=None):
+        """
+        통합 Self-supervised Loss 계산
+        Args:
+            pred: [B, N, 2] 예측된 correspondence points
+            query_points: [B, N, 2] 원본 query points  
+            camera_img: [B, 3, H, W] 카메라 이미지
+            depth_map: [B, H, W] LiDAR depth map
+            corr_network: correspondence network (optional)
+        """
+        # 1. Cycle Consistency Loss
+        cycle_loss = self.compute_cycle_consistency(pred, query_points)
+        
+        # 2. Photometric Consistency Loss
+        photo_loss = self.compute_photometric_consistency(pred, query_points, camera_img, depth_map)
+        
+        # 3. Geometric Consistency Loss
+        geom_loss = self.compute_geometric_consistency(pred, query_points, depth_map)
+        
+        # 4. Edge-aware Spatial Smoothness Loss
+        smooth_loss = self.compute_spatial_smoothness(pred, query_points, camera_img)
+        
+        # 5. Adaptive Range Penalty
+        range_penalty = self.compute_range_penalty(pred)
+        
+        # 가중 합산
+        total_loss = (self.cycle_weight * cycle_loss + 
+                     self.photo_weight * photo_loss + 
+                     self.geom_weight * geom_loss + 
+                     self.smooth_weight * smooth_loss + 
+                     self.range_weight * range_penalty)
+        
+        # 상세 손실 정보 반환
+        loss_dict = {
+            'total': total_loss.item(),
+            'cycle': cycle_loss.item(),
+            'photo': photo_loss.item(), 
+            'geom': geom_loss.item(),
+            'smooth': smooth_loss.item(),
+            'range': range_penalty.item()
+        }
+        
+        return total_loss, loss_dict
+
+    def update_weights(self, epoch, total_epochs):
+        """
+        학습 단계에 따른 가중치 적응적 조정
+        """
+        progress = epoch / total_epochs
+        
+        if progress < 0.3:  # 초기 단계: cycle consistency 중심
+            self.cycle_weight = 1.0
+            self.photo_weight = 0.1
+            self.geom_weight = 0.1
+        elif progress < 0.7:  # 중간 단계: photometric consistency 추가
+            self.cycle_weight = 0.8
+            self.photo_weight = 0.3
+            self.geom_weight = 0.2
+        else:  # 후기 단계: 모든 loss 균형
+            self.cycle_weight = 0.6
+            self.photo_weight = 0.3
+            self.geom_weight = 0.2
+
+    def reset_temporal_memory(self):
+        """
+        새로운 시퀀스 시작 시 temporal consistency 메모리 초기화
+        """
+        self.prev_pred = None
+        self.prev_query = None
+
+    def get_loss_weights(self):
+        """
+        현재 loss 가중치 반환
+        """
+        return {
+            'cycle_weight': self.cycle_weight,
+            'photo_weight': self.photo_weight,
+            'geom_weight': self.geom_weight,
+            'smooth_weight': self.smooth_weight,
+            'range_weight': self.range_weight,
+            'temporal_weight': self.temporal_weight
+        }
+
+    def set_loss_weights(self, weights_dict):
+        """
+        Loss 가중치 수동 설정
+        """
+        for key, value in weights_dict.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
+
+    def debug_loss_components(self, pred, query_points, camera_img, depth_map):
+        """
+        각 loss 성분별 디버깅 정보 출력
+        """
+        with torch.no_grad():
+            cycle_loss = self.compute_cycle_consistency(pred, query_points)
+            photo_loss = self.compute_photometric_consistency(pred, query_points, camera_img, depth_map)
+            geom_loss = self.compute_geometric_consistency(pred, query_points, depth_map)
+            smooth_loss = self.compute_spatial_smoothness(pred, query_points, camera_img)
+            range_penalty = self.compute_range_penalty(pred)
+            
+            print("=== Loss Components Debug ===")
+            print(f"Cycle Loss: {cycle_loss.item():.6f}")
+            print(f"Photo Loss: {photo_loss.item():.6f}")
+            print(f"Geom Loss: {geom_loss.item():.6f}")
+            print(f"Smooth Loss: {smooth_loss.item():.6f}")
+            print(f"Range Penalty: {range_penalty.item():.6f}")
+            
+            # 예측값 분포 분석
+            pred_x_mean = pred[..., 0].mean().item()
+            pred_y_mean = pred[..., 1].mean().item()
+            pred_x_std = pred[..., 0].std().item()
+            pred_y_std = pred[..., 1].std().item()
+            
+            print(f"Pred X: mean={pred_x_mean:.4f}, std={pred_x_std:.4f}")
+            print(f"Pred Y: mean={pred_y_mean:.4f}, std={pred_y_std:.4f}")
+            
+            # Query 분포 분석
+            query_x_mean = query_points[..., 0].mean().item()
+            query_y_mean = query_points[..., 1].mean().item()
+            query_x_std = query_points[..., 0].std().item()
+            query_y_std = query_points[..., 1].std().item()
+            
+            print(f"Query X: mean={query_x_mean:.4f}, std={query_x_std:.4f}")
+            print(f"Query Y: mean={query_y_mean:.4f}, std={query_y_std:.4f}")
+            print("============================")
+
+
 @HEADS.register_module()
 class MV2DSHead(MV2DHead):
     def __init__(self,
@@ -1055,12 +1680,19 @@ class MV2DSHead(MV2DHead):
         self.denoise_weight = denoise_weight
         self.denoise_split = denoise_split
         
-        # self.corr_loss = CorrelationCycleLoss(corr_weight=2.0 , cycle_weight=1.0)
+        self.corr_loss = CorrelationCycleLoss(corr_weight=1.0 , cycle_weight=0.5)
         # self.point_distance_loss = PointDistanceLoss(distance_weight=1.0)
         
         self.num_kp =200
         # self.conf_loss_weight = 0.5
         self.corr = COTR(self.num_kp)   
+        # self.corr_loss = SelfSupervisedCorrespondenceLoss(
+        #                     cycle_weight=1.0,
+        #                     photo_weight=0.3,
+        #                     geom_weight=0.2,
+        #                     smooth_weight=0.1,
+        #                     range_weight=0.05
+        #                 )
        
         # self.z_estimator = ZValueEstimator(depth_shape=(900, 1600))
         # self.z_estimator = BBoxEnhancedZEstimator(depth_shape=(900, 1600))  # 예시로 depth_shape 설정
@@ -1198,6 +1830,18 @@ class MV2DSHead(MV2DHead):
     
     def inverse_layer_norm(self, normalized, ln_layer):
         return (normalized - ln_layer.bias) / ln_layer.weight
+    
+    # 출력 범위 강제 조정
+    # def constrain_output(self, x, min_val, max_val):
+    #     """Sigmoid + Scaling으로 출력 범위 제한"""
+    #     sig = torch.sigmoid(x)  # [0,1] 범위로 압축
+    #     return min_val + (max_val - min_val) * sig
+    
+    def constrain_output (self,x, min_val, max_val):
+        """Tanh 기반으로 gradient 소실 방지"""
+        tanh_out = torch.tanh(x)  # [-1, 1] 범위
+        scaled = (tanh_out + 1) * 0.5  # [0, 1] 범위로 변환
+        return min_val + (max_val - min_val) * scaled
 
     def _bbox_forward_denoise(self, img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4): # for SJMOON
     # def _bbox_forward_denoise(self, x, proposal_list, img_metas): # for original 
@@ -1280,38 +1924,87 @@ class MV2DSHead(MV2DHead):
         
         # # ########### corr transformer sjmoon ###########
         trimed_center_pts =batch_rois_center_by_cam_id(rois_center,batch_size=200)
-        # trimed_uvset = batched_trim_corrs(uv_set).to(dtype=torch.float32, device=img.device)
+        trimed_uvset = batched_trim_corrs(uv_set).to(dtype=torch.float32, device=img.device)
         # 객체 ID 보존 텐서
         object_ids = trimed_center_pts[..., 1].clone()  # [num_cams, batch_size]
 
         # 쿼리 입력 생성 (좌표만 정규화)
         query_input = trimed_center_pts[..., 2:].clone()  # [num_cams, batch_size, 2]
+        # scaled1_query_input = scale_uvz_points(query_input,original_size=(900,1600),target_size=(192,640))
+        # scaled2_query_input = normalize_uv_points(scaled1_query_input)
+        
         query_input[..., 0] /= 1600.0
-        query_input[..., 1] /= 928.0
+        query_input[..., 1] /= 920.0
 
-        # corr_target = trimed_cener_pts[...,2:]
-        # corr_target[...,0] = corr_target[...,0] / 1600.0 + 0.5
-        # corr_target[...,1] = corr_target[...,1] / 920.0
+        corr_target = trimed_uvset[...,2:]
+        corr_target[...,0] = corr_target[...,0] / 1600.0
+        corr_target[...,1] = corr_target[...,1] / 920.0
 
-        corrs_pred, cycle, corr_mask, enc_out = self.corr(sbs_img, query_input)
+        query_input[:,:,0] = query_input[:,:,0]/2    # recaling points for sbs image resizing
+        query_input[:,:,1] = query_input[:,:,1]
+        corr_target[:,:,0] = corr_target[:,:,0]/2 + 0.5 # recaling points for sbs image resizing
+        corr_target[:,:,1] = corr_target[:,:,1] 
+
+        raw_corrs, cycle, corr_mask, enc_out = self.corr(sbs_img, query_input)
         # 객체 ID 정보를 예측 결과에 연결
+
+        # total_loss_corr , loss_corr = self.corr_loss(corrs_pred, scaled2_query_input, img, dense_depth_map)
+        loss_corr = self.corr_loss(raw_corrs, corr_target, cycle, query_input, corr_mask)
+
         corrs_pred_with_obj = torch.cat([
             object_ids.unsqueeze(-1),  # [num_cams, batch_size, 1]
-            corrs_pred                  # [num_cams, batch_size, 2]
+            raw_corrs                  # [num_cams, batch_size, 2]
         ], dim=-1)  # [num_cams, batch_size, 3
         # corr_loss = self.corr_loss(corrs_pred, corr_target, cycle, query_input, corr_mask)
-        pred_center_pts = remove_duplicate_objs(corrs_pred_with_obj)
-        pred_center_pts[..., 2] *= 1600.0
-        pred_center_pts[..., 3] *= 928.0
+        raw_pred_center_pts = remove_duplicate_objs(corrs_pred_with_obj)
+        # pred_center_pts1 = denormalize_uv_points(raw_pred_center_pts)
+        # # pred_center_pts1[...,2] -= 640  # x 좌표 보정
+        # pred_center_pts = descale_uvz_points(pred_center_pts1,original_size=(192,640),target_size=(900,1600))
+        # restore_original_uv
+
+        raw_pred_center_pts1 = raw_pred_center_pts.clone()
+        raw_pred_center_pts1[..., 2] = (raw_pred_center_pts1[..., 2] - 0.5) * 2
+        # raw_pred_center_pts1[..., 3] = raw_pred_center_pts1[..., 3] * 2
+        raw_pred_center_pts2 = raw_pred_center_pts1.clone()
+        raw_pred_center_pts2[..., 2] *= 1600.0
+        raw_pred_center_pts2[..., 3] *= 920.0
+
+        # # ##### 검증용 display ######
+        # from image_processing_unit_Ver15_0 import draw_correspondences
+        # # corrs_pred_norm = self.inverse_layer_norm(corrs_pred, self.final_ln)
+        # # rois_center_disp = scale_uvz_points(rois_center[...,2:],original_size=(900,1600),target_size=(192,640))
+        # # trimed_corrs = batch_rois_center_by_cam_id(rois_center,batch_size=200)
+        # # pred_corrs = torch.cat([rois_center_disp,pred_center_pts1[...,2:]],dim=-1)
+        # gt_corrs = torch.cat([query_input,corr_target],dim=-1)
+        # pred_corrs = torch.cat([query_input,raw_corrs],dim=-1)
+        # # int_ids = original_camera_ids.to(torch.long).cpu()
+        # # if len(int_ids) < 6:
+        # #     print ("len(int_ids) < 6")
+        # # 카메라 ID ↔ 인덱스 매핑 생성
+        # # id_to_idx = {cid.item(): idx for idx, cid in enumerate(original_camera_ids)}
+        # # for cid in int_ids :
+        # for cid in range(6):
+        #     # idx = id_to_idx[cid.item()]
+        #     # draw_correspondences(
+        #     #     trimed_corrs = gt_corrs[cid],  # 첫 번째 배치 선택
+        #     #     sbs_img=sbs_img[cid],
+        #     #     save_path='correspondence_visualization_gt.jpg'
+        #     # )
+        #     draw_correspondences(
+        #         trimed_corrs = pred_corrs[cid][:2,...],  # 첫 번째 배치 선택
+        #         sbs_img=sbs_img[cid],
+        #         save_path='correspondence_visualization_pred.jpg'
+        #     )
+        #     print ("end")
 
         # transformed_uv = transform_uv_points(rois_with_indices,uv_set)      
         # esitmated_z = self.z_estimator(transformed_uv[...,:4], dense_depth_map_gt,bbox_feats,ref_points_uvz)
         # esitmated_z = self.z_estimator(pred_center_pts, dense_depth_map_gt,bbox_feats)
-        esitmated_z = self.z_estimator(pred_center_pts, dense_depth_map_gt,bbox_feats, enc_out)
+        esitmated_z = self.z_estimator(raw_pred_center_pts2, dense_depth_map_gt,bbox_feats, enc_out)
         # **Confidence 정보 추출**
         confidence_scores = esitmated_z['confidence']  # [N]
         # z_depth_real = esitmated_z['z_lidar_real']  # [N]
-        esitmated_uvz =torch.cat([pred_center_pts,esitmated_z['depth']],dim=1)
+        esitmated_uvz =torch.cat([raw_pred_center_pts2, esitmated_z['depth']],dim=1)
 
         # # Confidence 손실 계산
         # conf_loss = F.binary_cross_entropy(
@@ -1488,30 +2181,6 @@ class MV2DSHead(MV2DHead):
         # ref_points_with_index = differentiable_merge_point_clouds(reference_points_with_indices, gt_pts)
         ref_points = detection_xyz_normalized
          
-        # ##### 검증용 display ######
-        # from image_processing_unit_Ver15_0 import draw_correspondences
-        # # corrs_pred_norm = self.inverse_layer_norm(corrs_pred, self.final_ln)
-        # # pred_corrs = torch.cat([query_input,corrs_pred],dim=2)
-        # int_ids = original_camera_ids.to(torch.long).cpu()
-        # if len(int_ids) < 6:
-        #     print ("len(int_ids) < 6")
-        # # 카메라 ID ↔ 인덱스 매핑 생성
-        # id_to_idx = {cid.item(): idx for idx, cid in enumerate(original_camera_ids)}
-        # for cid in int_ids :
-        #     idx = id_to_idx[cid.item()]
-        #     draw_correspondences(
-        #         trimed_corrs=trimed_corrs[idx][:2,:],  # 첫 번째 배치 선택
-        #         sbs_img=sbs_img,
-        #         camera_idx=cid,
-        #         save_path='correspondence_visualization_gt.jpg'
-        #     )
-        #     # draw_correspondences(
-        #     #     trimed_corrs=pred_corrs[idx][:2,:],  # 첫 번째 배치 선택
-        #     #     sbs_img=sbs_img,
-        #     #     camera_idx=cid,
-        #     #     save_path='correspondence_visualization_pred.jpg'
-        #     # )
-        #     print ("end")
         # generate box correlation
         corr, mask = self.box_corr_module.gen_box_roi_correlation(rois, [len(p) for p in proposal_list], img_metas)
         # corr, mask = self.box_corr_module.gen_box_roi_correlation(rois_with_indices,pred_pts, [len(p) for p in proposal_list], img_metas)
@@ -1728,16 +2397,16 @@ class MV2DSHead(MV2DHead):
         #     conf_loss=conf_loss * self.conf_loss_weight,
         # )
 
-        return bbox_results  #, corr_loss ,pc_distance_loss
+        return bbox_results , loss_corr
         # return bbox_results
 
     # def _bbox_forward(self, x, proposal_list, img_metas): # for original 
     def _bbox_forward(self,img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4): ### this modified moon
         # bbox_results = self._bbox_forward_denoise(x, proposal_list, img_metas) # for original 
-        # bbox_results ,loss_corr , loss_pc_distance = self._bbox_forward_denoise(img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON 
-        bbox_results = self._bbox_forward_denoise(img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON 
-        # return bbox_results ,loss_corr ,loss_pc_distance
-        return bbox_results
+        bbox_results , loss_corr = self._bbox_forward_denoise(img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON 
+        # bbox_results = self._bbox_forward_denoise(img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON 
+        return bbox_results , loss_corr
+        # return bbox_results
 
     def prepare_for_dn_loss(self, mask_dict):
         """
@@ -1756,6 +2425,17 @@ class MV2DSHead(MV2DHead):
             output_known_coord = output_known_coord.permute(1, 2, 0, 3)[(bid, map_known_indice)].permute(1, 0, 2)
         num_tgt = known_indice.numel()
         return known_labels, known_bboxs, output_known_class, output_known_coord, num_tgt
+    
+    def _bbox_forward_train(self, img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4): # for SJMOON
+    # def _bbox_forward_train(self, x, proposal_list, img_metas): # for original 
+        """Run forward function and calculate loss for box head in training."""
+        bbox_results , loss_corr = self._bbox_forward(img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON
+        # bbox_results = self._bbox_forward(img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
+        # bbox_results = self._bbox_forward(x, proposal_list, img_metas) # for original 
+        bbox_results.update(pred={'cls_scores': bbox_results['cls_scores'], 'bbox_preds': bbox_results['bbox_preds']})
+
+        return bbox_results, loss_corr
+        # return bbox_results
 
     def forward_train(self,
                       img,
@@ -1804,8 +2484,8 @@ class MV2DSHead(MV2DHead):
             img_metas[0]['gt_bboxes_3d'] = ori_gt_bboxes_3d[0]
             img_metas[0]['gt_labels_3d'] = ori_gt_labels_3d[0]
 
-        # results_from_last , loss_corr,loss_pc_distance = self._bbox_forward_train(img,img_metas,lidar_depth_mis, x, proposal_boxes, uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJ MOON 
-        results_from_last = self._bbox_forward_train(img,img_metas,lidar_depth_mis, x, proposal_boxes, uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
+        results_from_last , loss_corr = self._bbox_forward_train(img,img_metas,lidar_depth_mis, x, proposal_boxes, uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJ MOON 
+        # results_from_last = self._bbox_forward_train(img,img_metas,lidar_depth_mis, x, proposal_boxes, uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
         # results_from_last = self._bbox_forward_train(x, proposal_boxes, img_metas) # for original 
         preds = results_from_last['pred']
         # Confidence 손실 추출
@@ -1843,7 +2523,10 @@ class MV2DSHead(MV2DHead):
             lw = loss_weights[layer]
             for k, v in loss_stage[layer].items():
                 losses[f'l{layer}.{k}'] = v * lw if 'loss' in k else v
-
+        
+        losses['loss_corr'] = loss_corr
+        # losses['total_loss_corr'] = total_loss_corr
+        
         # return losses , loss_corr , loss_pc_distance
         return losses
     
@@ -1862,7 +2545,7 @@ class MV2DSHead(MV2DHead):
 
         results_from_last['batch_size'] = len(img_metas) // img_metas[0]['num_views']
         # results_from_last ,_ = self._bbox_forward(img,img_metas, lidar_depth_mis,x,proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
-        results_from_last = self._bbox_forward(img,img_metas, lidar_depth_mis,x,proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
+        results_from_last , _, _ = self._bbox_forward(img,img_metas, lidar_depth_mis,x,proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
         
         ## original
         cls_scores = results_from_last['cls_scores'][-1]

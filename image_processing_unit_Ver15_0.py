@@ -179,6 +179,14 @@ def normalize_uvz_points(points_lidar2img):
 
     return normal_points_lidar2img
 
+def normalize_uv_points(points_lidar2img):
+    
+    normal_points_lidar2img = points_lidar2img.clone()
+    normal_points_lidar2img[..., 0] = normal_points_lidar2img[..., 0]/1280
+    normal_points_lidar2img[..., 1] = normal_points_lidar2img[..., 1]/192
+   
+    return normal_points_lidar2img
+
 def scale_uvz_points(uvz_tensor, original_size=(900, 1600), target_size=(192, 640)):
     """
     UVZ 좌표를 이미지 스케일링 비율에 맞게 변환
@@ -195,8 +203,8 @@ def scale_uvz_points(uvz_tensor, original_size=(900, 1600), target_size=(192, 64
     
     # UV 좌표 스케일링 (깊이 z는 변경 없음)
     scaled_uvz = uvz_tensor.clone()
-    scaled_uvz[:, 0] *= scale_w  # u 좌표(너비 방향) 스케일
-    scaled_uvz[:, 1] *= scale_h  # v 좌표(높이 방향) 스케일
+    scaled_uvz[..., 0] *= scale_w  # u 좌표(너비 방향) 스케일
+    scaled_uvz[..., 1] *= scale_h  # v 좌표(높이 방향) 스케일
     
     return scaled_uvz
 
@@ -354,7 +362,7 @@ def trim_corrs(in_corrs, num_kp=100):
         return torch.cat([in_corrs, in_corrs[mask]], dim=0)
 
 
-def batched_trim_corrs(in_corrs, num_kp=100):
+def batched_trim_corrs(in_corrs, num_kp=200):
     """
     배치 처리된 correspondence 포인트 트리밍 함수
     Args:
@@ -4096,13 +4104,13 @@ def differentiable_center2lidar(center_pred, intrinsics, extrinsics, eps=1e-6):
     return center_lidar_with_index, center_lidar, lidar2img
 
 
-def draw_correspondences(trimed_corrs, sbs_img, camera_idx=0, save_path='correspond.jpg'):
+def draw_correspondences(trimed_corrs, sbs_img, save_path='correspond.jpg'):
     """정규화 좌표 기반 시각화 (0~1 범위 입력 필요)"""
     import matplotlib.pyplot as plt
     import numpy as np
     
     # 1. 이미지 전처리
-    img_tensor = sbs_img[camera_idx]  # [3, 192, 1280]
+    img_tensor = sbs_img# [3, 192, 1280]
     denorm_img = img_tensor / 2 + 0.5  # 정규화 해제
     img_np = denorm_img.permute(1, 2, 0).cpu().numpy()
     
@@ -4111,11 +4119,11 @@ def draw_correspondences(trimed_corrs, sbs_img, camera_idx=0, save_path='corresp
     left_pts = trimed_corrs[:, :2].detach().cpu().numpy()  # 정규화 좌표 [N,2] (0~1)
     right_pts = trimed_corrs[:, 2:].detach().cpu().numpy()
     
-    # # 3. 정규화 → 픽셀 좌표 변환 (원본 알고리즘 반영)
-    # left_pts[:, 0] = left_pts[:, 0] * 640  # u = (norm_u - 0.5)*640 
-    # left_pts[:, 1] = left_pts[:, 1] * 192  # v = norm_v * 192
-    # right_pts[:, 0] = (right_pts[:, 0] - 0.5) * 640 + 640  # 우측 오프셋 적용
-    # right_pts[:, 1] = right_pts[:, 1] * 192
+    # 3. 정규화 → 픽셀 좌표 변환 (원본 알고리즘 반영)
+    left_pts[:, 0] = left_pts[:, 0] * 640  # u = (norm_u - 0.5)*640 
+    left_pts[:, 1] = left_pts[:, 1] * 192  # v = norm_v * 192
+    right_pts[:, 0] = (right_pts[:, 0] - 0.5) * 640 + 640  # 우측 오프셋 적용
+    right_pts[:, 1] = right_pts[:, 1] * 192
 
     # 4. 좌표 클리핑 및 필터링
     left_pts[:, 0] = np.clip(left_pts[:, 0], 0, W-1)
@@ -4904,4 +4912,40 @@ def remove_duplicate_objs(corrs_pred_with_obj):
     
     return unique_objs
 
+def denormalize_uv_points(normalized_points, scaled_size=(192, 1280)):
+    """
+    정규화된 UV 좌표를 스케일링된 이미지 픽셀 좌표로 복원
+    Args:
+        normalized_points: [N, 2] 정규화된 UV 좌표 (0~1 범위)
+        scaled_size: (H_scaled, W_scaled) 스케일링된 이미지 크기
+    Returns:
+        [N, 2] 스케일링된 이미지 픽셀 좌표
+    """
+    H_scaled, W_scaled = scaled_size
+    denormalized = normalized_points.clone()
+    denormalized[..., 2] *= W_scaled  # u 좌표 복원 (0~1 → 0~W_scaled)
+    denormalized[..., 3] *= H_scaled  # v 좌표 복원 (0~1 → 0~H_scaled)
+    return denormalized
+
+def descale_uvz_points(uvz_tensor, original_size=(192,640),target_size=(900,1600)):
+    """
+    UVZ 좌표를 이미지 스케일링 비율에 맞게 변환
+    Args:
+        uvz_tensor: (N, 3) 형태의 텐서 [u, v, z]
+        original_size: (H, W) 원본 이미지 크기
+        target_size: (H, W) 타겟 이미지 크기
+    Returns:
+        스케일링된 (N, 3) UVZ 텐서
+    """
+    # 스케일링 계수 계산 (높이, 너비)
+    scale_h = target_size[0] / original_size[0]  
+    scale_w = target_size[1] / original_size[1] 
+    
+    # UV 좌표 스케일링 (깊이 z는 변경 없음)
+    scaled_uvz = uvz_tensor.clone()
+    scaled_uvz[..., 2] = scaled_uvz[..., 2] - original_size[1]
+    scaled_uvz[..., 2] *= scale_w  # u 좌표(너비 방향) 스케일
+    scaled_uvz[..., 3] *= scale_h  # v 좌표(높이 방향) 스케일
+    
+    return scaled_uvz
 
