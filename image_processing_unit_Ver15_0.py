@@ -4859,91 +4859,91 @@ def batch_rois_center_by_cam_id(rois_center, num_cams=6, batch_size=100):
     
     return batched_centers
 
-# def remove_duplicate_objs(corrs_pred_with_obj):
-#     """
-#     객체 ID 기준 중복 제거 및 결과 포맷 변환
-#     - PyTorch 버전 호환성 해결
-#     - 객체 ID 연속성 체크 추가
-#     - 텐서 크기 불일치 해결
-    
-#     Args:
-#         corrs_pred_with_obj: [num_cams, batch_size, 3] 텐서 
-#             (obj_id, center_pred_x, center_pred_y)
-            
-#     Returns:
-#         [number_of_unique_obj, 4] 텐서 
-#         (cam_id, obj_id, center_pred_x, center_pred_y)
-#     """
-#     num_cams, batch_size, _ = corrs_pred_with_obj.shape
-    
-#     # 1. 카메라 ID 텐서 생성
-#     cam_ids = torch.arange(num_cams, device=corrs_pred_with_obj.device)
-#     cam_ids = cam_ids.view(-1, 1, 1).expand(-1, batch_size, 1)
-    
-#     # 2. 모든 정보 결합 [cam_id, obj_id, pred_x, pred_y]
-#     combined = torch.cat([cam_ids.float(), corrs_pred_with_obj], dim=-1)
-    
-#     # 3. 배치 차원 병합 [num_cams * batch_size, 4]
-#     flat_combined = combined.view(-1, 4)
-    
-#     # 4. 객체 ID 추출 및 연속성 체크
-#     obj_ids = flat_combined[:, 1]
-#     unique_ids, counts = torch.unique(obj_ids, return_counts=True)
-    
-#     # 5. 객체 ID 연속성 검증
-#     if not torch.all(torch.diff(unique_ids) == 1):
-#         print("경고: 객체 ID가 연속적이지 않음. 누락된 객체 존재 가능")
-    
-#     # 6. 중복 제거 (첫 번째 발생만 유지)
-#     _, unique_indices = torch.unique(obj_ids, return_inverse=True)
-#     first_occurrence = torch.zeros_like(obj_ids, dtype=torch.bool)
-    
-#     for obj_id in unique_ids:
-#         indices = (obj_ids == obj_id).nonzero(as_tuple=True)[0]
-#         if indices.numel() > 0:
-#             first_occurrence[indices[0]] = True
-    
-#     # 7. 고유 객체 선택
-#     unique_objs = flat_combined[first_occurrence]
-    
-#     # 8. 크기 검증
-#     if unique_objs.size(0) != unique_ids.size(0):
-#         print(f"크기 불일치: 고유 객체 {unique_ids.size(0)}개, 결과 {unique_objs.size(0)}개")
-    
-#     return unique_objs
-
 def remove_duplicate_objs(corrs_pred_with_obj):
     """
-    객체 ID 기준 중복 제거 및 결과 포맷 변환 (z값 포함)
+    객체 ID 기준 중복 제거 및 결과 포맷 변환
+    - PyTorch 버전 호환성 해결
+    - 객체 ID 연속성 체크 추가
+    - 텐서 크기 불일치 해결
+    
     Args:
-        corrs_pred_with_obj: [num_cams, batch_size, 4] 텐서 
-            (obj_id, center_pred_x, center_pred_y, center_pred_z)
+        corrs_pred_with_obj: [num_cams, batch_size, 3] 텐서 
+            (obj_id, center_pred_x, center_pred_y)
+            
     Returns:
-        [number_of_unique_obj, 5] 텐서 
-        (cam_id, obj_id, center_pred_x, center_pred_y, center_pred_z)
+        [number_of_unique_obj, 4] 텐서 
+        (cam_id, obj_id, center_pred_x, center_pred_y)
     """
     num_cams, batch_size, _ = corrs_pred_with_obj.shape
-
+    
     # 1. 카메라 ID 텐서 생성
     cam_ids = torch.arange(num_cams, device=corrs_pred_with_obj.device)
-    cam_ids = cam_ids.view(-1, 1, 1).expand(-1, batch_size, 1)  # [num_cams, batch_size, 1]
-
-    # 2. 모든 정보 결합 [cam_id, obj_id, x, y, z]
-    combined = torch.cat([cam_ids.float(), corrs_pred_with_obj], dim=-1)  # [num_cams, batch_size, 5]
-
-    # 3. 배치 차원 병합 [num_cams * batch_size, 5]
-    flat_combined = combined.reshape(-1, 5)
-
-    # 4. obj_id 기준 첫 등장 인덱스만 유지
+    cam_ids = cam_ids.view(-1, 1, 1).expand(-1, batch_size, 1)
+    
+    # 2. 모든 정보 결합 [cam_id, obj_id, pred_x, pred_y]
+    combined = torch.cat([cam_ids.float(), corrs_pred_with_obj], dim=-1)
+    
+    # 3. 배치 차원 병합 [num_cams * batch_size, 4]
+    flat_combined = combined.view(-1, 4)
+    
+    # 4. 객체 ID 추출 및 연속성 체크
     obj_ids = flat_combined[:, 1]
-    # unique obj_id의 첫 등장 인덱스만 추출 (PyTorch 공식 우회법)
-    unique_obj_ids, inverse_indices = torch.unique(obj_ids, sorted=True, return_inverse=True)
-    perm = torch.arange(obj_ids.size(0), dtype=inverse_indices.dtype, device=obj_ids.device)
-    inverse_indices, perm = inverse_indices.flip(0), perm.flip(0)
-    first_indices = inverse_indices.new_empty(unique_obj_ids.size(0)).scatter_(0, inverse_indices, perm)
-    unique_objs = flat_combined[first_indices]
-
+    unique_ids, counts = torch.unique(obj_ids, return_counts=True)
+    
+    # 5. 객체 ID 연속성 검증
+    if not torch.all(torch.diff(unique_ids) == 1):
+        print("경고: 객체 ID가 연속적이지 않음. 누락된 객체 존재 가능")
+    
+    # 6. 중복 제거 (첫 번째 발생만 유지)
+    _, unique_indices = torch.unique(obj_ids, return_inverse=True)
+    first_occurrence = torch.zeros_like(obj_ids, dtype=torch.bool)
+    
+    for obj_id in unique_ids:
+        indices = (obj_ids == obj_id).nonzero(as_tuple=True)[0]
+        if indices.numel() > 0:
+            first_occurrence[indices[0]] = True
+    
+    # 7. 고유 객체 선택
+    unique_objs = flat_combined[first_occurrence]
+    
+    # 8. 크기 검증
+    if unique_objs.size(0) != unique_ids.size(0):
+        print(f"크기 불일치: 고유 객체 {unique_ids.size(0)}개, 결과 {unique_objs.size(0)}개")
+    
     return unique_objs
+
+# def remove_duplicate_objs(corrs_pred_with_obj):
+#     """
+#     객체 ID 기준 중복 제거 및 결과 포맷 변환 (z값 포함)
+#     Args:
+#         corrs_pred_with_obj: [num_cams, batch_size, 4] 텐서 
+#             (obj_id, center_pred_x, center_pred_y, center_pred_z)
+#     Returns:
+#         [number_of_unique_obj, 5] 텐서 
+#         (cam_id, obj_id, center_pred_x, center_pred_y, center_pred_z)
+#     """
+#     num_cams, batch_size, _ = corrs_pred_with_obj.shape
+
+#     # 1. 카메라 ID 텐서 생성
+#     cam_ids = torch.arange(num_cams, device=corrs_pred_with_obj.device)
+#     cam_ids = cam_ids.view(-1, 1, 1).expand(-1, batch_size, 1)  # [num_cams, batch_size, 1]
+
+#     # 2. 모든 정보 결합 [cam_id, obj_id, x, y, z]
+#     combined = torch.cat([cam_ids.float(), corrs_pred_with_obj], dim=-1)  # [num_cams, batch_size, 5]
+
+#     # 3. 배치 차원 병합 [num_cams * batch_size, 5]
+#     flat_combined = combined.reshape(-1, 5)
+
+#     # 4. obj_id 기준 첫 등장 인덱스만 유지
+#     obj_ids = flat_combined[:, 1]
+#     # unique obj_id의 첫 등장 인덱스만 추출 (PyTorch 공식 우회법)
+#     unique_obj_ids, inverse_indices = torch.unique(obj_ids, sorted=True, return_inverse=True)
+#     perm = torch.arange(obj_ids.size(0), dtype=inverse_indices.dtype, device=obj_ids.device)
+#     inverse_indices, perm = inverse_indices.flip(0), perm.flip(0)
+#     first_indices = inverse_indices.new_empty(unique_obj_ids.size(0)).scatter_(0, inverse_indices, perm)
+#     unique_objs = flat_combined[first_indices]
+
+#     return unique_objs
 
 
 def denormalize_uv_points(normalized_points, scaled_size=(192, 1280)):

@@ -1769,7 +1769,7 @@ class MV2DSHead(MV2DHead):
         self.num_kp =200
         # self.conf_loss_weight = 0.5
         self.corr = COTR(self.num_kp) 
-        self.fine_corr = GraphBEVLocalAlignNet() 
+        # self.fine_corr = GraphBEVLocalAlignNet() 
         # self.corr_loss = SelfSupervisedCorrespondenceLoss(
         #                     cycle_weight=1.0,
         #                     photo_weight=0.3,
@@ -2008,7 +2008,7 @@ class MV2DSHead(MV2DHead):
         
         # # ########### corr transformer sjmoon ###########
         trimed_center_pts =batch_rois_center_by_cam_id(rois_center,batch_size=200)
-        trimed_uvset = batched_trim_corrs(uv_set).to(dtype=torch.float32, device=img.device)
+        # trimed_uvset = batched_trim_corrs(uv_set).to(dtype=torch.float32, device=img.device)
         # 객체 ID 보존 텐서
         object_ids = trimed_center_pts[..., 1].clone()  # [num_cams, batch_size]
 
@@ -2020,29 +2020,27 @@ class MV2DSHead(MV2DHead):
 
         query_input[..., 0] /= 1600.0
         query_input[..., 1] /= 928.0
-
-        corr_target = trimed_uvset[...,2:]
-        corr_target[...,0] = corr_target[...,0] / 1600.0
-        corr_target[...,1] = corr_target[...,1] / 920.0
-
         query_input[:,:,0] = query_input[:,:,0]/2    # recaling points for sbs image resizing
         query_input[:,:,1] = query_input[:,:,1]
-        corr_target[:,:,0] = corr_target[:,:,0]/2 + 0.5 # recaling points for sbs image resizing
-        corr_target[:,:,1] = corr_target[:,:,1] 
+
+        # corr_target = trimed_uvset[...,2:]
+        # corr_target[...,0] = corr_target[...,0] / 1600.0
+        # corr_target[...,1] = corr_target[...,1] / 920.0
+        # corr_target[:,:,0] = corr_target[:,:,0]/2 + 0.5 # recaling points for sbs image resizing
+        # corr_target[:,:,1] = corr_target[:,:,1] 
 
         raw_corrs, cycle, corr_mask, enc_out = self.corr(sbs_img, query_input)
         # 객체 ID 정보를 예측 결과에 연결
 
-        
         # loss_corr = self.corr_loss(raw_corrs, corr_target, cycle, query_input, corr_mask)
-        fine_raw_corrs = self.fine_corr(raw_corrs, dense_depth_map)
+        # fine_raw_corrs = self.fine_corr(raw_corrs, dense_depth_map)
         # fine_raw_corrs[...,0] = fine_raw_corrs[...,0] - 0.5
         # loss_corr = self.corr_loss(fine_raw_corrs[...,:2], query_input, img, dense_depth_map)
         
         corrs_pred_with_obj = torch.cat([
             object_ids.unsqueeze(-1),  # [num_cams, batch_size, 1]
-            fine_raw_corrs                 # [num_cams, batch_size, 2]
-        ], dim=-1)  # [num_cams, batch_size, 3
+            raw_corrs                 # [num_cams, batch_size, 2]
+        ], dim=-1)  # [num_cams, batch_size, 3]
         # corr_loss = self.corr_loss(corrs_pred, corr_target, cycle, query_input, corr_mask)
         raw_pred_center_pts = remove_duplicate_objs(corrs_pred_with_obj)
         # pred_center_pts1 = denormalize_uv_points(raw_pred_center_pts)
@@ -2090,12 +2088,12 @@ class MV2DSHead(MV2DHead):
         # esitmated_z = self.z_estimator(pred_center_pts, dense_depth_map_gt,bbox_feats)
         esitmated_z = self.z_estimator(raw_pred_center_pts2, dense_depth_map,bbox_feats, enc_out)
         # **Confidence 정보 추출**
-        confidence_scores = esitmated_z['confidence'].view(-1,1)  # [N]
+        # confidence_scores = esitmated_z['confidence'].view(-1,1)  # [N]
         # z_depth_real = esitmated_z['z_lidar_real']  # [N]
-        fine_z_raw = raw_pred_center_pts2[..., 4].reshape(-1, 1)  # [N, 1]
+        # fine_z_raw = raw_pred_center_pts2[..., 4].reshape(-1, 1)  # [N, 1]
         # 융합된 z 계산 (예: confidence 가중 평균)
-        z_fused = confidence_scores * fine_z_raw + (1 - confidence_scores) * esitmated_z['depth']  # [N, 1]
-        esitmated_uvz =torch.cat([raw_pred_center_pts2[...,:4], z_fused],dim=1)
+        # z_fused = confidence_scores * fine_z_raw + (1 - confidence_scores) * esitmated_z['depth']  # [N, 1]
+        esitmated_uvz =torch.cat([raw_pred_center_pts2[...,:4], esitmated_z['depth']],dim=1)
 
         # # Confidence 손실 계산
         # conf_loss = F.binary_cross_entropy(
