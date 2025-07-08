@@ -53,7 +53,7 @@ class MV2D(Base3DDetector):
         os.makedirs(self.save_dir, exist_ok=True)
         
         # 초기 학습 시 나머지 네트워크 freeze
-        freeze_backbone = True
+        freeze_backbone = False
         if freeze_backbone:
             self._freeze_backbone_modules()
     

@@ -1658,6 +1658,89 @@ class SelfSupervisedCorrespondenceLoss(nn.Module):
             print(f"Query Y: mean={query_y_mean:.4f}, std={query_y_std:.4f}")
             print("============================")
 
+from scipy.spatial import cKDTree
+
+class GraphBEVLocalAlignNet(nn.Module):
+    def __init__(self, k_neighbors=16, feature_dim=64):
+        super().__init__()
+        self.k_neighbors = k_neighbors
+        self.feature_dim = feature_dim
+
+        self.depth_encoder = nn.Sequential(
+            nn.Conv2d(1, feature_dim, kernel_size=1),
+            nn.BatchNorm2d(feature_dim),
+            nn.ReLU(inplace=True)
+        )
+        self.refine_net = nn.Sequential(
+            nn.Conv2d(feature_dim * 2, feature_dim, kernel_size=1),
+            nn.BatchNorm2d(feature_dim),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(feature_dim, feature_dim, kernel_size=1),
+            nn.BatchNorm2d(feature_dim),
+            nn.ReLU(inplace=True)
+        )
+        self.offset_regressor = nn.Linear(feature_dim, 1)
+
+    def forward(self, coarse_pose, depth_map):
+        """
+        Args:
+            coarse_pose: [num_cams, num_pts, 2]  # (6, 200, 2)
+            depth_map: [num_cams, H, W]          # (6, 900, 1600)
+        Returns:
+            fine_aligned_pose: [num_cams, num_pts, 3]  # (6, 200, 3)
+        """
+        num_cams, num_pts, _ = coarse_pose.shape
+        device = coarse_pose.device
+        H, W = depth_map.shape[1], depth_map.shape[2]
+
+        fine_aligned_pose = []
+
+        for cam in range(num_cams):
+            # [num_pts, 2]
+            points_2d = coarse_pose[cam].detach().cpu().numpy()
+            # k-NN 그래프
+            if points_2d.ndim == 1:
+                points_2d = points_2d.reshape(-1, 2)
+            kdtree = cKDTree(points_2d)
+            _, neighbor_idx = kdtree.query(points_2d, k=self.k_neighbors)  # [num_pts, k]
+
+            # 픽셀 좌표로 변환
+            px = (coarse_pose[cam, :, 0] * (W - 1)).long().clamp(0, W - 1)
+            py = (coarse_pose[cam, :, 1] * (H - 1)).long().clamp(0, H - 1)
+            # [num_pts, 1, 1, 1]
+            depth_vals = depth_map[cam, py, px].unsqueeze(1).unsqueeze(2).unsqueeze(3)
+            depth_encoded = self.depth_encoder(depth_vals)  # [num_pts, feature_dim, 1, 1]
+
+            # 이웃 depth
+            neighbor_depths = []
+            for i in range(num_pts):
+                idx = neighbor_idx[i]
+                n_px = (coarse_pose[cam, idx, 0] * (W - 1)).long().clamp(0, W - 1)
+                n_py = (coarse_pose[cam, idx, 1] * (H - 1)).long().clamp(0, H - 1)
+                n_depth = depth_map[cam, n_py, n_px].unsqueeze(0)  # [1, k]
+                neighbor_depths.append(n_depth)
+            neighbor_depths = torch.cat(neighbor_depths, dim=0).to(device)  # [num_pts, k]
+            neighbor_depths = neighbor_depths.unsqueeze(1).unsqueeze(3)  # [num_pts,1,k,1]
+            neighbor_depth_encoded = self.depth_encoder(neighbor_depths)  # [num_pts, feature_dim, k, 1]
+
+            # Local feature refinement
+            depth_encoded_exp = depth_encoded.expand(-1, -1, self.k_neighbors, -1)  # [num_pts, feature_dim, k, 1]
+            dual_depth = torch.cat([depth_encoded_exp, neighbor_depth_encoded], dim=1)  # [num_pts, 2*feature_dim, k, 1]
+            refined_feat = self.refine_net(dual_depth)  # [num_pts, feature_dim, k, 1]
+
+            # Offset regression
+            refined_feat_mean = refined_feat.mean(dim=2).squeeze(-1)  # [num_pts, feature_dim]
+            offset = self.offset_regressor(refined_feat_mean).squeeze(-1)  # [num_pts]
+
+            # z값 보정 및 결과 저장
+            z = depth_map[cam, py, px].float() + offset  # [num_pts]
+            # [num_pts, 3] = [x, y, z]
+            pose_xyz = torch.cat([coarse_pose[cam], z.unsqueeze(-1)], dim=-1)
+            fine_aligned_pose.append(pose_xyz)
+
+        fine_aligned_pose = torch.stack(fine_aligned_pose, dim=0)  # [num_cams, num_pts, 3]
+        return fine_aligned_pose
+
 
 @HEADS.register_module()
 class MV2DSHead(MV2DHead):
@@ -1680,12 +1763,13 @@ class MV2DSHead(MV2DHead):
         self.denoise_weight = denoise_weight
         self.denoise_split = denoise_split
         
-        self.corr_loss = CorrelationCycleLoss(corr_weight=1.0 , cycle_weight=0.5)
+        # self.corr_loss = CorrelationCycleLoss(corr_weight=1.0 , cycle_weight=0.5)
         # self.point_distance_loss = PointDistanceLoss(distance_weight=1.0)
         
         self.num_kp =200
         # self.conf_loss_weight = 0.5
-        self.corr = COTR(self.num_kp)   
+        self.corr = COTR(self.num_kp) 
+        self.fine_corr = GraphBEVLocalAlignNet() 
         # self.corr_loss = SelfSupervisedCorrespondenceLoss(
         #                     cycle_weight=1.0,
         #                     photo_weight=0.3,
@@ -1929,12 +2013,13 @@ class MV2DSHead(MV2DHead):
         object_ids = trimed_center_pts[..., 1].clone()  # [num_cams, batch_size]
 
         # 쿼리 입력 생성 (좌표만 정규화)
+        # query_input = trimed_uvset[..., :2]
         query_input = trimed_center_pts[..., 2:].clone()  # [num_cams, batch_size, 2]
         # scaled1_query_input = scale_uvz_points(query_input,original_size=(900,1600),target_size=(192,640))
         # scaled2_query_input = normalize_uv_points(scaled1_query_input)
-        
+
         query_input[..., 0] /= 1600.0
-        query_input[..., 1] /= 920.0
+        query_input[..., 1] /= 928.0
 
         corr_target = trimed_uvset[...,2:]
         corr_target[...,0] = corr_target[...,0] / 1600.0
@@ -1948,12 +2033,15 @@ class MV2DSHead(MV2DHead):
         raw_corrs, cycle, corr_mask, enc_out = self.corr(sbs_img, query_input)
         # 객체 ID 정보를 예측 결과에 연결
 
-        # total_loss_corr , loss_corr = self.corr_loss(corrs_pred, scaled2_query_input, img, dense_depth_map)
-        loss_corr = self.corr_loss(raw_corrs, corr_target, cycle, query_input, corr_mask)
-
+        
+        # loss_corr = self.corr_loss(raw_corrs, corr_target, cycle, query_input, corr_mask)
+        fine_raw_corrs = self.fine_corr(raw_corrs, dense_depth_map)
+        # fine_raw_corrs[...,0] = fine_raw_corrs[...,0] - 0.5
+        # loss_corr = self.corr_loss(fine_raw_corrs[...,:2], query_input, img, dense_depth_map)
+        
         corrs_pred_with_obj = torch.cat([
             object_ids.unsqueeze(-1),  # [num_cams, batch_size, 1]
-            raw_corrs                  # [num_cams, batch_size, 2]
+            fine_raw_corrs                 # [num_cams, batch_size, 2]
         ], dim=-1)  # [num_cams, batch_size, 3
         # corr_loss = self.corr_loss(corrs_pred, corr_target, cycle, query_input, corr_mask)
         raw_pred_center_pts = remove_duplicate_objs(corrs_pred_with_obj)
@@ -1967,7 +2055,7 @@ class MV2DSHead(MV2DHead):
         # raw_pred_center_pts1[..., 3] = raw_pred_center_pts1[..., 3] * 2
         raw_pred_center_pts2 = raw_pred_center_pts1.clone()
         raw_pred_center_pts2[..., 2] *= 1600.0
-        raw_pred_center_pts2[..., 3] *= 920.0
+        raw_pred_center_pts2[..., 3] *= 928.0
 
         # # ##### 검증용 display ######
         # from image_processing_unit_Ver15_0 import draw_correspondences
@@ -1985,11 +2073,11 @@ class MV2DSHead(MV2DHead):
         # # for cid in int_ids :
         # for cid in range(6):
         #     # idx = id_to_idx[cid.item()]
-        #     # draw_correspondences(
-        #     #     trimed_corrs = gt_corrs[cid],  # 첫 번째 배치 선택
-        #     #     sbs_img=sbs_img[cid],
-        #     #     save_path='correspondence_visualization_gt.jpg'
-        #     # )
+        #     draw_correspondences(
+        #         trimed_corrs = gt_corrs[cid],  # 첫 번째 배치 선택
+        #         sbs_img=sbs_img[cid],
+        #         save_path='correspondence_visualization_gt.jpg'
+        #     )
         #     draw_correspondences(
         #         trimed_corrs = pred_corrs[cid][:2,...],  # 첫 번째 배치 선택
         #         sbs_img=sbs_img[cid],
@@ -2000,11 +2088,14 @@ class MV2DSHead(MV2DHead):
         # transformed_uv = transform_uv_points(rois_with_indices,uv_set)      
         # esitmated_z = self.z_estimator(transformed_uv[...,:4], dense_depth_map_gt,bbox_feats,ref_points_uvz)
         # esitmated_z = self.z_estimator(pred_center_pts, dense_depth_map_gt,bbox_feats)
-        esitmated_z = self.z_estimator(raw_pred_center_pts2, dense_depth_map_gt,bbox_feats, enc_out)
+        esitmated_z = self.z_estimator(raw_pred_center_pts2, dense_depth_map,bbox_feats, enc_out)
         # **Confidence 정보 추출**
-        confidence_scores = esitmated_z['confidence']  # [N]
+        confidence_scores = esitmated_z['confidence'].view(-1,1)  # [N]
         # z_depth_real = esitmated_z['z_lidar_real']  # [N]
-        esitmated_uvz =torch.cat([raw_pred_center_pts2, esitmated_z['depth']],dim=1)
+        fine_z_raw = raw_pred_center_pts2[..., 4].reshape(-1, 1)  # [N, 1]
+        # 융합된 z 계산 (예: confidence 가중 평균)
+        z_fused = confidence_scores * fine_z_raw + (1 - confidence_scores) * esitmated_z['depth']  # [N, 1]
+        esitmated_uvz =torch.cat([raw_pred_center_pts2[...,:4], z_fused],dim=1)
 
         # # Confidence 손실 계산
         # conf_loss = F.binary_cross_entropy(
@@ -2335,41 +2426,41 @@ class MV2DSHead(MV2DHead):
             # # dynamic_linear = nn.Linear(600 * 3, output_size).to(corr_feats.device)
             # # reference_points_modified = dynamic_linear(reference_points_modified)
 
-            # **Confidence 기반 Feature Weighting 적용**
-            confidence_threshold = 0.5  # 임계값 설정
-            weighted_corr_feats = self.apply_confidence_to_corr_feats(
-                corr_feats, confidence_scores, confidence_threshold
-            )
-            # **Confidence 기반 Cross-Attention Mask 생성**
-            confidence_mask = self.create_confidence_cross_attention_mask(
-                confidence_scores, confidence_threshold
-            )
-            # Cross-attention mask를 corr_feats 차원에 맞게 확장
-            N, num_corrs, c, h, w = corr_feats.shape
-            # 신뢰도 낮은 영역을 직접 마스킹 (True=마스킹 대상)
-            cross_attn_mask = confidence_mask[:, None, None, None].expand(-1, num_corrs, h, w) # 객체단위 전체 masking
+            # # **Confidence 기반 Feature Weighting 적용**
+            # confidence_threshold = 0.5  # 임계값 설정
+            # weighted_corr_feats = self.apply_confidence_to_corr_feats(
+            #     corr_feats, confidence_scores, confidence_threshold
+            # )
+            # # **Confidence 기반 Cross-Attention Mask 생성**
+            # confidence_mask = self.create_confidence_cross_attention_mask(
+            #     confidence_scores, confidence_threshold
+            # )
+            # # Cross-attention mask를 corr_feats 차원에 맞게 확장
+            # N, num_corrs, c, h, w = corr_feats.shape
+            # # 신뢰도 낮은 영역을 직접 마스킹 (True=마스킹 대상)
+            # cross_attn_mask = confidence_mask[:, None, None, None].expand(-1, num_corrs, h, w) # 객체단위 전체 masking
 
-            # 패딩 마스크와 신뢰도 마스크 결합 (and 연산)
-            padding_mask = ~mask[..., None, None].expand_as(corr_feats[:, :, 0])
-            combined_mask = padding_mask  | cross_attn_mask  # 패딩 or 낮은 신뢰도 → 마스킹
+            # # 패딩 마스크와 신뢰도 마스크 결합 (and 연산)
+            # padding_mask = ~mask[..., None, None].expand_as(corr_feats[:, :, 0])
+            # combined_mask = padding_mask  | cross_attn_mask  # 패딩 or 낮은 신뢰도 → 마스킹
 
             ## **Modified bbox_head forward with confidence-based masking**
-            all_cls_scores, all_bbox_preds = self.bbox_head(ref_points[:, None],
-                                                            corr_feats,  # confidence로 가중치가 적용된 features
-                                                            padding_mask,        # 기존 mask + confidence mask
-                                                            corr_pe,
-                                                            attn_mask=None,
-                                                            cross_attn_mask=None,  # confidence 기반 cross-attention mask
-                                                            confidence_scores=confidence_scores,  # confidence_scores 추가
-                                                            force_fp32=self.force_fp32,)
-
             # all_cls_scores, all_bbox_preds = self.bbox_head(ref_points[:, None],
-            #                                                 corr_feats,
-            #                                                 ~mask[..., None, None].expand_as(corr_feats[:, :, 0]),
+            #                                                 corr_feats,  # confidence로 가중치가 적용된 features
+            #                                                 padding_mask,        # 기존 mask + confidence mask
             #                                                 corr_pe,
             #                                                 attn_mask=None,
-            #                                                 cross_attn_mask=None,
-            #                                                 force_fp32=self.force_fp32, )
+            #                                                 cross_attn_mask=None,  # confidence 기반 cross-attention mask
+            #                                                 confidence_scores=confidence_scores,  # confidence_scores 추가
+            #                                                 force_fp32=self.force_fp32,)
+
+            all_cls_scores, all_bbox_preds = self.bbox_head(ref_points[:, None],
+                                                            corr_feats,
+                                                            ~mask[..., None, None].expand_as(corr_feats[:, :, 0]),
+                                                            corr_pe,
+                                                            attn_mask=None,
+                                                            cross_attn_mask=None,
+                                                            force_fp32=self.force_fp32, )
             
             # torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=3)
 
@@ -2397,16 +2488,16 @@ class MV2DSHead(MV2DHead):
         #     conf_loss=conf_loss * self.conf_loss_weight,
         # )
 
-        return bbox_results , loss_corr
-        # return bbox_results
+        # return bbox_results , loss_corr
+        return bbox_results
 
     # def _bbox_forward(self, x, proposal_list, img_metas): # for original 
     def _bbox_forward(self,img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4): ### this modified moon
         # bbox_results = self._bbox_forward_denoise(x, proposal_list, img_metas) # for original 
-        bbox_results , loss_corr = self._bbox_forward_denoise(img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON 
-        # bbox_results = self._bbox_forward_denoise(img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON 
-        return bbox_results , loss_corr
-        # return bbox_results
+        # bbox_results , loss_corr = self._bbox_forward_denoise(img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON 
+        bbox_results = self._bbox_forward_denoise(img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON 
+        # return bbox_results , loss_corr
+        return bbox_results
 
     def prepare_for_dn_loss(self, mask_dict):
         """
@@ -2429,13 +2520,13 @@ class MV2DSHead(MV2DHead):
     def _bbox_forward_train(self, img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4): # for SJMOON
     # def _bbox_forward_train(self, x, proposal_list, img_metas): # for original 
         """Run forward function and calculate loss for box head in training."""
-        bbox_results , loss_corr = self._bbox_forward(img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON
-        # bbox_results = self._bbox_forward(img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
+        # bbox_results , loss_corr = self._bbox_forward(img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON
+        bbox_results = self._bbox_forward(img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
         # bbox_results = self._bbox_forward(x, proposal_list, img_metas) # for original 
         bbox_results.update(pred={'cls_scores': bbox_results['cls_scores'], 'bbox_preds': bbox_results['bbox_preds']})
 
-        return bbox_results, loss_corr
-        # return bbox_results
+        # return bbox_results, loss_corr
+        return bbox_results
 
     def forward_train(self,
                       img,
@@ -2484,8 +2575,8 @@ class MV2DSHead(MV2DHead):
             img_metas[0]['gt_bboxes_3d'] = ori_gt_bboxes_3d[0]
             img_metas[0]['gt_labels_3d'] = ori_gt_labels_3d[0]
 
-        results_from_last , loss_corr = self._bbox_forward_train(img,img_metas,lidar_depth_mis, x, proposal_boxes, uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJ MOON 
-        # results_from_last = self._bbox_forward_train(img,img_metas,lidar_depth_mis, x, proposal_boxes, uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
+        # results_from_last , loss_corr = self._bbox_forward_train(img,img_metas,lidar_depth_mis, x, proposal_boxes, uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJ MOON 
+        results_from_last = self._bbox_forward_train(img,img_metas,lidar_depth_mis, x, proposal_boxes, uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
         # results_from_last = self._bbox_forward_train(x, proposal_boxes, img_metas) # for original 
         preds = results_from_last['pred']
         # Confidence 손실 추출
@@ -2524,7 +2615,7 @@ class MV2DSHead(MV2DHead):
             for k, v in loss_stage[layer].items():
                 losses[f'l{layer}.{k}'] = v * lw if 'loss' in k else v
         
-        losses['loss_corr'] = loss_corr
+        # losses['loss_corr'] = loss_corr
         # losses['total_loss_corr'] = total_loss_corr
         
         # return losses , loss_corr , loss_pc_distance
@@ -2545,7 +2636,7 @@ class MV2DSHead(MV2DHead):
 
         results_from_last['batch_size'] = len(img_metas) // img_metas[0]['num_views']
         # results_from_last ,_ = self._bbox_forward(img,img_metas, lidar_depth_mis,x,proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
-        results_from_last , _, _ = self._bbox_forward(img,img_metas, lidar_depth_mis,x,proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
+        results_from_last , _= self._bbox_forward(img,img_metas, lidar_depth_mis,x,proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
         
         ## original
         cls_scores = results_from_last['cls_scores'][-1]
