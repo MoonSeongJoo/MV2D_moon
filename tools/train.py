@@ -236,7 +236,12 @@ def main():
         test_cfg=cfg.get('test_cfg'))
     model.init_weights()
 
-    for name, param in model.named_parameters():
+    # for name, param in model.named_parameters():
+    #     if param.requires_grad:
+    #         print(f"학습 가능: {name}")
+    
+    for idx, (name, param) in enumerate(model.named_parameters()):
+        # print(f"Index: {idx}, Name: {name}, Requires grad: {param.requires_grad}")
         if param.requires_grad:
             print(f"학습 가능: {name}")
 

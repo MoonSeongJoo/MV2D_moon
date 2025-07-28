@@ -53,20 +53,20 @@ class MV2D(Base3DDetector):
         os.makedirs(self.save_dir, exist_ok=True)
         
         # 초기 학습 시 나머지 네트워크 freeze
-        freeze_backbone = False
+        freeze_backbone = True
         if freeze_backbone:
             self._freeze_backbone_modules()
     
     def _freeze_backbone_modules(self):
         """corr 네트워크 제외한 모든 모듈 동결"""
         
-        # # 1. Base Detector 동결
-        # for param in self.base_detector.parameters():
-        #     param.requires_grad = False
+        # 1. Base Detector 동결
+        for param in self.base_detector.parameters():
+            param.requires_grad = False
             
-        # # 2. Neck 동결
-        # for param in self.neck.parameters():
-        #     param.requires_grad = False
+        # 2. Neck 동결
+        for param in self.neck.parameters():
+            param.requires_grad = False
             
         # # 3. ROI Head 내 corr 제외 동결
         # for name, param in self.roi_head.named_parameters():
@@ -173,6 +173,7 @@ class MV2D(Base3DDetector):
     def forward_train(self,
                       img,
                       img_metas,
+                      raw_points,
                       lidar_depth_gt,
                       lidar_depth_mis,
                       mis_KT,
@@ -278,7 +279,7 @@ class MV2D(Base3DDetector):
         #                                     ori_gt_bboxes_3d, ori_gt_labels_3d,
         #                                     attr_labels, None)
         
-        roi_losses = self.roi_head.forward_train(img_ori,img_metas,lidar_depth_mis, feat, detections,lidar_depth_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4, gt_bboxes, gt_labels,
+        roi_losses = self.roi_head.forward_train(img_ori,img_metas,raw_points,lidar_depth_mis, feat, detections,lidar_depth_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4, gt_bboxes, gt_labels,
                                     gt_bboxes_3d, gt_labels_3d,
                                     ori_gt_bboxes_3d, ori_gt_labels_3d,
                                     attr_labels, None)
@@ -339,7 +340,8 @@ class MV2D(Base3DDetector):
 
     def forward_test(self, 
                     img, 
-                    img_metas, 
+                    img_metas,
+                    raw_points,
                     lidar_depth_gt,             
                     lidar_depth_mis,
                     mis_KT,
@@ -354,12 +356,12 @@ class MV2D(Base3DDetector):
                     len(img), len(img_metas)))
 
         if num_augs == 1:
-            return self.simple_test(img[0], img_metas[0], lidar_depth_mis[0], lidar_depth_gt[0], gt_KT[0], mis_Rt[0],mis_KT[0],gt_KT_3by4[0], **kwargs)
+            return self.simple_test(img[0], img_metas[0],raw_points[0], lidar_depth_mis[0], lidar_depth_gt[0], gt_KT[0], mis_Rt[0],mis_KT[0],gt_KT_3by4[0], **kwargs)
             # return self.simple_test(img, img_metas, lidar_depth_mis, lidar_depth_gt, gt_KT, mis_RT, **kwargs)
         else:
             return self.aug_test(img, img_metas, **kwargs)
 
-    def simple_test(self, img, img_metas,lidar_depth_mis, lidar_depth_gt, gt_KT, mis_Rt,mis_KT,gt_KT_3by4, proposal_bboxes=None, proposal_labels=None, rescale=False, **kwargs):
+    def simple_test(self, img, img_metas,raw_points,lidar_depth_mis, lidar_depth_gt, gt_KT, mis_Rt,mis_KT,gt_KT_3by4, proposal_bboxes=None, proposal_labels=None, rescale=False, **kwargs):
 
         # process multi-view inputs
         batch_size, num_views, c, h, w = img.shape
@@ -409,7 +411,7 @@ class MV2D(Base3DDetector):
 
         # generate 3D detection
         # to -do 여기 아규먼트 수정해야 함 !! 
-        bbox_outputs_all = self.roi_head.simple_test(img_ori,img_metas,lidar_depth_mis,feat,detections,lidar_depth_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4,rescale=rescale)
+        bbox_outputs_all = self.roi_head.simple_test(img_ori,img_metas,raw_points,lidar_depth_mis,feat,detections,lidar_depth_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4,rescale=rescale)
         bbox_outputs = []
         box_type_3d = img_metas[0]['box_type_3d']
 

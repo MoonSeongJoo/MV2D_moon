@@ -18,12 +18,16 @@ from mmdet3d_plugin.core.bbox.util import normalize_bbox
 from mmdet3d_plugin.models.utils.pe import pos2posemb3d
 from mmdet3d_plugin.models.utils import PETRTransformer
 
-# ############ MV2D original code #############
+# ############ sparse cross attention lidar voxel feature #############
 # @TRANSFORMER.register_module()
-# class MV2DTransformer(PETRTransformer):
+# class MV2DTransformer_lidar(PETRTransformer):
+#     def __init__(self, embed_dims=256, **kwargs):
+#         super().__init__(**kwargs)
+#         self.proj_bev_feat = nn.Conv2d(128, embed_dims, 1)  # 128 → 256으로 projection
+    
 #     def forward(self, x, mask, query_embed, pos_embed,
 #                 attn_mask=None, cross_attn_mask=None, **kwargs):
-        
+#         x = self.proj_bev_feat(x.squeeze(1)).unsqueeze(1)  # squeeze/add n-dim as needed
 #         # x: [bs, n, c, h, w], mask: [bs, n, h, w], query_embed: [bs, n_query, c]
 #         bs, n, c, h, w = x.shape
 #         memory = x.permute(1, 3, 4, 0, 2).reshape(n * h * w, bs, c) # [bs, n, c, h, w] -> [n*h*w, bs, c]
@@ -57,13 +61,13 @@ class MV2DTransformer(PETRTransformer):
                  **kwargs):
         super().__init__(**kwargs)
         
-        # 3. 고급 Confidence Attention 모듈 초기화
-        self.confidence_attention = nn.Sequential(
-            nn.Linear(1, confidence_dim),
-            nn.ReLU(),
-            nn.Linear(confidence_dim, confidence_dim),
-            nn.Sigmoid()
-        )
+        # # 3. 고급 Confidence Attention 모듈 초기화
+        # self.confidence_attention = nn.Sequential(
+        #     nn.Linear(1, confidence_dim),
+        #     nn.ReLU(),
+        #     nn.Linear(confidence_dim, confidence_dim),
+        #     nn.Sigmoid()
+        # )
         
         # 4. Dynamic Threshold 파라미터
         self.dynamic_threshold = dynamic_threshold
@@ -77,14 +81,14 @@ class MV2DTransformer(PETRTransformer):
         ############ x : bbox_image feature ###############
         bs, n, c, h, w = x.shape # bs: number of objects, n:number of corrs matching
         
-        if confidence_scores is not None:
-            conf_input = confidence_scores.unsqueeze(-1)
-            conf_weights = self.confidence_attention(conf_input)
-            conf_weights = conf_weights.unsqueeze(1)
-            query_embed = query_embed * conf_weights  # [n_query, 1, 256] * [n_query, 1, 256]
-            # print("Confidence stats - Min:", confidence_scores.min(), 
-            #   "Max:", confidence_scores.max(), 
-            #   "NaN:", torch.isnan(confidence_scores).any())
+        # if confidence_scores is not None:
+        #     conf_input = confidence_scores.unsqueeze(-1)
+        #     conf_weights = self.confidence_attention(conf_input)
+        #     conf_weights = conf_weights.unsqueeze(1)
+        #     query_embed = query_embed * conf_weights  # [n_query, 1, 256] * [n_query, 1, 256]
+        #     # print("Confidence stats - Min:", confidence_scores.min(), 
+        #     #   "Max:", confidence_scores.max(), 
+        #     #   "NaN:", torch.isnan(confidence_scores).any())
         
         # 메모리 형성 (변경 없음)
         memory = x.permute(1, 3, 4, 0, 2).reshape(n * h * w, bs, c)
@@ -96,14 +100,14 @@ class MV2DTransformer(PETRTransformer):
         # pos_embed = pos_embed.permute(1, 3, 4, 0, 2).reshape(n * h * w, bs, c)
         target = torch.zeros_like(query_embed)
 
-        # 차원 일치 처리 [N,num_corrs,h,w]
-        if cross_attn_mask is not None:
-            num_heads = self.decoder.layers[0].attentions[1].attn.num_heads
-            cross_attn_mask = cross_attn_mask.unsqueeze(1)  # [bs, 1, n, h, w]
-            cross_attn_mask = cross_attn_mask.expand(-1, num_heads, -1, -1, -1)  # [bs, num_heads, n, h, w]
-            cross_attn_mask = cross_attn_mask.reshape(bs*num_heads, n, h, w)  # [bs*num_heads, n, h, w
-            # 2. 디코더 입력 형식에 맞게 변환
-            cross_attn_mask = cross_attn_mask.view(bs*num_heads, 1, n*h*w)  # [bs*num_heads, 1, n*h*w]
+        # # 차원 일치 처리 [N,num_corrs,h,w]
+        # if cross_attn_mask is not None:
+        #     num_heads = self.decoder.layers[0].attentions[1].attn.num_heads
+        #     cross_attn_mask = cross_attn_mask.unsqueeze(1)  # [bs, 1, n, h, w]
+        #     cross_attn_mask = cross_attn_mask.expand(-1, num_heads, -1, -1, -1)  # [bs, num_heads, n, h, w]
+        #     cross_attn_mask = cross_attn_mask.reshape(bs*num_heads, n, h, w)  # [bs*num_heads, n, h, w
+        #     # 2. 디코더 입력 형식에 맞게 변환
+        #     cross_attn_mask = cross_attn_mask.view(bs*num_heads, 1, n*h*w)  # [bs*num_heads, 1, n*h*w]
    
         # # 4. 동적 임계값 계산 부분
         # if self.dynamic_threshold and confidence_scores is not None:
@@ -211,7 +215,7 @@ class RegLayer(nn.Module):
 
 @HEADS.register_module()
 class CrossAttentionBoxHead(BaseModule):
-    def __init__(self, num_classes, transformer, pc_range, embed_dims=256, num_reg_fcs=2,
+    def __init__(self, num_classes,transformer, pc_range, embed_dims=256, num_reg_fcs=2,
                  group_reg_dims=(2, 2, 1, 1, 2, 2), use_reg_layer=False, pre_embed=False,
                  loss_cls=dict(
                      type='CrossEntropyLoss',
@@ -236,7 +240,7 @@ class CrossAttentionBoxHead(BaseModule):
         self.loss_cls = build_loss(loss_cls)
         self.loss_bbox = build_loss(loss_bbox)
         self.transformer = build_transformer(transformer)
-
+        # self.transformer_lidar = build_transformer(transformer_lidar)
         self.pc_range = pc_range
         self.embed_dims = embed_dims
         self.pre_embed = pre_embed
@@ -248,6 +252,7 @@ class CrossAttentionBoxHead(BaseModule):
             )
 
         self.num_pred = transformer['decoder']['num_layers']
+        # self.num_pred = transformer_lidar['decoder']['num_layers']
         self.num_classes = num_classes
         self.cls_out_channels = num_classes
         cls_branch = []
@@ -321,6 +326,7 @@ class CrossAttentionBoxHead(BaseModule):
     def init_weights(self):
         """Initialize the transformer weights."""
         self.transformer.init_weights()
+        # self.transformer_lidar.init_weights()
         bias_init = bias_init_with_prob(0.01)
         for m in self.cls_branches:
             nn.init.constant_(m[-1].bias, bias_init)
@@ -328,20 +334,49 @@ class CrossAttentionBoxHead(BaseModule):
     def position_embedding(self, query_pos):
         return self.query_embedding(pos2posemb3d(query_pos, num_pos_feats=self.embed_dims//2))
     
-    def forward_calib_attn(self, reference_points, x, masks, pos_embed,
-                attn_mask=None, cross_attn_mask=None, force_fp32=False, query_embeds=None,
-                return_query_feats=False, **kwargs):
-        if not self.pre_embed:
-            query_embeds = self.position_embedding(reference_points)
+    def get_bev3d_pos_embed(self, bev_feat, h=225, w=400, c=256):
+        device = bev_feat.device
+        dtype = bev_feat.dtype
 
-        if force_fp32:
-            with torch.autocast('cuda', enabled=False):
-                outs_dec, _ = self.transformer(x.float(), masks, query_embeds.float(), pos_embed.float(),
-                                               attn_mask=attn_mask, cross_attn_mask=cross_attn_mask, **kwargs)
-        else:
-            outs_dec, _ = self.transformer(x, masks, query_embeds, pos_embed,
-                                           attn_mask=attn_mask, cross_attn_mask=cross_attn_mask, **kwargs)
-        return outs_dec
+        # 1. grid 좌표 생성 (x, y, z=0)
+        x_range = torch.linspace(0, w-1, w, device=device, dtype=dtype)
+        y_range = torch.linspace(0, h-1, h, device=device, dtype=dtype)
+        z_range = torch.tensor([0.0], device=device, dtype=dtype)
+        zz, yy, xx = torch.meshgrid(z_range, y_range, x_range, indexing='ij')
+        positions = torch.stack([xx, yy, zz], dim=-1).reshape(-1, 3)
+
+        # 2. 3D sinusoidal positional embedding
+        num_pos_feats = c // 3
+        posemb_flat = pos2posemb3d(positions, num_pos_feats=num_pos_feats)  # [h*w, 3*num_pos_feats]
+
+        # 3. 패딩 보강 로직: 채널 수 부족하면 zero padding
+        out_dim = posemb_flat.shape[1]
+        if out_dim < c:
+            pad = torch.zeros((posemb_flat.shape[0], c - out_dim), device=device, dtype=dtype)
+            posemb_flat = torch.cat([posemb_flat, pad], dim=1)
+        elif out_dim > c:
+            posemb_flat = posemb_flat[:, :c]  # 너무 많은 경우 잘라냄
+
+        # 4. shape [c, h, w] → [1, 1, c, h, w]
+        posemb_c = posemb_flat.reshape(h, w, c).permute(2, 0, 1)
+        posemb_c = posemb_c.unsqueeze(0).unsqueeze(0)
+
+        return posemb_c
+
+    # def forward_calib_attn(self, reference_points, x, masks, pos_embed,
+    #             attn_mask=None, cross_attn_mask=None, force_fp32=False, query_embeds=None,
+    #             return_query_feats=False, **kwargs):
+    #     if not self.pre_embed:
+    #         query_embeds = self.position_embedding(reference_points)
+
+    #     if force_fp32:
+    #         with torch.autocast('cuda', enabled=False):
+    #             outs_dec, _ = self.transformer_camera(x.float(), masks, query_embeds.float(), pos_embed.float(),
+    #                                            attn_mask=attn_mask, cross_attn_mask=cross_attn_mask, **kwargs)
+    #     else:
+    #         outs_dec, _ = self.transformer_camera(x, masks, query_embeds, pos_embed,
+    #                                        attn_mask=attn_mask, cross_attn_mask=cross_attn_mask, **kwargs)
+    #     return outs_dec
 
     def forward(self, reference_points, x, masks, pos_embed,
                 attn_mask=None, cross_attn_mask=None,confidence_scores=None, force_fp32=False, query_embeds=None,
@@ -349,17 +384,35 @@ class CrossAttentionBoxHead(BaseModule):
         if not self.pre_embed:
             query_embeds = self.position_embedding(reference_points)
 
+        # bev_input = bev_feat[1][:, None]  # [1, 1, 128, 225, 400]
+        # query_input_lidar = query_embeds.permute(1, 0, 2).contiguous()  # [1, 81, 256]
+        # pos_embed_lidar = self.get_bev3d_pos_embed(bev_input)
+        # # pos_embed_lidar = torch.zeros((1, 1, 256, 225, 400),dtype=bev_input.dtype, device=bev_input.device)
+        # mask_lidar = torch.zeros((1, 1, 225, 400), dtype=torch.bool, device=bev_input.device)
+       
         if force_fp32:
             with torch.autocast('cuda', enabled=False):
-                outs_dec, _ = self.transformer(x.float(), masks, query_embeds.float(), pos_embed.float(),
+                outs_dec_camera, _ = self.transformer(x.float(), masks, query_embeds.float(), pos_embed.float(),
                                                attn_mask=attn_mask, cross_attn_mask=cross_attn_mask,
                                                confidence_scores=confidence_scores, **kwargs)
+                # outs_dec_camera, _ = self.transformer_camera(x.float(), masks, query_embeds.float(), pos_embed.float(),
+                #                                attn_mask=attn_mask, cross_attn_mask=cross_attn_mask,
+                #                                confidence_scores=confidence_scores, **kwargs)
+                # outs_dec_lidar, _ = self.transformer_lidar(bev_input, mask_lidar, query_input_lidar, pos_embed_lidar,
+                #                                attn_mask=attn_mask, cross_attn_mask=cross_attn_mask,
+                #                                confidence_scores=confidence_scores, **kwargs)                
         else:
-            outs_dec, _ = self.transformer(x, masks, query_embeds, pos_embed,
+            outs_dec_camera, _ = self.transformer_camera(x, masks, query_embeds, pos_embed,
                                            attn_mask=attn_mask, cross_attn_mask=cross_attn_mask, **kwargs)
+            # outs_dec_lidar, _ = self.transformer_lidar(bev_feat, mask_lidar, query_input_lidar, pos_embed_lidar,
+            #                     attn_mask=attn_mask, cross_attn_mask=cross_attn_mask,
+            #                     confidence_scores=confidence_scores, **kwargs)  
 
         outputs_classes = []
         outputs_coords = []
+        # outs_dec_lidar = outs_dec_lidar.permute(0,2,1,3)
+        outs_dec = outs_dec_camera
+        # outs_dec = torch.cat([outs_dec_camera, outs_dec_lidar], dim=-1)
         for lvl in range(outs_dec.shape[0]):
             reference = inverse_sigmoid(reference_points.clone())
             assert reference.shape[-1] == 3

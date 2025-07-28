@@ -286,9 +286,9 @@ def add_calibration_adv(lidar2img, points_lidar):
     return points_img
 
 def add_calibration_adv2 (extrinsic, intrinsic, points_lidar) :
-    # lidar_points = points_lidar.tensor[:, :3]
-    lidar_points = points_lidar
-    lidar_points_homo = torch.cat([lidar_points, torch.ones_like(lidar_points[:, :1])], dim=1)
+    lidar_points_xyz = points_lidar[:, :3]
+    # lidar_points_intensity = points_lidar.tensor[:, 3:]
+    lidar_points_homo = torch.cat([lidar_points_xyz, torch.ones_like(lidar_points_xyz[:, :1])], dim=1)
     KT = intrinsic @ extrinsic.T 
     points_img = (KT @ lidar_points_homo.T).T
     points_img = torch.cat([points_img[:, :2] / points_img[:, 2:3], points_img[:, 2:3]], 1)
@@ -344,18 +344,16 @@ def add_mis_calibration_adv(lidar2img ,extrinsic, homo_intrinsic, points_lidar, 
     # RT_mis = extrinsic_perturb @ extrinsic  
     RT_mis = extrinsic @ extrinsic_perturb
 
-    # 라이다 포인트 동차 좌표 변환 및 투영
-    # points_tensor = points_lidar.tensor[:, :3]
-    points_tensor = points_lidar
-    # 라이다 축 반전 (테스트용)
-    # points_tensor = points_tensor[:, [1, 2, 0]]  # x ↔ z 교환
-    # points_tensor[:, 1] *= -1                  # y축 반전
+    # --- intensity 분리 ---
+    points_xyz = points_lidar[:, :3]           # [N,3]
+    points_intensity = points_lidar[:, 3:]     # [N,1] (그 외 채널도 이 방식으로 분리)
     
-    points_hom = torch.cat([points_tensor, torch.ones_like(points_tensor[:, :1])], dim=1)
+    points_hom = torch.cat([points_xyz, torch.ones_like(points_xyz[:, :1])], dim=1)
 
     # 외란에 의해 변형된 라이다 포인트 클라우드
-    perturbed_points = (extrinsic_perturb @ points_hom.T).T[:,:3]
-    perturbed_points_hom = torch.cat([perturbed_points, torch.ones_like(perturbed_points[:, :1])], dim=1)
+    perturbed_points_xyz = (extrinsic_perturb @ points_hom.T).T[:,:3]
+    perturbed_points_lidar = torch.cat([perturbed_points_xyz, points_intensity], dim=1) 
+    perturbed_points_hom = torch.cat([perturbed_points_xyz, torch.ones_like(perturbed_points_xyz[:, :1])], dim=1)
 
     # 디버깅용 출력 (확인용)
     if max_r == 0.0 and max_t == 0.0:
@@ -386,7 +384,7 @@ def add_mis_calibration_adv(lidar2img ,extrinsic, homo_intrinsic, points_lidar, 
     points_img_mis_calibrated = projected[:, :3]
     perturbed_projected = perturbed_projected[:, :3]
 
-    return points_img, extrinsic_perturb, lidar2img_original ,lidar2img_mis
+    return points_img, perturbed_points_lidar, extrinsic_perturb, lidar2img_original ,lidar2img_mis
 
 
 def add_mis_calibration_ori(extrinsic, intrinsic, points_lidar ,max_r=1.0, max_t=0.1):

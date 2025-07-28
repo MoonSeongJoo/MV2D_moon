@@ -341,8 +341,9 @@ class PointToMultiViewDepth(object):
     
     def __call__(self, results):
         raw_points_lidar = results['points']
-        # points_lidar = image_display.trim_corrs(raw_points_lidar)
-        points_lidar = raw_points_lidar.tensor[:, :3].clone().to(dtype=torch.float32)
+        # points_lidar = raw_points_lidar.tensor[:, :3].clone().to(dtype=torch.float32)
+        # raw_points_lidar_trim = trim_corrs(points_lidar)
+        points_lidar = raw_points_lidar.tensor[:, :4].clone().to(dtype=torch.float32)
 
         point2img_gt =[]
         lidar_depth_map_mis=[]
@@ -380,9 +381,8 @@ class PointToMultiViewDepth(object):
             # points2img = add_calibration_adv(lidar2img , points_lidar)
             points2img , KT_ori  = add_calibration_adv2(lidar2cam ,cam2img, points_lidar)
             # miscalibrated_points2img_ori , mis_RT_ori , mis_KT_ori ,mis_K_ori = add_mis_calibration_ori(lidar2cam,cam2img, points_lidar,max_r=0.0,max_t=0.0)
-            miscalibrated_points2img , extrinsic_perturb, lidar2img_original ,lidar2img_mis = add_mis_calibration_adv(
+            miscalibrated_points2img ,perturbed_points, extrinsic_perturb, lidar2img_original ,lidar2img_mis = add_mis_calibration_adv(
                                                                                             lidar2img,lidar2cam,cam2img, points_lidar, max_r=2.0,max_t=0.5)
-
             point2img_gt.append(points2img) # lidar coordination 3d
             list_mis_RT.append(extrinsic_perturb) # lidar coordination 3d mis-calibration
             list_gt_KT.append(lidar2img)
@@ -471,6 +471,8 @@ class PointToMultiViewDepth(object):
         mis_KT = torch.stack(list_mis_KT)
         lidar_depth_mis = torch.stack(lidar_depth_map_mis)
         lidar_depth_gt = torch.stack(lidar_depth_map_gt)
+
+        points_lidar_trim = trim_corrs(perturbed_points)
         # lidar_depth_mis = lidar_depth_mis.permute(0, 3, 1, 2)
         # img_original = img_original.permute(0,3,1,2)
         # lidar_depth_gt = F.interpolate(lidar_depth_gt, size=[192, 640], mode="bilinear") # lidar 2d depth map input [192,640,1]
@@ -484,6 +486,7 @@ class PointToMultiViewDepth(object):
         results['mis_Rt'] = mis_RT
         results['gt_KT'] = gt_KT
         results['gt_KT_3by4'] = gt_KT_3by4
+        results['raw_points'] = points_lidar_trim
 
         return results
     
