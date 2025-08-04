@@ -18,40 +18,40 @@ from mmdet3d_plugin.core.bbox.util import normalize_bbox
 from mmdet3d_plugin.models.utils.pe import pos2posemb3d
 from mmdet3d_plugin.models.utils import PETRTransformer
 
-# ############ sparse cross attention lidar voxel feature #############
-# @TRANSFORMER.register_module()
-# class MV2DTransformer_lidar(PETRTransformer):
-#     def __init__(self, embed_dims=256, **kwargs):
-#         super().__init__(**kwargs)
-#         self.proj_bev_feat = nn.Conv2d(128, embed_dims, 1)  # 128 → 256으로 projection
+############ sparse cross attention lidar voxel feature #############
+@TRANSFORMER.register_module()
+class MV2DTransformer_lidar(PETRTransformer):
+    def __init__(self, embed_dims=256, **kwargs):
+        super().__init__(**kwargs)
+        self.proj_bev_feat = nn.Conv2d(128, embed_dims, 1)  # 128 → 256으로 projection
     
-#     def forward(self, x, mask, query_embed, pos_embed,
-#                 attn_mask=None, cross_attn_mask=None, **kwargs):
-#         x = self.proj_bev_feat(x.squeeze(1)).unsqueeze(1)  # squeeze/add n-dim as needed
-#         # x: [bs, n, c, h, w], mask: [bs, n, h, w], query_embed: [bs, n_query, c]
-#         bs, n, c, h, w = x.shape
-#         memory = x.permute(1, 3, 4, 0, 2).reshape(n * h * w, bs, c) # [bs, n, c, h, w] -> [n*h*w, bs, c]
-#         mask = mask.view(bs, n * h * w)  # [bs, n, h, w] -> [bs, n*h*w]
-#         query_embed = query_embed.permute(1, 0, 2)
-#         pos_embed = pos_embed.permute(1, 3, 4, 0, 2).reshape(n * h * w, bs, c) # [bs, n, c, h, w] -> [n*h*w, bs, c]
-#         target = torch.zeros_like(query_embed)
-#         if cross_attn_mask is not None:
-#             cross_attn_mask = cross_attn_mask.flatten(1, 3)   # [n_query, n, h, w] -> [n_query, n * h * w]
+    def forward(self, x, mask, query_embed, pos_embed,
+                attn_mask=None, cross_attn_mask=None, **kwargs):
+        x = self.proj_bev_feat(x.squeeze(1)).unsqueeze(1)  # squeeze/add n-dim as needed
+        # x: [bs, n, c, h, w], mask: [bs, n, h, w], query_embed: [bs, n_query, c]
+        bs, n, c, h, w = x.shape
+        memory = x.permute(1, 3, 4, 0, 2).reshape(n * h * w, bs, c) # [bs, n, c, h, w] -> [n*h*w, bs, c]
+        mask = mask.view(bs, n * h * w)  # [bs, n, h, w] -> [bs, n*h*w]
+        query_embed = query_embed.permute(1, 0, 2)
+        pos_embed = pos_embed.permute(1, 3, 4, 0, 2).reshape(n * h * w, bs, c) # [bs, n, c, h, w] -> [n*h*w, bs, c]
+        target = torch.zeros_like(query_embed)
+        if cross_attn_mask is not None:
+            cross_attn_mask = cross_attn_mask.flatten(1, 3)   # [n_query, n, h, w] -> [n_query, n * h * w]
         
-#         # out_dec: [num_layers, num_query, bs, dim]
-#         out_dec = self.decoder(
-#             query=target,
-#             key=memory,
-#             value=memory,
-#             key_pos=pos_embed,
-#             query_pos=query_embed,
-#             key_padding_mask=mask,
-#             attn_masks=[attn_mask, cross_attn_mask],
-#             **kwargs,
-#             )
-#         out_dec = out_dec.transpose(1, 2)
-#         memory = memory.reshape(n, h, w, bs, c).permute(3, 0, 4, 1, 2)
-#         return out_dec, memory
+        # out_dec: [num_layers, num_query, bs, dim]
+        out_dec = self.decoder(
+            query=target,
+            key=memory,
+            value=memory,
+            key_pos=pos_embed,
+            query_pos=query_embed,
+            key_padding_mask=mask,
+            attn_masks=[attn_mask, cross_attn_mask],
+            **kwargs,
+            )
+        out_dec = out_dec.transpose(1, 2)
+        memory = memory.reshape(n, h, w, bs, c).permute(3, 0, 4, 1, 2)
+        return out_dec, memory
 
 @TRANSFORMER.register_module()
 class MV2DTransformer(PETRTransformer):
@@ -91,13 +91,12 @@ class MV2DTransformer(PETRTransformer):
         #     #   "NaN:", torch.isnan(confidence_scores).any())
         
         # 메모리 형성 (변경 없음)
+
+        # Query 임베딩 차원 조정 (수정 부분)
         memory = x.permute(1, 3, 4, 0, 2).reshape(n * h * w, bs, c)
         mask = mask.view(bs, n * h * w)
-        # Query 임베딩 차원 조정 (수정 부분)
         query_embed = query_embed.permute(1, 0, 2).contiguous()  # [bs, n_query(num_of_obj), c] → [n_query, bs,c]
         pos_embed = pos_embed.permute(1, 3, 4, 0, 2).contiguous().reshape(n * h * w, bs, c)
-        # query_embed = query_embed.permute(1, 0, 2)
-        # pos_embed = pos_embed.permute(1, 3, 4, 0, 2).reshape(n * h * w, bs, c)
         target = torch.zeros_like(query_embed)
 
         # # 차원 일치 처리 [N,num_corrs,h,w]
@@ -215,7 +214,7 @@ class RegLayer(nn.Module):
 
 @HEADS.register_module()
 class CrossAttentionBoxHead(BaseModule):
-    def __init__(self, num_classes,transformer, pc_range, embed_dims=256, num_reg_fcs=2,
+    def __init__(self, num_classes,transformer,transformer_lidar, pc_range, embed_dims=256, num_reg_fcs=2,
                  group_reg_dims=(2, 2, 1, 1, 2, 2), use_reg_layer=False, pre_embed=False,
                  loss_cls=dict(
                      type='CrossEntropyLoss',
@@ -378,7 +377,7 @@ class CrossAttentionBoxHead(BaseModule):
     #                                        attn_mask=attn_mask, cross_attn_mask=cross_attn_mask, **kwargs)
     #     return outs_dec
 
-    def forward(self, reference_points, x, masks, pos_embed,
+    def forward(self, reference_points, x,  masks, pos_embed, bev_feat=None,
                 attn_mask=None, cross_attn_mask=None,confidence_scores=None, force_fp32=False, query_embeds=None,
                 return_query_feats=False, **kwargs):
         if not self.pre_embed:
@@ -398,6 +397,7 @@ class CrossAttentionBoxHead(BaseModule):
                 # outs_dec_camera, _ = self.transformer_camera(x.float(), masks, query_embeds.float(), pos_embed.float(),
                 #                                attn_mask=attn_mask, cross_attn_mask=cross_attn_mask,
                 #                                confidence_scores=confidence_scores, **kwargs)
+                
                 # outs_dec_lidar, _ = self.transformer_lidar(bev_input, mask_lidar, query_input_lidar, pos_embed_lidar,
                 #                                attn_mask=attn_mask, cross_attn_mask=cross_attn_mask,
                 #                                confidence_scores=confidence_scores, **kwargs)                

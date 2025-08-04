@@ -20,36 +20,8 @@ from .mv2d_head import MV2DHead
 from COTR.COTR_models.cotr_model_moon_Ver12_0 import build
 from torchvision.transforms import functional as tvtf
 from torchvision.ops import DeformConv2d
-import easydict
-from collections import defaultdict
-from mmcv.ops import Voxelization 
 
-from mmdet3d_plugin.models.voxel_encoders.voxel_encoder import HardSimpleVFE
-from mmdet3d_plugin.models.middle_encoders.pillar_scatter import PointPillarsScatter
-from mmdet3d_plugin.models.backbones.second import SECOND
 
-cotr_args = easydict.EasyDict({
-                "out_dir" : "general_config['out']",
-                # "load_weights" : "None",
-#                 "load_weights_path" : './COTR/out/default/checkpoint.pth.tar' ,
-                # "load_weights_path" : "./models/200_checkpoint.pth.tar",
-                "load_weights_path" : None,
-                "load_weights_freeze" : False ,
-                "max_corrs" : 1000 ,
-                "dim_feedforward" : 1024 , 
-                "backbone" : "resnet50" ,
-                "hidden_dim" : 312 ,
-                # "hidden_dim" : 136 ,
-                "dilation" : False ,
-                "dropout" : 0.1 ,
-                "nheads" : 8 ,
-                "layer" : "layer3" ,
-                "enc_layers" : 6 ,
-                "dec_layers" : 6 ,
-                "position_embedding" : "lin_sine"
-                
-})
-# from torchvision.models import resnet50
 from image_processing_unit_Ver15_0 import (find_all_depthmap_z_adv,find_rois_nonzero_z,find_rois_nonzero_z_adv,find_rois_nonzero_z_adv1,
                                            find_rois_nonzero_z_adv2,find_rois_nonzero_z_adv3,find_rois_nonzero_z_adv4,find_rois_nonzero_z_adv5,
                                            find_rois_nonzero_z_adv6,find_rois_nonzero_z_adv8,find_rois_nonzero_z_adv9,differentiable_find_rois1,
@@ -75,224 +47,14 @@ from image_processing_unit_Ver15_0 import (find_all_depthmap_z_adv,find_rois_non
                                            batch_rois_center_by_cam_id,remove_duplicate_objs)
 
 
-class SimpleVoxelization(nn.Module):
-    def __init__(self, 
-                 voxel_size=[0.2, 0.2, 8], 
-                 point_cloud_range=[0, -40, -3, 70.4, 40, 1], 
-                 max_num_points=32, max_voxels=(16000, 40000)):
-        
-        super().__init__()
-        self.voxel_layer = Voxelization(
-            voxel_size=voxel_size,
-            point_cloud_range=point_cloud_range,
-            max_num_points=max_num_points,
-            max_voxels=max_voxels
-        )
-    
-    @torch.no_grad()
-    def forward(self, points):
-        # points는 [batch_size, N, ndim] list/배치
-        voxels, coors, num_points = [], [], []
-        for res in points:
-            res_voxels, res_coors, res_num_points = self.voxel_layer(res)
-            voxels.append(res_voxels)
-            coors.append(res_coors)
-            num_points.append(res_num_points)
-        voxels = torch.cat(voxels, dim=0)
-        num_points = torch.cat(num_points, dim=0)
-        coors_batch = []
-        for i, coor in enumerate(coors):
-            # 배치 차원 부여
-            coor_pad = F.pad(coor, (1, 0), mode='constant', value=i)
-            coors_batch.append(coor_pad)
-        coors_batch = torch.cat(coors_batch, dim=0)
-        return voxels,coors_batch, num_points
-
-class SimpleVoxelNet(nn.Module):
-    def __init__(self,load_pretrained_path=None, device='cpu'):
-        super().__init__()
-        
-        # Voxel feature encoder
-        self.voxel_encoder = HardSimpleVFE(num_features=4)
-        # Middle encoder (BEV 변환)
-        self.middle_encoder = PointPillarsScatter(in_channels=4, output_shape=[900, 1600])
-        # 2D BEV backbone
-        self.backbone_3d = SECOND(
-            in_channels=4,
-            layer_nums=[3, 5],
-            layer_strides=[2, 2],
-            out_channels=[64, 128]
-        )
-                # pretrained 가중치 로드
-        if load_pretrained_path is not None:
-            self._load_pretrained_weights(load_pretrained_path, device)
-
-    def _load_pretrained_weights(self, checkpoint_path, device):
-        checkpoint = torch.load(checkpoint_path, map_location=device)
-        if 'model_state_dict' in checkpoint:
-            pretrained_sd = checkpoint['model_state_dict']
-        elif 'state_dict' in checkpoint:
-            pretrained_sd = checkpoint['state_dict']
-        else:
-            pretrained_sd = checkpoint
-
-        model_sd = self.state_dict()
-        new_sd = {}
-        required_prefix = 'roi_head.lidar_voxelnet.'
-
-        for k, v in pretrained_sd.items():
-            # 'model_state', 'global_step' 등 메타키 건너뛰기
-            if not isinstance(k, str) or '.' not in k:
-                continue
-            new_k = required_prefix + k if not k.startswith(required_prefix) else k
-            if new_k in model_sd and model_sd[new_k].shape == v.shape:
-                new_sd[new_k] = v
-
-        load_res = self.load_state_dict(new_sd, strict=False)
-        print(f"Pretrained weights loaded with missing keys: {load_res.missing_keys}")
-        print(f"Pretrained weights loaded with unexpected keys: {load_res.unexpected_keys}")
-        print("loaded end")
-
-
-    def forward(self, voxels, coors, num_points):
-        if not torch.is_tensor(num_points):
-            coors = torch.tensor(coors, device=voxels.device)
-            num_points = torch.tensor(num_points, device=voxels.device)
-        voxel_features = self.voxel_encoder(voxels, num_points, coors)  # [num_voxels, C]
-        x = self.middle_encoder(voxel_features, coors, batch_size=1)
-        x = self.backbone_3d(x)
-        return x  # [B, C, H, W]
-
-class COTR(nn.Module):
-    
-    def __init__(self, num_kp=500):
-        super(COTR, self).__init__()
-        self.num_kp = num_kp
-        ##### CORR network #######
-        self.corr = build(cotr_args)
-        # 배치 정규화 레이어 추가 (최종 출력 차원 기준)
-        # self.final_bn = nn.BatchNorm1d(3)  # corrs_pred의 마지막 차원이 3인 경우
-    
-    def forward(self, sbs_img , query_input):
-
-        for i in range(6) :
-            # multi camera batch cotr 필요
-            corrs_pred , enc_out = self.corr(sbs_img, query_input)
-
-            # # 최종 출력 직전 배치 정규화 적용 (3D → 2D 변환)
-            # B, N, C = corrs_pred.shape
-            # corrs_pred = self.final_bn(
-            #     corrs_pred.view(-1, C)  # (B*N, C) 형태로 평탄화
-            # ).view(B, N, C)  # 원래 차원 복원
-
-            img_reverse_input = torch.cat([sbs_img[..., 640:], sbs_img[..., :640]], axis=-1)
-            ##cyclic loss pre-processing
-            query_reverse = corrs_pred
-            query_reverse[..., 0] = query_reverse[..., 0] - 0.5
-            cycle,_ = self.corr(img_reverse_input, query_reverse)
-            cycle[..., 0] = cycle[..., 0] - 0.5
-            mask = torch.norm(cycle - query_input, dim=-1) < 40 / 640 # 40 pixel 거리에서는 마스크 
-
-        return corrs_pred , cycle , mask , enc_out
-    
-class CorrelationCycleLoss(nn.Module):
-    def __init__(self, corr_weight=1.0 , cycle_weight=1.0):
-        super().__init__()
-        self.corr_weight = corr_weight
-        self.cycle_weight= cycle_weight
-
-    def forward(self, corr_pred, corr_target, cycle, queries, mask):
-        corr_loss = torch.nn.functional.mse_loss(corr_pred, corr_target)
-        # Smooth L1 Loss 사용
-        # corr_loss = torch.nn.functional.smooth_l1_loss(corr_pred, corr_target)
-        cycle_loss = torch.tensor(0.0, device=corr_loss.device)
-        
-        if mask.sum() > 0:
-            cycle_loss = torch.nn.functional.mse_loss(cycle[mask], queries[mask])
-            # cycle_loss = torch.nn.functional.smooth_l1_loss(cycle[mask], queries[mask])
-            corr_loss += cycle_loss 
-
-        # return self.loss_weight * corr_loss
-        return self.corr_weight * corr_loss + self.cycle_weight * cycle_loss
-
-class PointDistanceLoss(nn.Module):
-    def __init__(self, distance_weight=1.0):
-        super().__init__()
-        self.point_distance_weight = distance_weight
-    
-    def forward(self, points_pred, points_gt):
-        return self.point_distance_loss(points_pred, points_gt) * self.point_distance_weight
-    
-    def chamfer_loss(self, points_a, points_b):
-        """
-        Chamfer Distance Loss 계산 메서드
-        Args:
-            points_a: (N, 3) 형태의 텐서 [detection_xyz_normal[...,2:]]
-            points_b: (M, 3) 형태의 텐서 [pts_lidar_mis_normalized[mask_valid_mis]]
-        """
-        # 입력 차원 검증
-        if points_a.size(0) == 0 or points_b.size(0) == 0:
-            print ("chmfer loss points_a or points_b is empty") 
-        assert points_a.dim() == 2 and points_b.dim() == 2, "Input must be 2D tensors"
-        points_b = points_b.float()
-        # 유효 포인트 필터링
-        valid_a = torch.isfinite(points_a).all(dim=1)
-        valid_b = torch.isfinite(points_b).all(dim=1)
-        points_a = points_a[valid_a]
-        points_b = points_b[valid_b]
-
-        # 거리 행렬 계산
-        dist_matrix = torch.cdist(points_a, points_b, p=2)
-        
-        # 양방향 최소 거리 계산
-        min_a_to_b = torch.min(dist_matrix, dim=1)[0]
-        min_b_to_a = torch.min(dist_matrix, dim=0)[0]
-        
-        # 평균 손실 계산
-        return (min_a_to_b.mean() + min_b_to_a.mean()) / 2.0
-    
-    # def point_distance_loss(self, points_pred, points_gt):
-    #     """
-    #     1:1 대응 포인트 거리 손실 계산
-    #     - points_a와 points_b는 (N, 3) 형태이며 동일한 개수의 포인트를 가져야 함
-    #     - 각 포인트 쌍 간의 L2 거리 평균 계산
-    #     """
-    #     if points_pred.size(0) == 0 or points_gt.size(0) == 0:
-    #         print("point_distance_loss: 입력 포인트 클라우드가 비어 있음")
-    #         return torch.tensor(0.0, device=points_pred.device)
-         
-    #     assert points_pred.size() == points_gt.size(), "포인트 개수가 일치하지 않습니다"
-    #     point_clouds_loss = torch.tensor([0.0]).to(points_pred.device)
-    #     error = (points_pred - points_gt).norm(dim=0)
-    #     error.clamp(100.)
-    #     point_clouds_loss += error.mean()
-
-    #     return point_clouds_loss/points_pred.shape[0]
-    
-    def point_distance_loss(self, points_pred, points_gt):
-        """
-        1:1 대응 포인트 거리 손실 계산
-        - points_pred: [N,3], points_gt: [N,3]
-        """
-        if points_pred.size(0) == 0 or points_gt.size(0) == 0:
-            return torch.tensor(0.0, device=points_pred.device)
-        
-        assert points_pred.size() == points_gt.size(), "포인트 개수 불일치"
-        
-        # 각 포인트별 L2 거리 계산 → [N]
-        error = torch.norm(points_pred - points_gt, p=2, dim=1)
-        
-        # 값 클램핑 (100 이하로 제한)
-        error = error.clamp(max=100.0)
-        
-        # 평균 손실 계산
-        return error.mean()
-
-
 @HEADS.register_module()
 class MV2DSHead(MV2DHead):
     def __init__(self,
                  # denoise setting
+                 voxelizer,
+                 voxelnet,
+                 corr,
+                 corr_loss,
                  z_estimator,
                  use_denoise=False,
                  neg_bbox_loss=False,
@@ -314,11 +76,11 @@ class MV2DSHead(MV2DHead):
         # self.corr_loss = CorrelationCycleLoss(corr_weight=1.0 , cycle_weight=0.5)
         # self.point_distance_loss = PointDistanceLoss(distance_weight=1.0)
         
-        self.num_kp =200
+        # self.num_kp =200
         # self.conf_loss_weight = 0.5
         # self.voxelization = SimpleVoxelization()
         # self.lidar_voxelnet = SimpleVoxelNet(load_pretrained_path='data/weights/second_7862.pth')
-        self.corr = COTR(self.num_kp) 
+        # self.corr = COTR(self.num_kp) 
         # self.fine_corr = GraphBEVLocalAlignNet() 
         # self.corr_loss = SelfSupervisedCorrespondenceLoss(
         #                     cycle_weight=1.0,
@@ -332,7 +94,13 @@ class MV2DSHead(MV2DHead):
         # self.z_estimator = BBoxEnhancedZEstimator(depth_shape=(900, 1600))  # 예시로 depth_shape 설정
         # self.z_estimator = ImprovedDepthEstimator()
         # self.z_estimator = SimplifiedDepthEstimator()
+        self.corr = build_head(corr)
+        self.corr_loss = build_head(corr_loss)
         self.z_estimator = build_head(z_estimator)
+
+        # self.voxelization = build_head(voxelizer)
+        # self.lidar_voxelnet = build_head(voxelnet)
+       
         # self.z_estimator = ZEstimator(enc_channels=312, bbox_channels=256, uv_dim=2, hidden_dim=512)
         # self.pts_regressor = pts_regressor()
         # self.query_selector = DifferentiableQueryProcessor(num_cameras=6,max_objects=100, num_points=100)
@@ -542,8 +310,7 @@ class MV2DSHead(MV2DHead):
         # sbs_img = tvtf.normalize(sbs_img, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
         # ############## input display ##########################
         # visualize_bboxes(img,proposal_list,output_path='bbox_display.png')
-        
-        # # display_depth_maps(img,dense_depth_img_color_mis,sbs_img,uv_set)
+        # display_depth_maps(img,dense_depth_img_color_mis,sbs_img,uv_set)
         # print("input dispaly end")
 
         # ### query generator
@@ -563,31 +330,31 @@ class MV2DSHead(MV2DHead):
         
         # # ########### corr transformer sjmoon ###########
         trimed_center_pts =batch_rois_center_by_cam_id(rois_center,batch_size=200)
-        # trimed_uvset = batched_trim_corrs(uv_set).to(dtype=torch.float32, device=img.device)
+        trimed_uvset = batched_trim_corrs(uv_set).to(dtype=torch.float32, device=img.device)
         # 객체 ID 보존 텐서
         object_ids = trimed_center_pts[..., 1].clone()  # [num_cams, batch_size]
 
         # 쿼리 입력 생성 (좌표만 정규화)
-        # query_input = trimed_uvset[..., :2]
-        query_input = trimed_center_pts[..., 2:].clone()  # [num_cams, batch_size, 2]
+        query_input = trimed_uvset[..., :2]
+        # query_input = trimed_center_pts[..., 2:].clone()  # [num_cams, batch_size, 2]
         # scaled1_query_input = scale_uvz_points(query_input,original_size=(900,1600),target_size=(192,640))
         # scaled2_query_input = normalize_uv_points(scaled1_query_input)
 
-        query_input[..., 0] /= 1600.0
-        query_input[..., 1] /= 928.0
+        query_input[..., 0] /= 1408.0
+        query_input[..., 1] /= 512.0
         query_input[:,:,0] = query_input[:,:,0]/2    # recaling points for sbs image resizing
         query_input[:,:,1] = query_input[:,:,1]
 
-        # corr_target = trimed_uvset[...,2:]
-        # corr_target[...,0] = corr_target[...,0] / 1600.0
-        # corr_target[...,1] = corr_target[...,1] / 920.0
-        # corr_target[:,:,0] = corr_target[:,:,0]/2 + 0.5 # recaling points for sbs image resizing
-        # corr_target[:,:,1] = corr_target[:,:,1] 
+        corr_target = trimed_uvset[...,2:]
+        corr_target[...,0] = corr_target[...,0] / 1408.0
+        corr_target[...,1] = corr_target[...,1] / 512.0
+        corr_target[:,:,0] = corr_target[:,:,0]/2 + 0.5 # recaling points for sbs image resizing
+        corr_target[:,:,1] = corr_target[:,:,1] 
 
         raw_corrs, cycle, corr_mask, enc_out = self.corr(sbs_img, query_input)
         # 객체 ID 정보를 예측 결과에 연결
 
-        # loss_corr = self.corr_loss(raw_corrs, corr_target, cycle, query_input, corr_mask)
+        loss_corr = self.corr_loss(raw_corrs, corr_target, cycle, query_input, corr_mask)
         # fine_raw_corrs = self.fine_corr(raw_corrs, dense_depth_map)
         # fine_raw_corrs[...,0] = fine_raw_corrs[...,0] - 0.5
         # loss_corr = self.corr_loss(fine_raw_corrs[...,:2], query_input, img, dense_depth_map)
@@ -607,8 +374,8 @@ class MV2DSHead(MV2DHead):
         raw_pred_center_pts1[..., 2] = (raw_pred_center_pts1[..., 2] - 0.5) * 2
         # raw_pred_center_pts1[..., 3] = raw_pred_center_pts1[..., 3] * 2
         raw_pred_center_pts2 = raw_pred_center_pts1.clone()
-        raw_pred_center_pts2[..., 2] *= 1600.0
-        raw_pred_center_pts2[..., 3] *= 928.0
+        raw_pred_center_pts2[..., 2] *= 1408.0
+        raw_pred_center_pts2[..., 3] *= 512.0
 
         # # ##### 검증용 display ######
         # from image_processing_unit_Ver15_0 import draw_correspondences
@@ -616,7 +383,7 @@ class MV2DSHead(MV2DHead):
         # # rois_center_disp = scale_uvz_points(rois_center[...,2:],original_size=(900,1600),target_size=(192,640))
         # # trimed_corrs = batch_rois_center_by_cam_id(rois_center,batch_size=200)
         # # pred_corrs = torch.cat([rois_center_disp,pred_center_pts1[...,2:]],dim=-1)
-        # # gt_corrs = torch.cat([query_input,corr_target],dim=-1)
+        # gt_corrs = torch.cat([query_input,corr_target],dim=-1)
         # pred_corrs = torch.cat([query_input,raw_corrs],dim=-1)
         # # int_ids = original_camera_ids.to(torch.long).cpu()
         # # if len(int_ids) < 6:
@@ -626,13 +393,13 @@ class MV2DSHead(MV2DHead):
         # # for cid in int_ids :
         # for cid in range(6):
         #     # idx = id_to_idx[cid.item()]
-        #     # draw_correspondences(
-        #     #     trimed_corrs = gt_corrs[cid],  # 첫 번째 배치 선택
-        #     #     sbs_img=sbs_img[cid],
-        #     #     save_path='correspondence_visualization_gt.jpg'
-        #     # )
         #     draw_correspondences(
-        #         trimed_corrs = pred_corrs[cid][:2,...],  # 첫 번째 배치 선택
+        #         trimed_corrs = gt_corrs[cid][:10,...],  # 첫 번째 배치 선택
+        #         sbs_img=sbs_img[cid],
+        #         save_path='correspondence_visualization_gt.jpg'
+        #     )
+        #     draw_correspondences(
+        #         trimed_corrs = pred_corrs[cid][:10,...],  # 첫 번째 배치 선택
         #         sbs_img=sbs_img[cid],
         #         save_path='correspondence_visualization_pred.jpg'
         #     )
@@ -1042,16 +809,16 @@ class MV2DSHead(MV2DHead):
         #     conf_loss=conf_loss * self.conf_loss_weight,
         # )
 
-        # return bbox_results , loss_corr
-        return bbox_results
+        return bbox_results , loss_corr
+        # return bbox_results
 
     # def _bbox_forward(self, x, proposal_list, img_metas): # for original 
     def _bbox_forward(self,img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4): ### this modified moon
         # bbox_results = self._bbox_forward_denoise(x, proposal_list, img_metas) # for original 
-        # bbox_results , loss_corr = self._bbox_forward_denoise(img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON 
-        bbox_results = self._bbox_forward_denoise(img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON 
-        # return bbox_results , loss_corr
-        return bbox_results
+        bbox_results , loss_corr = self._bbox_forward_denoise(img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON 
+        # bbox_results = self._bbox_forward_denoise(img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON 
+        return bbox_results , loss_corr
+        # return bbox_results
 
     def prepare_for_dn_loss(self, mask_dict):
         """
@@ -1074,13 +841,13 @@ class MV2DSHead(MV2DHead):
     def _bbox_forward_train(self, img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4): # for SJMOON
     # def _bbox_forward_train(self, x, proposal_list, img_metas): # for original 
         """Run forward function and calculate loss for box head in training."""
-        # bbox_results , loss_corr = self._bbox_forward(img,img_metas,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON
-        bbox_results = self._bbox_forward(img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
+        bbox_results , loss_corr = self._bbox_forward(img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON
+        # bbox_results = self._bbox_forward(img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
         # bbox_results = self._bbox_forward(x, proposal_list, img_metas) # for original 
         bbox_results.update(pred={'cls_scores': bbox_results['cls_scores'], 'bbox_preds': bbox_results['bbox_preds']})
 
-        # return bbox_results, loss_corr
-        return bbox_results
+        return bbox_results, loss_corr
+        # return bbox_results
 
     def forward_train(self,
                       img,
@@ -1130,8 +897,8 @@ class MV2DSHead(MV2DHead):
             img_metas[0]['gt_bboxes_3d'] = ori_gt_bboxes_3d[0]
             img_metas[0]['gt_labels_3d'] = ori_gt_labels_3d[0]
 
-        # results_from_last , loss_corr = self._bbox_forward_train(img,img_metas,lidar_depth_mis, x, proposal_boxes, uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJ MOON 
-        results_from_last = self._bbox_forward_train(img,img_metas,raw_points,lidar_depth_mis, x, proposal_boxes, uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
+        results_from_last , loss_corr = self._bbox_forward_train(img,img_metas,raw_points,lidar_depth_mis, x, proposal_boxes, uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJ MOON 
+        # results_from_last = self._bbox_forward_train(img,img_metas,raw_points,lidar_depth_mis, x, proposal_boxes, uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
         # results_from_last = self._bbox_forward_train(x, proposal_boxes, img_metas) # for original 
         preds = results_from_last['pred']
         # Confidence 손실 추출
@@ -1165,12 +932,13 @@ class MV2DSHead(MV2DHead):
                 losses[f'l{i}.dn_loss_cls'] = dn_loss_cls * self.denoise_weight * loss_weights[i]
                 losses[f'l{i}.dn_loss_bbox'] = dn_loss_bbox * self.denoise_weight * loss_weights[i]
 
-        for layer in range(num_layers):
-            lw = loss_weights[layer]
-            for k, v in loss_stage[layer].items():
-                losses[f'l{layer}.{k}'] = v * lw if 'loss' in k else v
+        #### 3d bbox loss insert ######
+        # for layer in range(num_layers):
+        #     lw = loss_weights[layer]
+        #     for k, v in loss_stage[layer].items():
+        #         losses[f'l{layer}.{k}'] = v * lw if 'loss' in k else v
         
-        # losses['loss_corr'] = loss_corr
+        losses['loss_corr'] = loss_corr
         # losses['total_loss_corr'] = total_loss_corr
         
         # return losses , loss_corr , loss_pc_distance

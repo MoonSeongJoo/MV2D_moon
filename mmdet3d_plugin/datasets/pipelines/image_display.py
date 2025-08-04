@@ -913,18 +913,36 @@ def find_exact_correspondences(valid_indices_gt, valid_indices, gt_uv, uv):
     
     return matched_uv_set
 
-def trim_corrs(points ,num_kp=30000):
+# def trim_corrs(points ,num_kp=30000):
+#     length = points.shape[0]
+# #         print ("number of keypoint before trim : {}".format(length))
+#     if length >= num_kp:
+#         # mask = np.random.choice(length, num_kp)
+#         mask = torch.randperm(length)[:num_kp]
+#         return points[mask]
+#     else:
+#         # mask = np.random.choice(length, num_kp - length)
+#         mask = torch.randint(0, length, (num_kp - length,))
+#         # return np.concatenate([points, points[mask]], axis=0)
+#         return torch.cat([points, points[mask]], dim=0)
+
+def trim_corrs(points, num_kp=30000):
     length = points.shape[0]
-#         print ("number of keypoint before trim : {}".format(length))
-    if length >= num_kp:
-        # mask = np.random.choice(length, num_kp)
+    # print("number of keypoint before trim : {}".format(length))
+    if length == 0:
+        # points의 feature dimension을 유지하며 랜덤 keypoint 생성
+        # 예: points shape == (N, D)일 때 D 추출
+        feature_dim = points.shape[1] if points.ndim > 1 else 1
+        # points의 dtype, device도 맞춰줌
+        random_points = torch.rand((num_kp, feature_dim), dtype=points.dtype, device=points.device)
+        return random_points
+    elif length >= num_kp:
         mask = torch.randperm(length)[:num_kp]
         return points[mask]
     else:
-        # mask = np.random.choice(length, num_kp - length)
         mask = torch.randint(0, length, (num_kp - length,))
-        # return np.concatenate([points, points[mask]], axis=0)
         return torch.cat([points, points[mask]], dim=0)
+
 
 def enhanced_geometric_propagation(depth_map, iterations=10, base_threshold=1.0):
     """

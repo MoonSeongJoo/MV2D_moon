@@ -333,7 +333,7 @@ class LoadMultiViewImageFromMultiSweepsFiles(object):
 @PIPELINES.register_module()
 class PointToMultiViewDepth(object):
 
-    def __init__(self, grid_config, downsample=1):
+    def __init__(self, grid_config, downsample=1,resize_img=False):
         self.downsample = downsample
         self.grid_config = grid_config
         self.num_points =900
@@ -350,13 +350,14 @@ class PointToMultiViewDepth(object):
         lidar_depth_map_gt =[]
         list_gt_KT ,list_mis_RT ,list_mis_KT = [] ,[] ,[]
         list_gt_KT_3by4 =[]
-        img_ori =[]
+        # img_ori =[]
         for cid in range(len(results['lidar2img'])):
             lidar2img = torch.from_numpy(results['lidar2img'][cid]).to(dtype=torch.float32)
             lidar2cam = torch.from_numpy(results['extrinsics'][cid]).to(dtype=torch.float32)
             cam2img = torch.from_numpy(results['intrinsics'][cid]).to(dtype=torch.float32)
             
             raw_img_np = results['img'][cid]
+            
             # img_bgrtorgb = raw_img_np[:, :, ::-1].copy()
 
             # aug_img_np = results['img'][cid]
@@ -417,32 +418,34 @@ class PointToMultiViewDepth(object):
             # uvz.append(dense_depth_img_mis)
             
             # ###### input display ######
-            # img_np = raw_img_np
-            # # aug_img_np = aug_img.detach().cpu().numpy()
+            # # img_np = raw_img_np
+            # # aug_img_np = aug_img_np
             # # 이미지 데이터가 float 타입인 경우 0과 1 사이로 정규화
-            # # if img.dtype == np.float32 or img.dtype == np.float64:
-            # #     img = (img - img.min()) / (img.max() - img.min())
+            # if raw_img_np.dtype == np.float32 or raw_img_np.dtype == np.float64:
+            #     raw_img_np = (raw_img_np - raw_img_np.min()) / (raw_img_np.max() - raw_img_np.min())
             # plt.figure(figsize=(20, 20))
-            # plt.subplot(3,1,1)
-            # plt.imshow(img_np)
-            # plt.title("input calibrated display", fontsize=10)
+            # plt.subplot(4,1,1)
+            # plt.imshow(raw_img_np)
+            # plt.title("raw img display", fontsize=10)
 
-            # # plt.subplot(4,1,2)
-            # # plt.imshow(aug_img_np)
-            # # plt.scatter(uv[:, 0], uv[:, 1], c=z, s=0.5)
-            # # plt.title("input mis-calibrated display", fontsize=10)
+            # plt.subplot(4,1,2)
+            # plt.imshow(raw_img_np)
+            # plt.scatter(gt_uv[:, 0], gt_uv[:, 1], c=gt_z, s=1.0 ,alpha=0.8)
+            # plt.title("raw img display 2", fontsize=10)
 
             # disp_gt2 = dense_depth_img_color_gt.detach().cpu().numpy()
-            # plt.subplot(3,1,2)
-            # plt.imshow(disp_gt2, cmap='magma')
-            # plt.scatter(trim_matched_uv_set[0:10][:, 0], trim_matched_uv_set[0:10][:, 1], s=50)
+            # plt.subplot(4,1,3)
+            # # plt.imshow(raw_img_np)
+            # plt.imshow(disp_gt2, cmap='magma' ,alpha=1)
+            # # plt.scatter(trim_matched_uv_set[0:10][:, 0], trim_matched_uv_set[0:10][:, 1], s=5)
             # plt.title("gt display", fontsize=10)
             # plt.axis('off')
 
             # disp_mis2 = dense_depth_img_color_mis.detach().cpu().numpy()
-            # plt.subplot(3,1,3)
-            # plt.imshow(disp_mis2, cmap='magma')
-            # plt.scatter(trim_matched_uv_set[0:10][:, 2], trim_matched_uv_set[0:10][:, 3], s=50)
+            # plt.subplot(4,1,4)
+            # # plt.imshow(raw_img_np)
+            # plt.imshow(disp_mis2, cmap='magma',alpha=1)
+            # # plt.scatter(trim_matched_uv_set[0:10][:, 2], trim_matched_uv_set[0:10][:, 3], s=5)
             # plt.title("mis display", fontsize=10)
             # plt.axis('off')
 
@@ -452,11 +455,11 @@ class PointToMultiViewDepth(object):
             # # plt.title("other mis display", fontsize=10)
             # # plt.axis('off')
 
-            # # # mis_gray = dense_depth_img_mis.detach().cpu().numpy()
-            # # # plt.subplot(3,2,6)
-            # # # plt.imshow(mis_gray, cmap='magma_r')
-            # # # plt.title("mis gray display", fontsize=10)
-            # # # plt.axis('off')
+            # # mis_gray = dense_depth_img_mis.detach().cpu().numpy()
+            # # plt.subplot(3,2,6)
+            # # plt.imshow(mis_gray, cmap='magma_r')
+            # # plt.title("mis gray display", fontsize=10)
+            # # plt.axis('off')
             
             # # 전체 그림 저장
             # plt.tight_layout()

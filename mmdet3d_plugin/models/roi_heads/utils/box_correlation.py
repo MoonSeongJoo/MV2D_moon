@@ -101,7 +101,8 @@ class BoxCorrelation(nn.Module):
         _, _, h, w = feat.shape
         ys = (torch.arange(h, dtype=feat.dtype, device=feat.device) + 0.5) * stride - 0.5
         xs = (torch.arange(w, dtype=feat.dtype, device=feat.device) + 0.5) * stride - 0.5
-        feat_coords = torch.stack(torch.meshgrid(ys, xs)[::-1], dim=-1)     # [h, w, 2]
+        # feat_coords = torch.stack(torch.meshgrid(ys, xs)[::-1], dim=-1)     # [h, w, 2]
+        feat_coords = torch.stack(torch.meshgrid(ys, xs, indexing='ij')[::-1], dim=-1)
 
         rois_b = rois.clone()
 
@@ -267,7 +268,8 @@ class BoxCorrelation(nn.Module):
     def gen_sample_points_in_rois(self, rois):
         # rois: [num_rois, 5->(view_id, xmin, ymin, xmax, ymax)]
         xs = ys = torch.linspace(0, 1, self.sample_size, device=rois.device)
-        grid_y, grid_x = torch.meshgrid(ys, xs)
+        # grid_y, grid_x = torch.meshgrid(ys, xs)
+        grid_y, grid_x = torch.meshgrid(ys, xs, indexing='ij')
         coords_roi = torch.stack([grid_x, grid_y], dim=-1)  # [size, size, 2]
         # convert coords from roi frame to image frame
         wh_bbox = rois[:, 3:5] - rois[:, 1:3]  # [num_rois, 2]

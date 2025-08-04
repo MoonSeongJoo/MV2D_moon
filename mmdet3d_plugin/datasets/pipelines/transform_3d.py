@@ -129,10 +129,11 @@ class PadMultiViewImage(object):
         pad_val (float, optional): Padding value, 0 by default.
     """
 
-    def __init__(self, size=None, size_divisor=None, pad_val=0):
+    def __init__(self, size=None, size_divisor=None, resized_only=False, pad_val=0):
         self.size = size
         self.size_divisor = size_divisor
         self.pad_val = pad_val
+        self.resized_only = resized_only
         # only one of size and size_divisor should be valid
         assert size is not None or size_divisor is not None
         assert size is None or size_divisor is None
@@ -187,6 +188,29 @@ class PadMultiViewImage(object):
         #     plt.savefig("image_original.png", bbox_inches='tight', dpi=300)
         #     plt.close()  # 메모리 해제
         #     print("display end")
+    
+    # def _pad_img(self, results):
+    #     # self.resized_only가 True이면, img를 (512, 1408)로 리사이즈
+    #     if self.resized_only == True:
+    #         # mmcv.imresize는 (width, height) 순 또는 (w, h)로 입력
+    #         resized_img = [mmcv.imresize(img, (1408, 512)) for img in results['img']]
+    #         results['img'] = resized_img
+    #         results['img_shape'] = [img.shape for img in resized_img]
+    #         results['pad_shape'] = [img.shape for img in resized_img]
+    #         results['pad_fixed_size'] = (1408, 512)
+    #         results['pad_size_divisor'] = self.size_divisor
+    #     else:
+    #         if self.size is not None:
+    #             padded_img = [mmcv.impad(
+    #                 img, shape=self.size, pad_val=self.pad_val) for img in results['img']]
+    #         elif self.size_divisor is not None:
+    #             padded_img = [mmcv.impad_to_multiple(
+    #                 img, self.size_divisor, pad_val=self.pad_val) for img in results['img']]
+    #         results['img_shape'] = [img.shape for img in results['img']]
+    #         results['img'] = padded_img
+    #         results['pad_shape'] = [img.shape for img in padded_img]
+    #         results['pad_fixed_size'] = self.size
+    #         results['pad_size_divisor'] = self.size_divisor
 
     def __call__(self, results):
         """Call function to pad images, masks, semantic segmentation maps.
@@ -598,125 +622,198 @@ class ResizeCropFlipImage(object):
 
 @PIPELINES.register_module()
 class ResizeCropFlipImageMono(ResizeCropFlipImage):
-    def __init__(self, with_bbox_2d=False, num_views=6, **kwargs):
+    def __init__(self, with_bbox_2d=False, num_views=6, resize_only=False, **kwargs):
         super(ResizeCropFlipImageMono, self).__init__(**kwargs)
         self.with_bbox_2d = with_bbox_2d
         self.num_views = num_views
+        self.resize_only = resize_only
+    
+    def center_crop_resize(self, img, output_size=(512, 1408)):
+        orig_w, orig_h = img.size
+        target_w, target_h = output_size
 
-    def __call__(self, results):
-        imgs = results["img"]
+        center_x, center_y = orig_w // 2, orig_h // 2
+
+        aspect_ratio = target_w / target_h
+
+        if orig_w / orig_h > aspect_ratio:
+            crop_h = orig_h
+            crop_w = int(aspect_ratio * crop_h)
+        else:
+            crop_w = orig_w
+            crop_h = int(crop_w / aspect_ratio)
+
+        left = max(center_x - crop_w // 2, 0)
+        upper = max(center_y - crop_h // 2, 0)
+        right = left + crop_w
+        lower = upper + crop_h
+
+        img_cropped = img.crop((left, upper, right, lower))
+        img_resized = img_cropped.resize(output_size, Image.BILINEAR)
+        return img_resized
+
+    def resize_image_bbox_intrinsics(self, imgs, results, new_size=(512,1408), with_bbox_2d=True, num_views=6):
+        """
+        imgs: list of np.ndarray (H, W, C)
+        results: dict, 파이프라인 데이터 딕셔너리
+        new_size: (height, width) tuple (예: (512, 1408))
+        with_bbox_2d: 2D bbox 처리 여부
+        num_views: 멀티뷰 개수
+        """
         N = len(imgs)
         new_imgs = []
-        resize, resize_dims, crop, flip, rotate = self._sample_augmentation()
-
-        # intrinsics_ori 초기화 추가 (이 부분이 핵심)
-        results['intrinsics_ori'] = [intrin.copy() for intrin in results['intrinsics']]  # 추가된 코드
-        
+  
         for i in range(N):
+            orig_shape = imgs[i].shape
             img = Image.fromarray(np.uint8(imgs[i]))
-            # augmentation (resize, crop, horizontal flip, rotate)
-            # resize, resize_dims, crop, flip, rotate = self._sample_augmentation()  ###different view use different aug (BEV Det)
-            img, ida_mat = self._img_transform(
-                img,
-                resize=resize,
-                resize_dims=resize_dims,
-                crop=crop,
-                flip=flip,
-                rotate=rotate,
-            )
+            img = img.resize((new_size[1], new_size[0]), resample=Image.BILINEAR)
+            # img = self.center_crop_resize(img, (new_size[1], new_size[0]))
             new_imgs.append(np.array(img).astype(np.float32))
-            results['intrinsics_ori'][i][:3, :3] = results['intrinsics'][i][:3, :3].copy()
-            results['intrinsics'][i][:3, :3] = ida_mat @ results['intrinsics'][i][:3, :3]
 
         results["img"] = new_imgs
-        results['lidar2img'] = [results['intrinsics'][i] @ results['extrinsics'][i].T for i in
-                                range(len(results['extrinsics']))]
-        results['lidar2img_ori'] = [intrin.copy() for intrin in results['lidar2img']]  # 추가된 코드
-        results['lidar2img_ori'] = [results['intrinsics_ori'][i] @ results['extrinsics'][i].T for i in
-                        range(len(results['extrinsics']))]
+        results["img_shape"] = [img.shape for img in new_imgs]
 
-        if self.with_bbox_2d:
-            gt_bboxes_2d = results['gt_bboxes_2d']
-            gt_labels_2d = results['gt_labels_2d']
-            gt_bboxes_2d_to_3d = results['gt_bboxes_2d_to_3d']
-            gt_bboxes_ignore = results['gt_bboxes_ignore']
-            processed_gt_bboxes_2d = []
-            processed_gt_labels_2d = []
-            processed_gt_bboxes_2d_to_3d = []
-            processed_gt_bboxes_ignore = []
-            for i in range(min(N, self.num_views)):
-                bboxes_2d = gt_bboxes_2d[i]
-                labels_2d = gt_labels_2d[i]
-                bboxes_2d_to_3d = gt_bboxes_2d_to_3d[i]
-                bboxes_ignore = gt_bboxes_ignore[i]
-                # 1. resize
-                bboxes_2d = bboxes_2d * resize
-                bboxes_ignore = bboxes_ignore * resize
-                # 2. crop and filter out-of-image bboxes
-                bboxes_2d[:, 0::2] = np.clip(bboxes_2d[:, 0::2], crop[0], crop[2])
-                bboxes_2d[:, 1::2] = np.clip(bboxes_2d[:, 1::2], crop[1], crop[3])
-                bboxes_2d[:, 0::2] = bboxes_2d[:, 0::2] - crop[0]
-                bboxes_2d[:, 1::2] = bboxes_2d[:, 1::2] - crop[1]
-                bboxes_area = (bboxes_2d[:, 2:] - bboxes_2d[:, :2]).prod(1)
-                valid_mask = bboxes_area > 64
-                bboxes_2d = bboxes_2d[valid_mask]
-                labels_2d = labels_2d[valid_mask]
-                bboxes_2d_to_3d = bboxes_2d_to_3d[valid_mask]
+        if with_bbox_2d:
+            gt_bboxes_2d = results["gt_bboxes_2d"]
+            processed_bboxes = []
+            for i in range(min(N, num_views)):
+                bboxes = gt_bboxes_2d[i].copy()
+                scale_x = new_size[1] / orig_shape[1]
+                scale_y = new_size[0] / orig_shape[0]
+                bboxes[:, 0::2] = bboxes[:, 0::2] * scale_x  # x좌표 스케일
+                bboxes[:, 1::2] = bboxes[:, 1::2] * scale_y  # y좌표 스케일
+                processed_bboxes.append(bboxes)
+            results["gt_bboxes_2d"] = processed_bboxes
 
-                bboxes_ignore[:, 0::2] = np.clip(bboxes_ignore[:, 0::2], crop[0], crop[2])
-                bboxes_ignore[:, 1::2] = np.clip(bboxes_ignore[:, 1::2], crop[1], crop[3])
-                bboxes_ignore[:, 0::2] = bboxes_ignore[:, 0::2] - crop[0]
-                bboxes_ignore[:, 1::2] = bboxes_ignore[:, 1::2] - crop[1]
-                bboxes_area = (bboxes_ignore[:, 2:] - bboxes_ignore[:, :2]).prod(1)
-                valid_mask = bboxes_area > 64
-                bboxes_ignore = bboxes_ignore[valid_mask]
-                # 3. flip
-                if flip:
-                    flipped_bboxes = bboxes_2d.copy()
-                    w = crop[2] - crop[0]
-                    flipped_bboxes[..., 0::4] = w - bboxes_2d[..., 2::4]
-                    flipped_bboxes[..., 2::4] = w - bboxes_2d[..., 0::4]
-                    bboxes_2d = flipped_bboxes
-
-                    flipped_bboxes = bboxes_ignore.copy()
-                    w = crop[2] - crop[0]
-                    flipped_bboxes[..., 0::4] = w - bboxes_ignore[..., 2::4]
-                    flipped_bboxes[..., 2::4] = w - bboxes_ignore[..., 0::4]
-                    bboxes_ignore = flipped_bboxes
-                # 4. rotate and filter out-of-image bboxes
-                A = self._get_rot(rotate / 180 * np.pi)
-                b = torch.Tensor([crop[2] - crop[0], crop[3] - crop[1]]) / 2
-                b = A.matmul(-b) + b
-                bbox_corners = np.stack([bboxes_2d[:, 0], bboxes_2d[:, 1], bboxes_2d[:, 0], bboxes_2d[:, 3],
-                                         bboxes_2d[:, 2], bboxes_2d[:, 3], bboxes_2d[:, 2], bboxes_2d[:, 1]], axis=1).reshape(-1, 4, 2)
-                bbox_corners = bbox_corners @ A.numpy().T + b.numpy()[None, None]
-                bboxes_2d = np.concatenate([bbox_corners.min(1), bbox_corners.max(1)], axis=1)
-                bboxes_2d[:, 0::2] = np.clip(bboxes_2d[:, 0::2], 0, crop[2] - crop[0])
-                bboxes_2d[:, 1::2] = np.clip(bboxes_2d[:, 1::2], 0, crop[3] - crop[1])
-                bboxes_area = (bboxes_2d[:, 2:] - bboxes_2d[:, :2]).prod(1)
-                valid_mask = bboxes_area > 64
-                bboxes_2d = bboxes_2d[valid_mask]
-                labels_2d = labels_2d[valid_mask]
-                bboxes_2d_to_3d = bboxes_2d_to_3d[valid_mask]
-
-                bbox_corners = np.stack([bboxes_ignore[:, 0], bboxes_ignore[:, 1], bboxes_ignore[:, 0], bboxes_ignore[:, 3],
-                                         bboxes_ignore[:, 2], bboxes_ignore[:, 3], bboxes_ignore[:, 2], bboxes_ignore[:, 1]], axis=1).reshape(-1, 4, 2)
-                bbox_corners = bbox_corners @ A.numpy().T + b.numpy()[None, None]
-                bboxes_ignore = np.concatenate([bbox_corners.min(1), bbox_corners.max(1)], axis=1)
-
-                processed_gt_bboxes_2d.append(bboxes_2d)
-                processed_gt_labels_2d.append(labels_2d)
-                processed_gt_bboxes_2d_to_3d.append(bboxes_2d_to_3d)
-                processed_gt_bboxes_ignore.append(bboxes_ignore)
-
-            results['gt_bboxes_2d'] = processed_gt_bboxes_2d
-            results['gt_labels_2d'] = processed_gt_labels_2d
-            results['gt_bboxes_2d_to_3d'] = processed_gt_bboxes_2d_to_3d
-            results['gt_bboxes_ignore'] = processed_gt_bboxes_ignore
+        for i in range(N):
+            intrin = results["intrinsics"][i]
+            scale_x = new_size[1] / orig_shape[1]
+            scale_y = new_size[0] / orig_shape[0]
+            scale_mat = np.eye(4, dtype=intrin.dtype)
+            scale_mat[0, 0] = scale_x
+            scale_mat[1, 1] = scale_y
+            results["intrinsics"][i][:3, :3] = scale_mat[:3, :3] @ intrin[:3, :3]
 
         return results
 
 
+    def __call__(self, results):
+        imgs = results["img"]
+
+        if self.resize_only == True:
+            results = self.resize_image_bbox_intrinsics(imgs, results)
+        
+        else:
+            N = len(imgs)
+            new_imgs = []
+            resize, resize_dims, crop, flip, rotate = self._sample_augmentation()
+
+            # intrinsics_ori 초기화 추가 (이 부분이 핵심)
+            # results['intrinsics_ori'] = [intrin.copy() for intrin in results['intrinsics']]  # 추가된 코드
+            
+            for i in range(N):
+                img = Image.fromarray(np.uint8(imgs[i]))
+                # augmentation (resize, crop, horizontal flip, rotate)
+                # resize, resize_dims, crop, flip, rotate = self._sample_augmentation()  ###different view use different aug (BEV Det)
+                img, ida_mat = self._img_transform(
+                    img,
+                    resize=resize,
+                    resize_dims=resize_dims,
+                    crop=crop,
+                    flip=flip,
+                    rotate=rotate,
+                )
+                new_imgs.append(np.array(img).astype(np.float32))
+                # results['intrinsics_ori'][i][:3, :3] = results['intrinsics'][i][:3, :3].copy()
+                results['intrinsics'][i][:3, :3] = ida_mat @ results['intrinsics'][i][:3, :3]
+
+            results["img"] = new_imgs
+            results['lidar2img'] = [results['intrinsics'][i] @ results['extrinsics'][i].T for i in
+                                    range(len(results['extrinsics']))]
+            # results['lidar2img_ori'] = [intrin.copy() for intrin in results['lidar2img']]  # 추가된 코드
+            # results['lidar2img_ori'] = [results['intrinsics_ori'][i] @ results['extrinsics'][i].T for i in
+            #                 range(len(results['extrinsics']))]
+
+            if self.with_bbox_2d:
+                gt_bboxes_2d = results['gt_bboxes_2d']
+                gt_labels_2d = results['gt_labels_2d']
+                gt_bboxes_2d_to_3d = results['gt_bboxes_2d_to_3d']
+                gt_bboxes_ignore = results['gt_bboxes_ignore']
+                processed_gt_bboxes_2d = []
+                processed_gt_labels_2d = []
+                processed_gt_bboxes_2d_to_3d = []
+                processed_gt_bboxes_ignore = []
+                for i in range(min(N, self.num_views)):
+                    bboxes_2d = gt_bboxes_2d[i]
+                    labels_2d = gt_labels_2d[i]
+                    bboxes_2d_to_3d = gt_bboxes_2d_to_3d[i]
+                    bboxes_ignore = gt_bboxes_ignore[i]
+                    # 1. resize
+                    bboxes_2d = bboxes_2d * resize
+                    bboxes_ignore = bboxes_ignore * resize
+                    # 2. crop and filter out-of-image bboxes
+                    bboxes_2d[:, 0::2] = np.clip(bboxes_2d[:, 0::2], crop[0], crop[2])
+                    bboxes_2d[:, 1::2] = np.clip(bboxes_2d[:, 1::2], crop[1], crop[3])
+                    bboxes_2d[:, 0::2] = bboxes_2d[:, 0::2] - crop[0]
+                    bboxes_2d[:, 1::2] = bboxes_2d[:, 1::2] - crop[1]
+                    bboxes_area = (bboxes_2d[:, 2:] - bboxes_2d[:, :2]).prod(1)
+                    valid_mask = bboxes_area > 64
+                    bboxes_2d = bboxes_2d[valid_mask]
+                    labels_2d = labels_2d[valid_mask]
+                    bboxes_2d_to_3d = bboxes_2d_to_3d[valid_mask]
+
+                    bboxes_ignore[:, 0::2] = np.clip(bboxes_ignore[:, 0::2], crop[0], crop[2])
+                    bboxes_ignore[:, 1::2] = np.clip(bboxes_ignore[:, 1::2], crop[1], crop[3])
+                    bboxes_ignore[:, 0::2] = bboxes_ignore[:, 0::2] - crop[0]
+                    bboxes_ignore[:, 1::2] = bboxes_ignore[:, 1::2] - crop[1]
+                    bboxes_area = (bboxes_ignore[:, 2:] - bboxes_ignore[:, :2]).prod(1)
+                    valid_mask = bboxes_area > 64
+                    bboxes_ignore = bboxes_ignore[valid_mask]
+                    # 3. flip
+                    if flip:
+                        flipped_bboxes = bboxes_2d.copy()
+                        w = crop[2] - crop[0]
+                        flipped_bboxes[..., 0::4] = w - bboxes_2d[..., 2::4]
+                        flipped_bboxes[..., 2::4] = w - bboxes_2d[..., 0::4]
+                        bboxes_2d = flipped_bboxes
+
+                        flipped_bboxes = bboxes_ignore.copy()
+                        w = crop[2] - crop[0]
+                        flipped_bboxes[..., 0::4] = w - bboxes_ignore[..., 2::4]
+                        flipped_bboxes[..., 2::4] = w - bboxes_ignore[..., 0::4]
+                        bboxes_ignore = flipped_bboxes
+                    # 4. rotate and filter out-of-image bboxes
+                    A = self._get_rot(rotate / 180 * np.pi)
+                    b = torch.Tensor([crop[2] - crop[0], crop[3] - crop[1]]) / 2
+                    b = A.matmul(-b) + b
+                    bbox_corners = np.stack([bboxes_2d[:, 0], bboxes_2d[:, 1], bboxes_2d[:, 0], bboxes_2d[:, 3],
+                                            bboxes_2d[:, 2], bboxes_2d[:, 3], bboxes_2d[:, 2], bboxes_2d[:, 1]], axis=1).reshape(-1, 4, 2)
+                    bbox_corners = bbox_corners @ A.numpy().T + b.numpy()[None, None]
+                    bboxes_2d = np.concatenate([bbox_corners.min(1), bbox_corners.max(1)], axis=1)
+                    bboxes_2d[:, 0::2] = np.clip(bboxes_2d[:, 0::2], 0, crop[2] - crop[0])
+                    bboxes_2d[:, 1::2] = np.clip(bboxes_2d[:, 1::2], 0, crop[3] - crop[1])
+                    bboxes_area = (bboxes_2d[:, 2:] - bboxes_2d[:, :2]).prod(1)
+                    valid_mask = bboxes_area > 64
+                    bboxes_2d = bboxes_2d[valid_mask]
+                    labels_2d = labels_2d[valid_mask]
+                    bboxes_2d_to_3d = bboxes_2d_to_3d[valid_mask]
+
+                    bbox_corners = np.stack([bboxes_ignore[:, 0], bboxes_ignore[:, 1], bboxes_ignore[:, 0], bboxes_ignore[:, 3],
+                                            bboxes_ignore[:, 2], bboxes_ignore[:, 3], bboxes_ignore[:, 2], bboxes_ignore[:, 1]], axis=1).reshape(-1, 4, 2)
+                    bbox_corners = bbox_corners @ A.numpy().T + b.numpy()[None, None]
+                    bboxes_ignore = np.concatenate([bbox_corners.min(1), bbox_corners.max(1)], axis=1)
+
+                    processed_gt_bboxes_2d.append(bboxes_2d)
+                    processed_gt_labels_2d.append(labels_2d)
+                    processed_gt_bboxes_2d_to_3d.append(bboxes_2d_to_3d)
+                    processed_gt_bboxes_ignore.append(bboxes_ignore)
+
+                results['gt_bboxes_2d'] = processed_gt_bboxes_2d
+                results['gt_labels_2d'] = processed_gt_labels_2d
+                results['gt_bboxes_2d_to_3d'] = processed_gt_bboxes_2d_to_3d
+                results['gt_bboxes_ignore'] = processed_gt_bboxes_ignore
+
+        return results
 
 @PIPELINES.register_module()
 class MSResizeCropFlipImage(object):
@@ -924,6 +1021,9 @@ class GlobalRotScaleTransImage(object):
             rot_mat_inv = rot_mat
 
         num_view = len(results["lidar2img"])
+        results["extrinsics_ori"] = results["extrinsics"].copy()
+        results["lidar2img_ori"] = results["lidar2img"].copy()
+
         for view in range(num_view):
             results["lidar2img"][view] = (torch.tensor(results["lidar2img"][view]).float() @ rot_mat_inv).numpy()
             results["extrinsics"][view] = (rot_mat_inv.T @ torch.tensor(results["extrinsics"][view]).float()).numpy()

@@ -176,7 +176,8 @@ class CustomGridMask(nn.Module):
             mask = np.asarray(mask)
             mask = mask[(hh - h) // 2:(hh - h) // 2 + h, (ww - w) // 2:(ww - w) // 2 + w]
 
-            mask = torch.from_numpy(mask).float().cuda()
+            # mask = torch.from_numpy(mask).float().cuda()
+            mask = torch.from_numpy(mask.copy()).float().cuda()
             # mode 0: the grid is masked out
             # mode 1: the
             if self.mode == 1:
