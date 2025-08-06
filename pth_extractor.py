@@ -112,8 +112,8 @@ def main():
     """
     메인 실행 함수
     """
-    checkpoint_path = "data/work_dirs/20250704_corr_refine_0.2deg_0.5m/epoch_1.pth"
-    save_path = "backbone_base_corr.pth"
+    checkpoint_path = "data/work_dirs/20240805_epoch72_fromscratch_3drandomrotation/epoch_5.pth"
+    save_path = "data/weights/backbone_base_corr_rev2.0.pth"
     
     # 파일 존재 확인
     if not os.path.exists(checkpoint_path):

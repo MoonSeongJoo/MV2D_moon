@@ -18,5 +18,5 @@ python -m torch.distributed.launch \
     $CONFIG \
     --seed 0 \
     --launcher pytorch \
-    --work-dir data/work_dirs/20240728_multigpu_2 \
+    --work-dir data/work_dirs/20240806_epoch72_restart_cameraonly_no3daug \
     ${@:3}

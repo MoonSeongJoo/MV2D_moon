@@ -262,7 +262,7 @@ def main():
             # hard-code way to remove EvalHook args
             for key in [
                     'interval', 'tmpdir', 'start', 'gpu_collect', 'save_best',
-                    'rule'
+                    'rule' ,'by_epoch', 'dynamic_intervals', 'save_best_metric', 'save_best_mode'
             ]:
                 eval_kwargs.pop(key, None)
             eval_kwargs.update(dict(metric=args.eval, **kwargs))

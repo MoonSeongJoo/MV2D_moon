@@ -394,9 +394,6 @@ class CrossAttentionBoxHead(BaseModule):
                 outs_dec_camera, _ = self.transformer(x.float(), masks, query_embeds.float(), pos_embed.float(),
                                                attn_mask=attn_mask, cross_attn_mask=cross_attn_mask,
                                                confidence_scores=confidence_scores, **kwargs)
-                # outs_dec_camera, _ = self.transformer_camera(x.float(), masks, query_embeds.float(), pos_embed.float(),
-                #                                attn_mask=attn_mask, cross_attn_mask=cross_attn_mask,
-                #                                confidence_scores=confidence_scores, **kwargs)
                 
                 # outs_dec_lidar, _ = self.transformer_lidar(bev_input, mask_lidar, query_input_lidar, pos_embed_lidar,
                 #                                attn_mask=attn_mask, cross_attn_mask=cross_attn_mask,
