@@ -402,6 +402,62 @@ def batched_trim_corrs(in_corrs, num_kp=200):
 
     return torch.stack(results, dim=0)
 
+def batched_trim_corrs_with_rois(in_corrs, rois_with_indices, num_kp=200):
+    """
+    배치별로 roi 안에 포함되는 correspondence 포인트만 랜덤하게 num_kp개 선택
+
+    Args:
+        in_corrs: [batch_size, num_points, 4] 텐서
+        rois_with_indices: [num_objects, 6] 텐서 (cam_idx, obj_idx, x1, y1, x2, y2)
+        num_kp: 최종 추출 포인트 개수(기본 200)
+    Returns:
+        [batch_size, num_kp, 4] 텐서
+    """
+    device = in_corrs.device
+    batch_size = in_corrs.size(0)
+    results = []
+
+    # rois_with_indices에서 카메라별로 ROI 분류
+    rois_by_cam = {}
+    for roi in rois_with_indices:
+        cam_idx = int(roi[0].item())
+        if cam_idx not in rois_by_cam:
+            rois_by_cam[cam_idx] = []
+        rois_by_cam[cam_idx].append(roi.cpu())
+
+    for i in range(batch_size):
+        batch_data = in_corrs[i]  # [num_points, 4]
+        num_points = batch_data.size(0)
+        rois_this_cam = rois_by_cam.get(i, [])
+
+        # 마스크 생성: roi 안에 들어있는 포인트만 True
+        mask = torch.zeros(num_points, dtype=torch.bool, device=device)
+        for roi in rois_this_cam:
+            # (x1, y1): left-top, (x2, y2): right-bottom
+            x1, y1, x2, y2 = roi[2].item(), roi[3].item(), roi[4].item(), roi[5].item()
+            x = batch_data[:, 0]
+            y = batch_data[:, 1]
+            in_roi = (x >= x1) & (x <= x2) & (y >= y1) & (y <= y2)
+            mask |= in_roi
+
+        filtered_points = batch_data[mask]
+        num_roi_points = filtered_points.size(0)
+
+        if num_roi_points >= num_kp:
+            idx = torch.randperm(num_roi_points, device=device)[:num_kp]
+            trimmed = filtered_points[idx]
+        elif num_roi_points == 0:
+            trimmed = torch.rand(num_kp, 4, device=device)
+        else:
+            trimmed = filtered_points
+            extra_needed = num_kp - num_roi_points
+            idx = torch.randint(0, num_roi_points, (extra_needed,), device=device)
+            trimmed = torch.cat([trimmed, filtered_points[idx]], dim=0)
+
+        results.append(trimmed)
+
+    return torch.stack(results, dim=0).float()
+
 
 # def process_queries(corrs, sbs_img, num_points=100):
 #     device = corrs.device

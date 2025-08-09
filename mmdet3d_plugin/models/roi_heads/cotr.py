@@ -7,9 +7,9 @@ from mmdet.models.builder import HEADS
 cotr_args = easydict.EasyDict({
                 "out_dir" : "general_config['out']",
                 # "load_weights" : "None",
-#                 "load_weights_path" : './COTR/out/default/checkpoint.pth.tar' ,
+                "load_weights_path" : 'data/weights/corr_base_rev1.0.pth', 
                 # "load_weights_path" : "./models/200_checkpoint.pth.tar",
-                "load_weights_path" : None,
+                # "load_weights_path" : None,
                 "load_weights_freeze" : False ,
                 "max_corrs" : 1000 ,
                 "dim_feedforward" : 1024 , 

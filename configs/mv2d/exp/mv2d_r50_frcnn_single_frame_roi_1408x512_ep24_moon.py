@@ -27,7 +27,7 @@ model = dict(
             with_cp=False,
             dcn=dict(type='DCNv2', deform_groups=1, fallback_on_stride=False),
             stage_with_dcn=(False, False, True, True),
-            frozen_stages=4, # Freeze all stages of the backbone
+            # frozen_stages=4, # Freeze all stages of the backbone
         ),
     ),
     neck=dict(
@@ -49,6 +49,33 @@ model = dict(
             roi_layer=dict(type='RoIAlign', output_size=roi_size, sampling_ratio=-1),
             featmap_strides=roi_srides,
             out_channels=512, ),
+        voxelizer=dict(
+            type='SimpleVoxelization',
+            voxel_size=[0.2, 0.2, 8], 
+            point_cloud_range=[0, -40, -3, 70.4, 40, 1], 
+            max_num_points=32, max_voxels=(16000, 40000),
+            ),
+        voxelnet=dict(
+            type='SimpleVoxelNet',
+            load_pretrained_path=None,
+            device='cpu',
+        ),
+        corr=dict(
+            type='COTR',
+            num_kp=200,
+        ),
+        corr_loss=dict(
+            type='CorrelationCycleLoss',
+            corr_weight=2.0,
+            cycle_weight=1.0,
+        ),
+        z_estimator=dict(
+            type='ZEstimator',
+            enc_channels=312,
+            bbox_channels=256,
+            uv_dim=2,
+            hidden_dim=512,
+            ),
         bbox_head=dict(
             type='CrossAttentionBoxHead',
             num_classes=10,
@@ -59,6 +86,32 @@ model = dict(
                     type='PETRTransformerDecoder',
                     return_intermediate=True,
                     num_layers=6,
+                    transformerlayers=dict(
+                        type='PETRTransformerDecoderLayer',
+                        attn_cfgs=[
+                            dict(
+                                type='FlattenMHSelfAttention',
+                                embed_dims=256,
+                                num_heads=8,
+                                dropout=0.1),
+                            dict(
+                                type='PETRMultiheadAttention',
+                                embed_dims=256,
+                                num_heads=8,
+                                dropout=0.1),
+                        ],
+                        feedforward_channels=2048,
+                        ffn_dropout=0.1,
+                        with_cp=False,  ###use checkpoint to save memory
+                        operation_order=('self_attn', 'norm', 'cross_attn', 'norm',
+                                         'ffn', 'norm')),
+                )),
+            transformer_lidar=dict(
+                type='MV2DTransformer_lidar',
+                decoder=dict(
+                    type='PETRTransformerDecoder',
+                    return_intermediate=True,
+                    num_layers=3,
                     transformerlayers=dict(
                         type='PETRTransformerDecoderLayer',
                         attn_cfgs=[
@@ -156,13 +209,13 @@ model = dict(
 )
 
 data = dict(
-    workers_per_gpu=8,
+    workers_per_gpu=4,
 )
 
 optimizer = dict(
     _delete_=True,
     type='AdamW',
-    lr=1.924e-4,
+    lr=6e-5,
     paramwise_cfg=dict(
         custom_keys={
             'base_detector.backbone': dict(lr_mult=0.25),
@@ -180,39 +233,57 @@ optimizer_config = dict(
 )
 
 ### epoch 기반  runner ######
-total_epochs = 24
+total_epochs = 72
 
 # 학습 재개를 위한 설정
-load_from = None
-# load_from = 'data/weights/epoch_3.pth' #check point path
-resume_from = '/workspace/MV2D_moon/data/saved_models/model_iter_2000_5deg_0.5m.pth'  # 같은 체크포인트 경로
-# resume_from = None
+# load_from = None
+load_from = 'data/work_dirs/20240806_epoch72_corr_only/latest.pth' #check point path
+# resume_from = 'data/work_dirs/20240806_epoch72_corr_only/latest.pth'  # 같은 체크포인트 경로
+resume_from = None
 runner = dict(type='EpochBasedRunner', max_epochs=total_epochs)
-evaluation = dict(interval=5, )
-# evaluation = dict(interval=1, by_epoch=False, start=0) # validation 만 실행
+evaluation = dict(interval=72, )
+# evaluation = dict(interval=5, by_epoch=False, start=0) # validation 만 실행
 
 # checkpoint_config 추가
 checkpoint_config = dict(interval=1)  # 매 epoch마다 저장
+
+# # 수정된 설정 (기존 epoch 대신 iteration 기준 사용)
+# checkpoint_config = dict(
+#     interval=200,      # 300 iteration마다 저장
+#     by_epoch=False,     # epoch 대신 iteration 기준 사용
+#     save_optimizer=True # 옵티마이저 상태도 함께 저장
+# )
+
 find_unused_parameters = False
 log_config = dict(interval=50)
+# lr_config = dict(
+#     _delete_=True,
+#     policy='CosineAnnealing',
+#     warmup='linear',
+#     warmup_iters=500,
+#     warmup_ratio=1.0 / 3,
+#     min_lr_ratio=1e-3,
+# )
+
 lr_config = dict(
     _delete_=True,
-    policy='CosineAnnealing',
+    policy='Step',
+    step=[5,10,15,20,30,40,50,60,70,80,90,100],  # 8번째와 16번째 에포크에서 학습률 감소
+    gamma=0.5,  # 각 스텝에서 학습률을 0.1배로 감소
     warmup='linear',
     warmup_iters=500,
     warmup_ratio=1.0 / 3,
-    min_lr_ratio=1e-3,
 )
 
 # lr_config = dict(
 #     _delete_=True,
-#     policy='Step',
-#     step=[1,2,3,4,5,9,16],  # 8번째와 16번째 에포크에서 학습률 감소
-#     gamma=0.5,  # 각 스텝에서 학습률을 0.1배로 감소
+#     policy='Exp',  # Exponential decay
+#     gamma=0.9,     # 각 step마다 lr을 0.9배씩 감소 (10% 감소)
 #     warmup='linear',
 #     warmup_iters=500,
 #     warmup_ratio=1.0 / 3,
 # )
+
 
 # param_scheduler = [
 #     dict(
