@@ -51,11 +51,11 @@ from image_processing_unit_Ver15_0 import (find_all_depthmap_z_adv,find_rois_non
 class MV2DSHead(MV2DHead):
     def __init__(self,
                  # denoise setting
-                 voxelizer,
-                 voxelnet,
-                 corr,
-                 corr_loss,
-                 z_estimator,
+                #  voxelizer,
+                #  voxelnet,
+                #  corr,
+                #  corr_loss,
+                #  z_estimator,
                  use_denoise=False,
                  neg_bbox_loss=False,
                  denoise_scalar=10,
@@ -94,9 +94,9 @@ class MV2DSHead(MV2DHead):
         # self.z_estimator = BBoxEnhancedZEstimator(depth_shape=(900, 1600))  # 예시로 depth_shape 설정
         # self.z_estimator = ImprovedDepthEstimator()
         # self.z_estimator = SimplifiedDepthEstimator()
-        self.corr = build_head(corr)
+        # self.corr = build_head(corr)
         # self.corr_loss = build_head(corr_loss)
-        self.z_estimator = build_head(z_estimator)
+        # self.z_estimator = build_head(z_estimator)
 
         # self.voxelization = build_head(voxelizer)
         # self.lidar_voxelnet = build_head(voxelnet)

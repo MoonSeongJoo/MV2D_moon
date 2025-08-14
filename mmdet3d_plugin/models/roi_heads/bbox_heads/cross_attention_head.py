@@ -214,7 +214,9 @@ class RegLayer(nn.Module):
 
 @HEADS.register_module()
 class CrossAttentionBoxHead(BaseModule):
-    def __init__(self, num_classes,transformer,transformer_lidar, pc_range, embed_dims=256, num_reg_fcs=2,
+    def __init__(self, num_classes,transformer,
+                #  transformer_lidar,
+                 pc_range, embed_dims=256, num_reg_fcs=2,
                  group_reg_dims=(2, 2, 1, 1, 2, 2), use_reg_layer=False, pre_embed=False,
                  loss_cls=dict(
                      type='CrossEntropyLoss',

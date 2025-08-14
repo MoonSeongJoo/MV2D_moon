@@ -8,7 +8,7 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 # ------------------------------------------------------------------------
 from .transform_3d import *
-# from .loading import *
-from .loading_moon import *
+from .loading import *
+# from .loading_moon import *
 from .formatting import *
 from .image_display import *
