@@ -237,7 +237,7 @@ total_epochs = 72
 
 # 학습 재개를 위한 설정
 # load_from = None
-load_from = 'data/work_dirs/20240806_epoch72_corr_only/latest.pth' #check point path
+load_from = 'data/work_dirs/20240809_epoch72_corr_only/latest.pth' #check point path
 # resume_from = 'data/work_dirs/20240806_epoch72_corr_only/latest.pth'  # 같은 체크포인트 경로
 resume_from = None
 runner = dict(type='EpochBasedRunner', max_epochs=total_epochs)

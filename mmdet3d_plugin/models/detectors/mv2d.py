@@ -255,8 +255,8 @@ class MV2D(Base3DDetector):
             gt_bboxes,
             gt_labels,
             gt_bboxes_ignore)
-        for k, v in losses_detector.items():
-            losses['det_' + k] = v
+        # for k, v in losses_detector.items():
+        #     losses['det_' + k] = v
 
         # generate 2D detection
         self.base_detector.set_detection_cfg(self.train_cfg.get('detection_proposal'))

@@ -4197,10 +4197,10 @@ def draw_correspondences(trimed_corrs, sbs_img, save_path='correspond.jpg'):
     
     # 좌측 포인트 (청색)
     plt.scatter(left_pts[:,0], left_pts[:,1], 
-                c='cyan', s=30, edgecolors='k', linewidth=0.8, label='Left Points')
+                c='cyan', s=30, edgecolors='k', linewidth=2, label='Left Points')
     # 우측 포인트 (자홍색)
     plt.scatter(right_pts[:,0], right_pts[:,1], 
-                c='magenta', s=30, edgecolors='k', linewidth=0.8, label='Right Points')
+                c='magenta', s=30, edgecolors='k', linewidth=2, label='Right Points')
     
     # 연결선 그리기 (옵션)
     for l, r in zip(left_pts, right_pts):

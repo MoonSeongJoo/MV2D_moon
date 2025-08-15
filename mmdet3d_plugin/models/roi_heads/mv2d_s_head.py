@@ -341,14 +341,14 @@ class MV2DSHead(MV2DHead):
         # scaled1_query_input = scale_uvz_points(query_input,original_size=(900,1600),target_size=(192,640))
         # scaled2_query_input = normalize_uv_points(scaled1_query_input)
 
-        query_input[..., 0] /= 1408.0
-        query_input[..., 1] /= 512.0
+        query_input[..., 0] /= img.shape[3]
+        query_input[..., 1] /= img.shape[2]
         query_input[:,:,0] = query_input[:,:,0]/2    # recaling points for sbs image resizing
         query_input[:,:,1] = query_input[:,:,1]
 
         corr_target = trimed_uvset[...,2:]
-        corr_target[...,0] = corr_target[...,0] / 1408.0
-        corr_target[...,1] = corr_target[...,1] / 512.0
+        corr_target[...,0] = corr_target[...,0] / dense_depth_img_color_mis.shape[3]
+        corr_target[...,1] = corr_target[...,1] / dense_depth_img_color_mis.shape[2]
         corr_target[:,:,0] = corr_target[:,:,0]/2 + 0.5 # recaling points for sbs image resizing
         corr_target[:,:,1] = corr_target[:,:,1] 
 
@@ -375,8 +375,8 @@ class MV2DSHead(MV2DHead):
         raw_pred_center_pts1[..., 2] = (raw_pred_center_pts1[..., 2] - 0.5) * 2
         # raw_pred_center_pts1[..., 3] = raw_pred_center_pts1[..., 3] * 2
         raw_pred_center_pts2 = raw_pred_center_pts1.clone()
-        raw_pred_center_pts2[..., 2] *= 1408.0
-        raw_pred_center_pts2[..., 3] *= 512.0
+        raw_pred_center_pts2[..., 2] *= dense_depth_img_color_mis.shape[3]
+        raw_pred_center_pts2[..., 3] *= dense_depth_img_color_mis.shape[2]
 
         # # ##### 검증용 display ######
         # from image_processing_unit_Ver15_0 import draw_correspondences
@@ -384,7 +384,7 @@ class MV2DSHead(MV2DHead):
         # # rois_center_disp = scale_uvz_points(rois_center[...,2:],original_size=(900,1600),target_size=(192,640))
         # # trimed_corrs = batch_rois_center_by_cam_id(rois_center,batch_size=200)
         # # pred_corrs = torch.cat([rois_center_disp,pred_center_pts1[...,2:]],dim=-1)
-        # # gt_corrs = torch.cat([query_input,corr_target],dim=-1)
+        # gt_corrs = torch.cat([query_input,corr_target],dim=-1)
         # pred_corrs = torch.cat([query_input,raw_corrs],dim=-1)
         # # int_ids = original_camera_ids.to(torch.long).cpu()
         # # if len(int_ids) < 6:
@@ -394,13 +394,13 @@ class MV2DSHead(MV2DHead):
         # # for cid in int_ids :
         # for cid in range(6):
         #     # idx = id_to_idx[cid.item()]
-        #     # draw_correspondences(
-        #     #     trimed_corrs = gt_corrs[cid][:10,...],  # 첫 번째 배치 선택
-        #     #     sbs_img=sbs_img[cid],
-        #     #     save_path='correspondence_visualization_gt.jpg'
-        #     # )
         #     draw_correspondences(
-        #         trimed_corrs = pred_corrs[cid][:10,...],  # 첫 번째 배치 선택
+        #         trimed_corrs = gt_corrs[cid][:2,...],  # 첫 번째 배치 선택
+        #         sbs_img=sbs_img[cid],
+        #         save_path='correspondence_visualization_gt.jpg'
+        #     )
+        #     draw_correspondences(
+        #         trimed_corrs = pred_corrs[cid][:2,...],  # 첫 번째 배치 선택
         #         sbs_img=sbs_img[cid],
         #         save_path='correspondence_visualization_pred.jpg'
         #     )
