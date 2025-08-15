@@ -24,6 +24,7 @@ from mmdet.apis import set_random_seed
 from mmseg import __version__ as mmseg_version
 import torch.multiprocessing as mp
 
+
 try:
     # If mmdet version > 2.20.0, setup_multi_processes would be imported and
     # used from mmdet instead of mmdet3d.
@@ -302,4 +303,6 @@ def main():
 if __name__ == '__main__':
     mp.set_start_method('spawn', force=True)
     torch.set_printoptions(precision=4, sci_mode=False)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
     main()

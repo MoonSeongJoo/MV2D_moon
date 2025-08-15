@@ -236,10 +236,10 @@ optimizer_config = dict(
 total_epochs = 72
 
 # 학습 재개를 위한 설정
-# load_from = None
-load_from = 'data/weights/corr_rev2.0.pth' #check point path
-# resume_from = 'data/work_dirs/20240809_mv2d_modi_cameraonly_corrnofreeze_no3daug/latest.pth'  # 같은 체크포인트 경로
-resume_from = None
+load_from = None
+# load_from = 'data/weights/backbone_base_corr_rev3.0.pth' #check point path
+resume_from = 'data/work_dirs/20240811_mv2d_modi_cameraonly_base/latest.pth'  # 같은 체크포인트 경로
+# resume_from = None
 runner = dict(type='EpochBasedRunner', max_epochs=total_epochs)
 evaluation = dict(interval=2, )
 # evaluation = dict(interval=5, by_epoch=False, start=0) # validation 만 실행
