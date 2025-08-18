@@ -60,13 +60,13 @@ class MV2D(Base3DDetector):
     def _freeze_backbone_modules(self):
         """corr 네트워크 제외한 모든 모듈 동결"""
         
-        # 1. Base Detector 동결
-        for param in self.base_detector.parameters():
-            param.requires_grad = False
+        # # 1. Base Detector 동결
+        # for param in self.base_detector.parameters():
+        #     param.requires_grad = False
             
-        # 2. Neck 동결
-        for param in self.neck.parameters():
-            param.requires_grad = False
+        # # 2. Neck 동결
+        # for param in self.neck.parameters():
+        #     param.requires_grad = False
             
         # # 3. ROI Head 내 corr 제외 동결
         # for name, param in self.roi_head.named_parameters():
@@ -290,51 +290,51 @@ class MV2D(Base3DDetector):
         # 그래디언트 클리핑 적용
         # torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=20)
 
-        # self.total_iter += 1
-        # if self.total_iter % 2000 == 0:
-        #     import time
-        #     # checkpoint = {}
-        #     # 계층적 키 매핑 생성 (버퍼 포함)
-        #         # 메타데이터 생성
-        #     meta = {
-        #         'epoch': self.total_iter // 28130 ,  # 에폭 기반이 아닌 경우 0으로 설정
-        #         'iter': self.total_iter,
-        #         'time': time.strftime('%Y-%m-%d %H:%M:%S')
-        #     }
+        self.total_iter += 1
+        if self.total_iter % 2000 == 0:
+            import time
+            # checkpoint = {}
+            # 계층적 키 매핑 생성 (버퍼 포함)
+                # 메타데이터 생성
+            meta = {
+                'epoch': self.total_iter // 28130 ,  # 에폭 기반이 아닌 경우 0으로 설정
+                'iter': self.total_iter,
+                'time': time.strftime('%Y-%m-%d %H:%M:%S')
+            }
 
-        #         # 체크포인트 구성
-        #     checkpoint = {
-        #         'state_dict': self.state_dict(),  # 전체 모델 파라미터
-        #         'meta': meta
-        #     }
+                # 체크포인트 구성
+            checkpoint = {
+                'state_dict': self.state_dict(),  # 전체 모델 파라미터
+                'meta': meta
+            }
             
-        #     # Base Detector: state_dict()로 파라미터 + 버퍼 전체 저장
-        #     base_detector_dict = self.base_detector.state_dict()
-        #     for k, v in base_detector_dict.items():
-        #         checkpoint[f'base_detector.{k}'] = v
+            # Base Detector: state_dict()로 파라미터 + 버퍼 전체 저장
+            base_detector_dict = self.base_detector.state_dict()
+            for k, v in base_detector_dict.items():
+                checkpoint[f'base_detector.{k}'] = v
             
-        #     # Neck: state_dict() 사용
-        #     neck_dict = self.neck.state_dict()
-        #     for k, v in neck_dict.items():
-        #         checkpoint[f'neck.{k}'] = v
+            # Neck: state_dict() 사용
+            neck_dict = self.neck.state_dict()
+            for k, v in neck_dict.items():
+                checkpoint[f'neck.{k}'] = v
             
-        #     # ROI Head: state_dict() 사용
-        #     roi_head_dict = self.roi_head.state_dict()
-        #     for k, v in roi_head_dict.items():
-        #         checkpoint[f'roi_head.{k}'] = v
+            # ROI Head: state_dict() 사용
+            roi_head_dict = self.roi_head.state_dict()
+            for k, v in roi_head_dict.items():
+                checkpoint[f'roi_head.{k}'] = v
             
-        #     # 추가 모듈 (예: grid_mask)
-        #     if hasattr(self, 'grid_mask'):
-        #         grid_mask_dict = self.grid_mask.state_dict()
-        #         for k, v in grid_mask_dict.items():
-        #             checkpoint[f'grid_mask.{k}'] = v
+            # 추가 모듈 (예: grid_mask)
+            if hasattr(self, 'grid_mask'):
+                grid_mask_dict = self.grid_mask.state_dict()
+                for k, v in grid_mask_dict.items():
+                    checkpoint[f'grid_mask.{k}'] = v
             
-        #     save_path = os.path.join(self.save_dir, f'model_iter_{self.total_iter}_2deg_0.2m.pth')
-        #     torch.save(checkpoint, save_path)
-        #     print(f"Model saved at iteration {self.total_iter}")
+            save_path = os.path.join(self.save_dir, f'model_iter_{self.total_iter}_lidar_only.pth')
+            torch.save(checkpoint, save_path)
+            print(f"Model saved at iteration {self.total_iter}")
 
-        # if self.total_iter == 28130:
-        #     self.total_iter = 0
+        if self.total_iter == 28130:
+            self.total_iter = 0
 
         return losses
 

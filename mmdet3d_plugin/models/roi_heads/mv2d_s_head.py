@@ -98,8 +98,8 @@ class MV2DSHead(MV2DHead):
         # self.corr_loss = build_head(corr_loss)
         self.z_estimator = build_head(z_estimator)
 
-        # self.voxelization = build_head(voxelizer)
-        # self.lidar_voxelnet = build_head(voxelnet)
+        self.voxelization = build_head(voxelizer)
+        self.lidar_voxelnet = build_head(voxelnet)
        
         # self.z_estimator = ZEstimator(enc_channels=312, bbox_channels=256, uv_dim=2, hidden_dim=512)
         # self.pts_regressor = pts_regressor()
@@ -279,13 +279,13 @@ class MV2DSHead(MV2DHead):
             intrinsic=self.process_intrins_feat(rois, intrinsics)
         )
 
-        # #### voxelization ######
-        # pts_voxels,pts_coords,pts_num_points = self.voxelization(raw_points)
-        # bev_feat = self.lidar_voxelnet(pts_voxels, pts_coords, pts_num_points)
+        #### voxelization ######
+        pts_voxels,pts_coords,pts_num_points = self.voxelization(raw_points)
+        bev_feat = self.lidar_voxelnet(pts_voxels, pts_coords, pts_num_points)
 
         ###### SJ MOON 수정 #############
         # with torch.no_grad():
-        dense_depth_map_gt = dense_map_from_depth_batch(uvz_gt.squeeze(0),grid=3,iterations=3)
+        # dense_depth_map_gt = dense_map_from_depth_batch(uvz_gt.squeeze(0),grid=3,iterations=3)
         dense_depth_map = dense_map_from_depth_batch(lidar_depth_mis,grid=3,iterations=3)
         dense_depth_img_mis = dense_depth_map.to(dtype=torch.uint8)
         dense_depth_img_color_mis = batch_colormap(dense_depth_img_mis)
@@ -340,8 +340,8 @@ class MV2DSHead(MV2DHead):
         # scaled1_query_input = scale_uvz_points(query_input,original_size=(900,1600),target_size=(192,640))
         # scaled2_query_input = normalize_uv_points(scaled1_query_input)
 
-        query_input[..., 0] /= 1408.0
-        query_input[..., 1] /= 512.0
+        query_input[..., 0] /= img.shape[3] 
+        query_input[..., 1] /= img.shape[2]
         query_input[:,:,0] = query_input[:,:,0]/2    # recaling points for sbs image resizing
         query_input[:,:,1] = query_input[:,:,1]
 
@@ -374,8 +374,8 @@ class MV2DSHead(MV2DHead):
         raw_pred_center_pts1[..., 2] = (raw_pred_center_pts1[..., 2] - 0.5) * 2
         # raw_pred_center_pts1[..., 3] = raw_pred_center_pts1[..., 3] * 2
         raw_pred_center_pts2 = raw_pred_center_pts1.clone()
-        raw_pred_center_pts2[..., 2] *= 1408.0
-        raw_pred_center_pts2[..., 3] *= 512.0
+        raw_pred_center_pts2[..., 2] *= dense_depth_img_color_mis.shape[3]  
+        raw_pred_center_pts2[..., 3] *= dense_depth_img_color_mis.shape[2]
 
         # # ##### 검증용 display ######
         # from image_processing_unit_Ver15_0 import draw_correspondences
@@ -740,7 +740,6 @@ class MV2DSHead(MV2DHead):
 
             corr_feats = bbox_feats[corr]  # [num_rois, num_corrs, c, h, w]
             corr_pe = pe[corr]
-
             ##### 가변 reference point by SJMOON ######
             # output_size = corr_feats.shape[0] * 3
             # # dynamic_linear = nn.Linear(600 * 3, output_size).to(corr_feats.device)
@@ -778,7 +777,7 @@ class MV2DSHead(MV2DHead):
                                                             corr_feats,
                                                             ~mask[..., None, None].expand_as(corr_feats[:, :, 0]),
                                                             corr_pe,
-                                                            bev_feat=None,
+                                                            bev_feat,
                                                             attn_mask=None,
                                                             cross_attn_mask=None,
                                                             force_fp32=self.force_fp32, )
