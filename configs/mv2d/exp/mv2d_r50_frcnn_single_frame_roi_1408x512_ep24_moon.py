@@ -241,7 +241,7 @@ load_from = None
 resume_from = 'data/work_dirs/20240811_mv2d_modi_cameraonly_base/latest.pth'  # 같은 체크포인트 경로
 # resume_from = None
 runner = dict(type='EpochBasedRunner', max_epochs=total_epochs)
-evaluation = dict(interval=2, )
+evaluation = dict(interval=72, )
 # evaluation = dict(interval=5, by_epoch=False, start=0) # validation 만 실행
 
 # checkpoint_config 추가
