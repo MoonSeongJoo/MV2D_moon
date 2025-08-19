@@ -98,8 +98,8 @@ class MV2DSHead(MV2DHead):
         # self.corr_loss = build_head(corr_loss)
         self.z_estimator = build_head(z_estimator)
 
-        # self.voxelization = build_head(voxelizer)
-        # self.lidar_voxelnet = build_head(voxelnet)
+        self.voxelization = build_head(voxelizer)
+        self.lidar_voxelnet = build_head(voxelnet)
        
         # self.z_estimator = ZEstimator(enc_channels=312, bbox_channels=256, uv_dim=2, hidden_dim=512)
         # self.pts_regressor = pts_regressor()
@@ -279,13 +279,13 @@ class MV2DSHead(MV2DHead):
             intrinsic=self.process_intrins_feat(rois, intrinsics)
         )
 
-        # #### voxelization ######
-        # pts_voxels,pts_coords,pts_num_points = self.voxelization(raw_points)
-        # bev_feat = self.lidar_voxelnet(pts_voxels, pts_coords, pts_num_points)
+        #### voxelization ######
+        pts_voxels,pts_coords,pts_num_points = self.voxelization(raw_points)
+        bev_feat = self.lidar_voxelnet(pts_voxels, pts_coords, pts_num_points)
 
         ###### SJ MOON 수정 #############
         # with torch.no_grad():
-        dense_depth_map_gt = dense_map_from_depth_batch(uvz_gt.squeeze(0),grid=3,iterations=3)
+        # dense_depth_map_gt = dense_map_from_depth_batch(uvz_gt.squeeze(0),grid=3,iterations=3)
         dense_depth_map = dense_map_from_depth_batch(lidar_depth_mis,grid=3,iterations=3)
         dense_depth_img_mis = dense_depth_map.to(dtype=torch.uint8)
         dense_depth_img_color_mis = batch_colormap(dense_depth_img_mis)
@@ -340,8 +340,8 @@ class MV2DSHead(MV2DHead):
         # scaled1_query_input = scale_uvz_points(query_input,original_size=(900,1600),target_size=(192,640))
         # scaled2_query_input = normalize_uv_points(scaled1_query_input)
 
-        query_input[..., 0] /= 1408.0
-        query_input[..., 1] /= 512.0
+        query_input[..., 0] /= img.shape[3]  # 1600
+        query_input[..., 1] /= img.shape[2]  # 928
         query_input[:,:,0] = query_input[:,:,0]/2    # recaling points for sbs image resizing
         query_input[:,:,1] = query_input[:,:,1]
 
@@ -374,36 +374,36 @@ class MV2DSHead(MV2DHead):
         raw_pred_center_pts1[..., 2] = (raw_pred_center_pts1[..., 2] - 0.5) * 2
         # raw_pred_center_pts1[..., 3] = raw_pred_center_pts1[..., 3] * 2
         raw_pred_center_pts2 = raw_pred_center_pts1.clone()
-        raw_pred_center_pts2[..., 2] *= 1408.0
-        raw_pred_center_pts2[..., 3] *= 512.0
+        raw_pred_center_pts2[..., 2] *= dense_depth_img_color_mis.shape[3]  # 1600
+        raw_pred_center_pts2[..., 3] *= dense_depth_img_color_mis.shape[2]  # 900
 
-        # # ##### 검증용 display ######
-        # from image_processing_unit_Ver15_0 import draw_correspondences
-        # # corrs_pred_norm = self.inverse_layer_norm(corrs_pred, self.final_ln)
-        # # rois_center_disp = scale_uvz_points(rois_center[...,2:],original_size=(900,1600),target_size=(192,640))
-        # # trimed_corrs = batch_rois_center_by_cam_id(rois_center,batch_size=200)
-        # # pred_corrs = torch.cat([rois_center_disp,pred_center_pts1[...,2:]],dim=-1)
-        # # gt_corrs = torch.cat([query_input,corr_target],dim=-1)
-        # pred_corrs = torch.cat([query_input,raw_corrs],dim=-1)
-        # # int_ids = original_camera_ids.to(torch.long).cpu()
-        # # if len(int_ids) < 6:
-        # #     print ("len(int_ids) < 6")
-        # # 카메라 ID ↔ 인덱스 매핑 생성
-        # # id_to_idx = {cid.item(): idx for idx, cid in enumerate(original_camera_ids)}
-        # # for cid in int_ids :
-        # for cid in range(6):
-        #     # idx = id_to_idx[cid.item()]
-        #     # draw_correspondences(
-        #     #     trimed_corrs = gt_corrs[cid][:10,...],  # 첫 번째 배치 선택
-        #     #     sbs_img=sbs_img[cid],
-        #     #     save_path='correspondence_visualization_gt.jpg'
-        #     # )
-        #     draw_correspondences(
-        #         trimed_corrs = pred_corrs[cid][:10,...],  # 첫 번째 배치 선택
-        #         sbs_img=sbs_img[cid],
-        #         save_path='correspondence_visualization_pred.jpg'
-        #     )
-        #     print ("end")
+        # ##### 검증용 display ######
+        from image_processing_unit_Ver15_0 import draw_correspondences
+        # corrs_pred_norm = self.inverse_layer_norm(corrs_pred, self.final_ln)
+        # rois_center_disp = scale_uvz_points(rois_center[...,2:],original_size=(900,1600),target_size=(192,640))
+        # trimed_corrs = batch_rois_center_by_cam_id(rois_center,batch_size=200)
+        # pred_corrs = torch.cat([rois_center_disp,pred_center_pts1[...,2:]],dim=-1)
+        # gt_corrs = torch.cat([query_input,corr_target],dim=-1)
+        pred_corrs = torch.cat([query_input,raw_corrs],dim=-1)
+        # int_ids = original_camera_ids.to(torch.long).cpu()
+        # if len(int_ids) < 6:
+        #     print ("len(int_ids) < 6")
+        # 카메라 ID ↔ 인덱스 매핑 생성
+        # id_to_idx = {cid.item(): idx for idx, cid in enumerate(original_camera_ids)}
+        # for cid in int_ids :
+        for cid in range(6):
+            # idx = id_to_idx[cid.item()]
+            # draw_correspondences(
+            #     trimed_corrs = gt_corrs[cid][:10,...],  # 첫 번째 배치 선택
+            #     sbs_img=sbs_img[cid],
+            #     save_path='correspondence_visualization_gt.jpg'
+            # )
+            draw_correspondences(
+                trimed_corrs = pred_corrs[cid][:1,...],  # 첫 번째 배치 선택
+                sbs_img=sbs_img[cid],
+                save_path='correspondence_visualization_pred.jpg'
+            )
+            print ("end")
 
         # transformed_uv = transform_uv_points(rois_with_indices,uv_set)      
         # esitmated_z = self.z_estimator(transformed_uv[...,:4], dense_depth_map_gt,bbox_feats,ref_points_uvz)
@@ -778,7 +778,7 @@ class MV2DSHead(MV2DHead):
                                                             corr_feats,
                                                             ~mask[..., None, None].expand_as(corr_feats[:, :, 0]),
                                                             corr_pe,
-                                                            bev_feat=None,
+                                                            bev_feat,
                                                             attn_mask=None,
                                                             cross_attn_mask=None,
                                                             force_fp32=self.force_fp32, )

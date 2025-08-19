@@ -36,7 +36,7 @@ class MV2DHead(BaseRoIHead, BBoxTestMixin, MaskTestMixin):
         if isinstance(self.roi_size, int):
             self.roi_size = [self.roi_size, self.roi_size]
 
-        query_generator.update(dict(loss_cls=self.bbox_head.loss_cls))
+        # query_generator.update(dict(loss_cls=self.bbox_head.loss_cls))
         # self.query_generator = QueryGenerator(**query_generator)
         self.position_encoding = PE(**pe)
         self.box_corr_module = BoxCorrelation(**box_correlation)

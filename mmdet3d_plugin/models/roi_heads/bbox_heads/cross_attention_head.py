@@ -239,7 +239,7 @@ class CrossAttentionBoxHead(BaseModule):
         self.loss_cls = build_loss(loss_cls)
         self.loss_bbox = build_loss(loss_bbox)
         self.transformer = build_transformer(transformer)
-        # self.transformer_lidar = build_transformer(transformer_lidar)
+        self.transformer_lidar = build_transformer(transformer_lidar)
         self.pc_range = pc_range
         self.embed_dims = embed_dims
         self.pre_embed = pre_embed
@@ -256,22 +256,22 @@ class CrossAttentionBoxHead(BaseModule):
         self.cls_out_channels = num_classes
         cls_branch = []
         for _ in range(num_reg_fcs):
-            cls_branch.append(Linear(self.embed_dims, self.embed_dims))
-            cls_branch.append(nn.LayerNorm(self.embed_dims))
+            cls_branch.append(Linear(self.embed_dims*2, self.embed_dims*2))
+            cls_branch.append(nn.LayerNorm(self.embed_dims*2))
             cls_branch.append(nn.ReLU(inplace=True))
-        cls_branch.append(Linear(self.embed_dims, self.cls_out_channels))
+        cls_branch.append(Linear(self.embed_dims*2, self.cls_out_channels))
         fc_cls = nn.Sequential(*cls_branch)
         self.cls_branches = nn.ModuleList(
             [copy.deepcopy(fc_cls) for _ in range(self.num_pred)])
         if not use_reg_layer:
             reg_branch = []
             for _ in range(num_reg_fcs):
-                reg_branch.append(Linear(self.embed_dims, self.embed_dims))
+                reg_branch.append(Linear(self.embed_dims*2, self.embed_dims*2))
                 reg_branch.append(nn.ReLU())
-            reg_branch.append(Linear(self.embed_dims, sum(group_reg_dims)))
+            reg_branch.append(Linear(self.embed_dims*2, sum(group_reg_dims)))
             reg_branch = nn.Sequential(*reg_branch)
         else:
-            reg_branch = RegLayer(self.embed_dims, num_reg_fcs, group_reg_dims)
+            reg_branch = RegLayer(self.embed_dims*2, num_reg_fcs, group_reg_dims)
         self.reg_branches = nn.ModuleList(
             [copy.deepcopy(reg_branch) for _ in range(self.num_pred)])
 
@@ -318,10 +318,7 @@ class CrossAttentionBoxHead(BaseModule):
         self.test_cfg = test_cfg
 
         self.fp16_enabled = False
-
-        #### SJMoon #### 
-        # self.corr_linear = nn.Linear()
-
+    
     def init_weights(self):
         """Initialize the transformer weights."""
         self.transformer.init_weights()
@@ -377,17 +374,17 @@ class CrossAttentionBoxHead(BaseModule):
     #                                        attn_mask=attn_mask, cross_attn_mask=cross_attn_mask, **kwargs)
     #     return outs_dec
 
-    def forward(self, reference_points, x,  masks, pos_embed, bev_feat=None,
+    def forward(self, reference_points, x,  masks, pos_embed, bev_feat,
                 attn_mask=None, cross_attn_mask=None,confidence_scores=None, force_fp32=False, query_embeds=None,
                 return_query_feats=False, **kwargs):
         if not self.pre_embed:
             query_embeds = self.position_embedding(reference_points)
 
-        # bev_input = bev_feat[1][:, None]  # [1, 1, 128, 225, 400]
-        # query_input_lidar = query_embeds.permute(1, 0, 2).contiguous()  # [1, 81, 256]
-        # pos_embed_lidar = self.get_bev3d_pos_embed(bev_input)
-        # # pos_embed_lidar = torch.zeros((1, 1, 256, 225, 400),dtype=bev_input.dtype, device=bev_input.device)
-        # mask_lidar = torch.zeros((1, 1, 225, 400), dtype=torch.bool, device=bev_input.device)
+        bev_input = bev_feat[1][:, None]  # [1, 1, 128, 225, 400]
+        query_input_lidar = query_embeds.permute(1, 0, 2).contiguous()  # [1, 81, 256]
+        pos_embed_lidar = self.get_bev3d_pos_embed(bev_input)
+        # pos_embed_lidar = torch.zeros((1, 1, 256, 225, 400),dtype=bev_input.dtype, device=bev_input.device)
+        mask_lidar = torch.zeros((1, 1, 225, 400), dtype=torch.bool, device=bev_input.device)
        
         if force_fp32:
             with torch.autocast('cuda', enabled=False):
@@ -395,9 +392,9 @@ class CrossAttentionBoxHead(BaseModule):
                                                attn_mask=attn_mask, cross_attn_mask=cross_attn_mask,
                                                confidence_scores=confidence_scores, **kwargs)
                 
-                # outs_dec_lidar, _ = self.transformer_lidar(bev_input, mask_lidar, query_input_lidar, pos_embed_lidar,
-                #                                attn_mask=attn_mask, cross_attn_mask=cross_attn_mask,
-                #                                confidence_scores=confidence_scores, **kwargs)                
+                outs_dec_lidar, _ = self.transformer_lidar(bev_input, mask_lidar, query_input_lidar, pos_embed_lidar,
+                                               attn_mask=attn_mask, cross_attn_mask=cross_attn_mask,
+                                               confidence_scores=confidence_scores, **kwargs)                
         else:
             outs_dec_camera, _ = self.transformer_camera(x, masks, query_embeds, pos_embed,
                                            attn_mask=attn_mask, cross_attn_mask=cross_attn_mask, **kwargs)
@@ -407,9 +404,9 @@ class CrossAttentionBoxHead(BaseModule):
 
         outputs_classes = []
         outputs_coords = []
-        # outs_dec_lidar = outs_dec_lidar.permute(0,2,1,3)
-        outs_dec = outs_dec_camera
-        # outs_dec = torch.cat([outs_dec_camera, outs_dec_lidar], dim=-1)
+        outs_dec_lidar = outs_dec_lidar.permute(0,2,1,3)
+        # outs_dec = outs_dec_camera
+        outs_dec = torch.cat([outs_dec_camera, outs_dec_lidar], dim=-1)
         for lvl in range(outs_dec.shape[0]):
             reference = inverse_sigmoid(reference_points.clone())
             assert reference.shape[-1] == 3
