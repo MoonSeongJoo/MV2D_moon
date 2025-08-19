@@ -374,8 +374,8 @@ class MV2DSHead(MV2DHead):
         raw_pred_center_pts1[..., 2] = (raw_pred_center_pts1[..., 2] - 0.5) * 2
         # raw_pred_center_pts1[..., 3] = raw_pred_center_pts1[..., 3] * 2
         raw_pred_center_pts2 = raw_pred_center_pts1.clone()
-        raw_pred_center_pts2[..., 2] *= img.shape[3]
-        raw_pred_center_pts2[..., 3] *= img.shape[2]
+        raw_pred_center_pts2[..., 2] *= dense_depth_img_color_mis.shape[3]
+        raw_pred_center_pts2[..., 3] *= dense_depth_img_color_mis.shape[2]
 
         # ##### 검증용 display ######
         # from image_processing_unit_Ver15_0 import draw_correspondences
@@ -384,6 +384,7 @@ class MV2DSHead(MV2DHead):
         # # trimed_corrs = batch_rois_center_by_cam_id(rois_center,batch_size=200)
         # # pred_corrs = torch.cat([rois_center_disp,pred_center_pts1[...,2:]],dim=-1)
         # # gt_corrs = torch.cat([query_input,corr_target],dim=-1)
+        # # original_camera_ids = trimed_center_pts[..., 0].clone()
         # pred_corrs = torch.cat([query_input,raw_corrs],dim=-1)
         # # int_ids = original_camera_ids.to(torch.long).cpu()
         # # if len(int_ids) < 6:
