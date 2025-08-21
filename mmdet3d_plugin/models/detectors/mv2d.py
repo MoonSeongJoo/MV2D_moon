@@ -60,13 +60,13 @@ class MV2D(Base3DDetector):
     def _freeze_backbone_modules(self):
         """corr 네트워크 제외한 모든 모듈 동결"""
         
-        # 1. Base Detector 동결
-        for param in self.base_detector.parameters():
-            param.requires_grad = False
+        # # 1. Base Detector 동결
+        # for param in self.base_detector.parameters():
+        #     param.requires_grad = False
             
-        # 2. Neck 동결
-        for param in self.neck.parameters():
-            param.requires_grad = False
+        # # 2. Neck 동결
+        # for param in self.neck.parameters():
+        #     param.requires_grad = False
             
         # # 3. ROI Head 내 corr 제외 동결
         # for name, param in self.roi_head.named_parameters():
@@ -84,11 +84,11 @@ class MV2D(Base3DDetector):
             if 'corr' in name:  # ← 핵심 변경점
                 param.requires_grad = False 
         
-        # # 5. ROI Head 내 bbox_head.transformer만 동결
-        for name, param in self.roi_head.named_parameters():
-            # "bbox_head.transformer"로 시작하는(포함하는) 파라미터만 freeze
-            if 'bbox_head.transformer' in name and 'bbox_head.transformer_lidar' not in name :
-                param.requires_grad = False
+        # # # 5. ROI Head 내 bbox_head.transformer만 동결
+        # for name, param in self.roi_head.named_parameters():
+        #     # "bbox_head.transformer"로 시작하는(포함하는) 파라미터만 freeze
+        #     if 'bbox_head.transformer' in name and 'bbox_head.transformer_lidar' not in name :
+        #         param.requires_grad = False
         
         # # ROI Head 전체 동결
         # for param in self.roi_head.parameters():
@@ -329,18 +329,18 @@ class MV2D(Base3DDetector):
             for k, v in roi_head_dict.items():
                 checkpoint[f'roi_head.{k}'] = v
             
-            # 추가 모듈 (예: grid_mask)
-            if hasattr(self, 'grid_mask'):
-                grid_mask_dict = self.grid_mask.state_dict()
-                for k, v in grid_mask_dict.items():
-                    checkpoint[f'grid_mask.{k}'] = v
+            # # 추가 모듈 (예: grid_mask)
+            # if hasattr(self, 'grid_mask'):
+            #     grid_mask_dict = self.grid_mask.state_dict()
+            #     for k, v in grid_mask_dict.items():
+            #         checkpoint[f'grid_mask.{k}'] = v
             
             save_path = os.path.join(self.save_dir, f'model_iter_{self.total_iter}_lidar_camera_fusion.pth')
             torch.save(checkpoint, save_path)
             print(f"Model saved at iteration {self.total_iter}")
 
-        if self.total_iter == 28130:
-            self.total_iter = 0
+        # if self.total_iter == 28130:
+        #     self.total_iter = 0
 
         return losses
 

@@ -377,33 +377,33 @@ class MV2DSHead(MV2DHead):
         raw_pred_center_pts2[..., 2] *= dense_depth_img_color_mis.shape[3]  # 1600
         raw_pred_center_pts2[..., 3] *= dense_depth_img_color_mis.shape[2]  # 900
 
-        # ##### 검증용 display ######
-        from image_processing_unit_Ver15_0 import draw_correspondences
-        # corrs_pred_norm = self.inverse_layer_norm(corrs_pred, self.final_ln)
-        # rois_center_disp = scale_uvz_points(rois_center[...,2:],original_size=(900,1600),target_size=(192,640))
-        # trimed_corrs = batch_rois_center_by_cam_id(rois_center,batch_size=200)
-        # pred_corrs = torch.cat([rois_center_disp,pred_center_pts1[...,2:]],dim=-1)
-        # gt_corrs = torch.cat([query_input,corr_target],dim=-1)
-        pred_corrs = torch.cat([query_input,raw_corrs],dim=-1)
-        # int_ids = original_camera_ids.to(torch.long).cpu()
-        # if len(int_ids) < 6:
-        #     print ("len(int_ids) < 6")
-        # 카메라 ID ↔ 인덱스 매핑 생성
-        # id_to_idx = {cid.item(): idx for idx, cid in enumerate(original_camera_ids)}
-        # for cid in int_ids :
-        for cid in range(6):
-            # idx = id_to_idx[cid.item()]
-            # draw_correspondences(
-            #     trimed_corrs = gt_corrs[cid][:10,...],  # 첫 번째 배치 선택
-            #     sbs_img=sbs_img[cid],
-            #     save_path='correspondence_visualization_gt.jpg'
-            # )
-            draw_correspondences(
-                trimed_corrs = pred_corrs[cid][:1,...],  # 첫 번째 배치 선택
-                sbs_img=sbs_img[cid],
-                save_path='correspondence_visualization_pred.jpg'
-            )
-            print ("end")
+        # # ##### 검증용 display ######
+        # from image_processing_unit_Ver15_0 import draw_correspondences
+        # # corrs_pred_norm = self.inverse_layer_norm(corrs_pred, self.final_ln)
+        # # rois_center_disp = scale_uvz_points(rois_center[...,2:],original_size=(900,1600),target_size=(192,640))
+        # # trimed_corrs = batch_rois_center_by_cam_id(rois_center,batch_size=200)
+        # # pred_corrs = torch.cat([rois_center_disp,pred_center_pts1[...,2:]],dim=-1)
+        # # gt_corrs = torch.cat([query_input,corr_target],dim=-1)
+        # pred_corrs = torch.cat([query_input,raw_corrs],dim=-1)
+        # # int_ids = original_camera_ids.to(torch.long).cpu()
+        # # if len(int_ids) < 6:
+        # #     print ("len(int_ids) < 6")
+        # # 카메라 ID ↔ 인덱스 매핑 생성
+        # # id_to_idx = {cid.item(): idx for idx, cid in enumerate(original_camera_ids)}
+        # # for cid in int_ids :
+        # for cid in range(6):
+        #     # idx = id_to_idx[cid.item()]
+        #     # draw_correspondences(
+        #     #     trimed_corrs = gt_corrs[cid][:10,...],  # 첫 번째 배치 선택
+        #     #     sbs_img=sbs_img[cid],
+        #     #     save_path='correspondence_visualization_gt.jpg'
+        #     # )
+        #     draw_correspondences(
+        #         trimed_corrs = pred_corrs[cid][:1,...],  # 첫 번째 배치 선택
+        #         sbs_img=sbs_img[cid],
+        #         save_path='correspondence_visualization_pred.jpg'
+        #     )
+        #     print ("end")
 
         # transformed_uv = transform_uv_points(rois_with_indices,uv_set)      
         # esitmated_z = self.z_estimator(transformed_uv[...,:4], dense_depth_map_gt,bbox_feats,ref_points_uvz)
