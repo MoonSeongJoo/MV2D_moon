@@ -4983,3 +4983,15 @@ def descale_uvz_points(uvz_tensor, original_size=(192,640),target_size=(900,1600
     
     return scaled_uvz
 
+def print_peak_memory_if_exceeded(threshold_mib=11000, location=""):
+    """
+    Checks current peak GPU memory usage and prints memory summary 
+    only if peak exceeds the given threshold (MiB).
+    Args:
+        threshold_mib (float): Threshold in MiB for printing summary.
+        location (str): Description or label for the code location.
+    """
+    peak_mib = torch.cuda.max_memory_allocated() / 1024**2
+    if peak_mib > threshold_mib:
+        print(f"[PEAK MEMORY] {peak_mib:.1f} MiB at {location}")
+        # print(torch.cuda.memory_summary())

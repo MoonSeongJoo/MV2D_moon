@@ -1,66 +1,59 @@
 import torch
 import os
-import re
+from collections import OrderedDict
 
-def convert_key(key):
-    # backbone_3d.conv_input.x.y  →  blocks.0.{x*3}.{param}
-    # m = re.match(r'backbone_3d\\.conv_input\\.(\\d+)\\.(\\w+)', key)
-    pattern = r'backbone_3d\.conv_input\.(\d+)\.(\w+)'  # r-string으로 작성
-    m = re.match(pattern, key)
-    if m:
-        idx, param = m.groups()
-        return f'blocks.0.{int(idx)*3}.{param}'
-    # backbone_3d.convN.x.y.param  →  blocks.{N}.{x*3+y}.{param}
-    m = re.match(r'backbone_3d\\.conv([0-9]+)\\.(\\d+)\\.(\\d+)\\.(\\w+)', key)
-    if m:
-        stage, block, subblock, param = m.groups()
-        block_idx = int(stage)
-        sub_idx = int(block)*3 + int(subblock)
-        return f'blocks.{block_idx}.{sub_idx}.{param}'
-    # backbone_3d.convN.x.y.num_batches_tracked  →  blocks.{N}.{x*3+y}.num_batches_tracked
-    m = re.match(r'backbone_3d\\.conv([0-9]+)\\.(\\d+)\\.(\\d+)\\.(num_batches_tracked)', key)
-    if m:
-        stage, block, subblock, param = m.groups()
-        block_idx = int(stage)
-        sub_idx = int(block)*3 + int(subblock)
-        return f'blocks.{block_idx}.{sub_idx}.{param}'
-    return None  # 변환 불가 키는 무시
+def convert_state_dict_keys(state_dict):
+    """
+    state_dict에서 'pts_backbone.' 접두사를 'backbone_3d.'로 교체합니다.
+    """
+    new_state_dict = OrderedDict()
+    prefix_to_remove = 'pts_backbone.'
+    
+    # 모델이 실제로 필요로 하는 키 접두사로 수정합니다.
+    new_prefix = 'backbone_3d.' 
+    
+    print("🚀 키 변환 시작 (접두사 교체 방식)...")
 
-def extract_and_convert_from_model_state(checkpoint_path, save_path):
-    print(f"📂 Loading checkpoint: {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
-    if 'model_state' not in checkpoint:
-        print("❌ 'model_state' key가 없습니다.")
-        return False
-    state_dict = checkpoint['model_state']
-    print(f"✅ 'model_state' key 확인됨, 총 파라미터 개수: {len(state_dict)}")
-
-    new_state_dict = {}
     for key, value in state_dict.items():
-        if key.startswith('backbone_3d'):
-            new_key = convert_key(key)
-            if new_key is not None:
-                new_state_dict[new_key] = value
-                print(f"✅ 변환: {key} -> {new_key}")
-        else:
-            # backbone_3d로 시작하지 않는 키들은 필요시 별도 처리하거나 스킵
-            pass
+        # 1. 키가 'pts_backbone.'으로 시작하는지 확인
+        if key.startswith(prefix_to_remove):
+            # 2. 기존 접두사를 제거하고 새로운 접두사를 앞에 붙여 새 키를 생성
+            base_key = key[len(prefix_to_remove):]
+            new_key = new_prefix + base_key
+            new_state_dict[new_key] = value
+            # print(f"  ✅ {key} -> {new_key}") # 변환 로그 확인 시 주석 해제
 
-    torch.save(new_state_dict, save_path)
-    print(f"💾 변환된 가중치 저장 완료: {save_path}")
-    return True
+    print(f"✅ 키 변환 완료! 총 {len(new_state_dict)}개의 백본 파라미터가 변환되었습니다.")
+    return new_state_dict
 
 def main():
-    checkpoint_path = "/workspace/MV2D_moon/data/weights/second_iou7909.pth"
-    save_path = "/workspace/MV2D_moon/data/weights/converted_second_7862.pth"
+    checkpoint_path = "/workspace/MV2D_moon/data/weights/hv_pointpillars_secfpn_sbn-all_4x8_2x_nus-3d_20210826_225857-f19d00a3.pth"
+    # 혼동을 피하기 위해 저장 파일 이름을 변경하는 것을 추천합니다.
+    save_path = "/workspace/MV2D_moon/data/weights/converted_backbone_weights_final.pth"
+
     if not os.path.exists(checkpoint_path):
         print(f"❌ Checkpoint 파일 없음: {checkpoint_path}")
         return
-    success = extract_and_convert_from_model_state(checkpoint_path, save_path)
-    if success:
+
+    print(f"📂 Checkpoint 로드 중: {checkpoint_path}")
+    original_checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    
+    if 'state_dict' in original_checkpoint:
+        state_dict = original_checkpoint['state_dict']
+    else:
+        state_dict = original_checkpoint
+
+    # 키 변환 함수 호출
+    converted_state_dict = convert_state_dict_keys(state_dict)
+
+    # 변환된 가중치 저장
+    if converted_state_dict:
+        torch.save(converted_state_dict, save_path)
+        print(f"💾 변환된 가중치 저장 완료: {save_path}")
         print("\n🎉 변환 및 저장 성공!")
     else:
-        print("\n❌ 변환 실패!")
+        print("\n❌ 변환할 백본 키를 찾지 못했습니다. Checkpoint 파일의 키를 확인해주세요.")
+
 
 if __name__ == "__main__":
     main()

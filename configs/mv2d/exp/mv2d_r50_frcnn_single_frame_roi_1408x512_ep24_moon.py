@@ -38,6 +38,17 @@ model = dict(
         end_level=2,
         num_outs=1,
     ),
+    voxelizer=dict(
+        type='SimpleVoxelization',
+        voxel_size=[0.2, 0.2, 8], 
+        point_cloud_range=[0, -40, -3, 70.4, 40, 1], 
+        max_num_points=32, max_voxels=(16000, 40000),
+        ),
+    voxelnet=dict(
+        type='SimpleVoxelNet',
+        load_pretrained_path='data/weights/converted_backbone_weights_final.pth',
+        device='cpu',
+    ),
     roi_head=dict(
         type='MV2DSHead',
         pc_range=point_cloud_range,
@@ -49,17 +60,17 @@ model = dict(
             roi_layer=dict(type='RoIAlign', output_size=roi_size, sampling_ratio=-1),
             featmap_strides=roi_srides,
             out_channels=512, ),
-        voxelizer=dict(
-            type='SimpleVoxelization',
-            voxel_size=[0.2, 0.2, 8], 
-            point_cloud_range=[0, -40, -3, 70.4, 40, 1], 
-            max_num_points=32, max_voxels=(16000, 40000),
-            ),
-        voxelnet=dict(
-            type='SimpleVoxelNet',
-            load_pretrained_path=None,
-            device='cpu',
-        ),
+        # voxelizer=dict(
+        #     type='SimpleVoxelization',
+        #     voxel_size=[0.2, 0.2, 8], 
+        #     point_cloud_range=[0, -40, -3, 70.4, 40, 1], 
+        #     max_num_points=32, max_voxels=(16000, 40000),
+        #     ),
+        # voxelnet=dict(
+        #     type='SimpleVoxelNet',
+        #     load_pretrained_path=None,
+        #     device='cpu',
+        # ),
         corr=dict(
             type='COTR',
             num_kp=200,
@@ -111,7 +122,7 @@ model = dict(
                 decoder=dict(
                     type='PETRTransformerDecoder',
                     return_intermediate=True,
-                    num_layers=3,
+                    num_layers=2,
                     transformerlayers=dict(
                         type='PETRTransformerDecoderLayer',
                         attn_cfgs=[
@@ -148,19 +159,19 @@ model = dict(
             ),
             loss_bbox=dict(type='L1Loss', loss_weight=0.25),
         ),
-        query_generator=dict(
-            with_avg_pool=True,
-            num_shared_convs=1,
-            num_shared_fcs=1,
-            in_channels=256,
-            fc_out_channels=1024,
-            roi_feat_size=roi_size,
-            extra_encoding=dict(
-                num_layers=2,
-                feat_channels=[512, 256],
-                features=[dict(type='intrinsic', in_channels=16,)]
-            ),
-        ),
+        # query_generator=dict(
+        #     with_avg_pool=True,
+        #     num_shared_convs=1,
+        #     num_shared_fcs=1,
+        #     in_channels=256,
+        #     fc_out_channels=1024,
+        #     roi_feat_size=roi_size,
+        #     extra_encoding=dict(
+        #         num_layers=2,
+        #         feat_channels=[512, 256],
+        #         features=[dict(type='intrinsic', in_channels=16,)]
+        #     ),
+        # ),
         pe=dict(
             positional_encoding=dict(
                 type='SinePositionalEncoding3D', num_feats=128, normalize=True),
@@ -215,7 +226,7 @@ data = dict(
 optimizer = dict(
     _delete_=True,
     type='AdamW',
-    lr=6e-5,
+    lr=2.48e-5,
     paramwise_cfg=dict(
         custom_keys={
             'base_detector.backbone': dict(lr_mult=0.25),
@@ -237,8 +248,8 @@ total_epochs = 72
 
 # 학습 재개를 위한 설정
 # load_from = None
-load_from = 'data/saved_models/model_iter_2000_lidar_only.pth' #check point path
-# resume_from = 'data/saved_models/model_iter_2000_lidar_only.pth'  # 같은 체크포인트 경로
+load_from = 'data/weights/backbone2d_corr_rev1.0.pth' #check point path
+# resume_from = 'data/weights/model_iter_56000_lidar_camera_fusion.pth' # 같은 체크포인트 경로
 resume_from = None
 runner = dict(type='EpochBasedRunner', max_epochs=total_epochs)
 evaluation = dict(interval=72, )

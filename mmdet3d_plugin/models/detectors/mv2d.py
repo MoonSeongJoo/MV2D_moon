@@ -13,10 +13,11 @@ from torchvision.transforms import functional as tvtf
 
 from mmcv.runner import auto_fp16
 
-from mmdet.models.builder import DETECTORS, build_detector, build_head, build_neck #,build_calib_cross_attn
+from mmdet.models.builder import DETECTORS, build_detector, build_head, build_neck ,build_backbone_lidar
 from mmdet3d.core import (bbox3d2result, box3d_multiclass_nms)
 from mmdet3d.models.detectors.base import Base3DDetector
 from mmdet3d_plugin.models.utils.grid_mask import CustomGridMask
+from image_processing_unit_Ver15_0 import print_peak_memory_if_exceeded
 
 @DETECTORS.register_module()
 class MV2D(Base3DDetector):
@@ -24,6 +25,8 @@ class MV2D(Base3DDetector):
     def __init__(self,
                  base_detector,
                  neck,
+                 voxelizer,
+                 voxelnet,
                  roi_head,
                  train_cfg=None,
                  test_cfg=None,
@@ -35,6 +38,8 @@ class MV2D(Base3DDetector):
 
         self.base_detector = build_detector(base_detector)
         self.neck = build_neck(neck)
+        self.voxelization = build_backbone_lidar(voxelizer)
+        self.lidar_voxelnet = build_backbone_lidar(voxelnet)
         if train_cfg is not None:
             roi_head.update(train_cfg=train_cfg['rcnn'])
         if test_cfg is not None:
@@ -60,13 +65,18 @@ class MV2D(Base3DDetector):
     def _freeze_backbone_modules(self):
         """corr 네트워크 제외한 모든 모듈 동결"""
         
-        # # 1. Base Detector 동결
-        # for param in self.base_detector.parameters():
-        #     param.requires_grad = False
+        # 1. Base Detector 동결
+        for param in self.base_detector.parameters():
+            param.requires_grad = False
             
-        # # 2. Neck 동결
-        # for param in self.neck.parameters():
-        #     param.requires_grad = False
+        # 2. Neck 동결
+        for param in self.neck.parameters():
+            param.requires_grad = False
+        
+        # # 4. ROI Head 내 SingleRoIExtractor 만 동결 
+        for name, param in self.roi_head.named_parameters():
+            if 'bbox_roi_extractor' in name:  # ← 핵심 변경점
+                param.requires_grad = False 
             
         # # 3. ROI Head 내 corr 제외 동결
         # for name, param in self.roi_head.named_parameters():
@@ -79,9 +89,11 @@ class MV2D(Base3DDetector):
         #     if 'corr' not in name and 'pts_regressor' not in name:
         #         param.requires_grad = False
         
-        # # 4. ROI Head 내 corr 만 동결 
+        # # 4. ROI Head 내 corr /z_estimator 만 동결 
         for name, param in self.roi_head.named_parameters():
             if 'corr' in name:  # ← 핵심 변경점
+                param.requires_grad = False 
+            if 'z_estimator' in name:  # ← 핵심 변경점
                 param.requires_grad = False 
         
         # # ROI Head 전체 동결
@@ -255,8 +267,8 @@ class MV2D(Base3DDetector):
             gt_bboxes,
             gt_labels,
             gt_bboxes_ignore)
-        for k, v in losses_detector.items():
-            losses['det_' + k] = v
+        # for k, v in losses_detector.items():
+        #     losses['det_' + k] = v
 
         # generate 2D detection
         self.base_detector.set_detection_cfg(self.train_cfg.get('detection_proposal'))
@@ -274,12 +286,19 @@ class MV2D(Base3DDetector):
         feat = self.process_detector_feat(detector_feat)
         # mis_depthmap_feat = self.process_detector_feat(mis_depth_feat)
         
+        #### voxelization ######
+        # print_peak_memory_if_exceeded(11000,"entry")  # 11GB 이상 사용 시 메모리 요약 출력
+        pts_voxels,pts_coords,pts_num_points = self.voxelization(raw_points)
+        # print_peak_memory_if_exceeded(11000,"voxelization")  # 11GB 이상 사용 시 메모리 요약 출력
+        bev_feat = self.lidar_voxelnet(pts_voxels, pts_coords, pts_num_points)
+        # print_peak_memory_if_exceeded(11000,"voxelnet")  # 11GB 이상 사용 시 메모리 요약 출력
+        
         # roi_losses,loss_corr,loss_pc_distance  = self.roi_head.forward_train(img_ori,img_metas,lidar_depth_mis, feat, detections,lidar_depth_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4, gt_bboxes, gt_labels,
         #                                     gt_bboxes_3d, gt_labels_3d,
         #                                     ori_gt_bboxes_3d, ori_gt_labels_3d,
         #                                     attr_labels, None)
         
-        roi_losses = self.roi_head.forward_train(img_ori,img_metas,raw_points,lidar_depth_mis, feat, detections,lidar_depth_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4, gt_bboxes, gt_labels,
+        roi_losses = self.roi_head.forward_train(img_ori,img_metas,bev_feat,lidar_depth_mis, feat, detections,lidar_depth_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4, gt_bboxes, gt_labels,
                                     gt_bboxes_3d, gt_labels_3d,
                                     ori_gt_bboxes_3d, ori_gt_labels_3d,
                                     attr_labels, None)
@@ -290,51 +309,51 @@ class MV2D(Base3DDetector):
         # 그래디언트 클리핑 적용
         # torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=20)
 
-        self.total_iter += 1
-        if self.total_iter % 2000 == 0:
-            import time
-            # checkpoint = {}
-            # 계층적 키 매핑 생성 (버퍼 포함)
-                # 메타데이터 생성
-            meta = {
-                'epoch': self.total_iter // 28130 ,  # 에폭 기반이 아닌 경우 0으로 설정
-                'iter': self.total_iter,
-                'time': time.strftime('%Y-%m-%d %H:%M:%S')
-            }
+        # self.total_iter += 1
+        # if self.total_iter % 2000 == 0:
+        #     import time
+        #     # checkpoint = {}
+        #     # 계층적 키 매핑 생성 (버퍼 포함)
+        #         # 메타데이터 생성
+        #     meta = {
+        #         'epoch': self.total_iter // 28130 ,  # 에폭 기반이 아닌 경우 0으로 설정
+        #         'iter': self.total_iter,
+        #         'time': time.strftime('%Y-%m-%d %H:%M:%S')
+        #     }
 
-                # 체크포인트 구성
-            checkpoint = {
-                'state_dict': self.state_dict(),  # 전체 모델 파라미터
-                'meta': meta
-            }
+        #         # 체크포인트 구성
+        #     checkpoint = {
+        #         'state_dict': self.state_dict(),  # 전체 모델 파라미터
+        #         'meta': meta
+        #     }
             
-            # Base Detector: state_dict()로 파라미터 + 버퍼 전체 저장
-            base_detector_dict = self.base_detector.state_dict()
-            for k, v in base_detector_dict.items():
-                checkpoint[f'base_detector.{k}'] = v
+        #     # Base Detector: state_dict()로 파라미터 + 버퍼 전체 저장
+        #     base_detector_dict = self.base_detector.state_dict()
+        #     for k, v in base_detector_dict.items():
+        #         checkpoint[f'base_detector.{k}'] = v
             
-            # Neck: state_dict() 사용
-            neck_dict = self.neck.state_dict()
-            for k, v in neck_dict.items():
-                checkpoint[f'neck.{k}'] = v
+        #     # Neck: state_dict() 사용
+        #     neck_dict = self.neck.state_dict()
+        #     for k, v in neck_dict.items():
+        #         checkpoint[f'neck.{k}'] = v
             
-            # ROI Head: state_dict() 사용
-            roi_head_dict = self.roi_head.state_dict()
-            for k, v in roi_head_dict.items():
-                checkpoint[f'roi_head.{k}'] = v
+        #     # ROI Head: state_dict() 사용
+        #     roi_head_dict = self.roi_head.state_dict()
+        #     for k, v in roi_head_dict.items():
+        #         checkpoint[f'roi_head.{k}'] = v
             
-            # 추가 모듈 (예: grid_mask)
-            if hasattr(self, 'grid_mask'):
-                grid_mask_dict = self.grid_mask.state_dict()
-                for k, v in grid_mask_dict.items():
-                    checkpoint[f'grid_mask.{k}'] = v
+        #     # 추가 모듈 (예: grid_mask)
+        #     if hasattr(self, 'grid_mask'):
+        #         grid_mask_dict = self.grid_mask.state_dict()
+        #         for k, v in grid_mask_dict.items():
+        #             checkpoint[f'grid_mask.{k}'] = v
             
-            save_path = os.path.join(self.save_dir, f'model_iter_{self.total_iter}_lidar_only.pth')
-            torch.save(checkpoint, save_path)
-            print(f"Model saved at iteration {self.total_iter}")
+        #     save_path = os.path.join(self.save_dir, f'model_iter_{self.total_iter}_lidar_only.pth')
+        #     torch.save(checkpoint, save_path)
+        #     print(f"Model saved at iteration {self.total_iter}")
 
-        if self.total_iter == 28130:
-            self.total_iter = 0
+        # if self.total_iter == 28130:
+        #     self.total_iter = 0
 
         return losses
 

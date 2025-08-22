@@ -21,9 +21,63 @@ class SECOND(BaseModule):
         conv_cfg (dict): Config dict of convolutional layers.
     """
 
+    # def __init__(self,
+    #              in_channels=128,
+    #              out_channels=[128, 128, 256],
+    #              layer_nums=[3, 5, 5],
+    #              layer_strides=[2, 2, 2],
+    #              norm_cfg=dict(type='BN', eps=1e-3, momentum=0.01),
+    #              conv_cfg=dict(type='Conv2d', bias=False),
+    #              init_cfg=None,
+    #              pretrained=None):
+    #     super(SECOND, self).__init__(init_cfg=init_cfg)
+    #     assert len(layer_strides) == len(layer_nums)
+    #     assert len(out_channels) == len(layer_nums)
+
+    #     in_filters = [in_channels, *out_channels[:-1]]
+    #     # note that when stride > 1, conv2d with same padding isn't
+    #     # equal to pad-conv2d. we should use pad-conv2d.
+    #     blocks = []
+    #     for i, layer_num in enumerate(layer_nums):
+    #         block = [
+    #             build_conv_layer(
+    #                 conv_cfg,
+    #                 in_filters[i],
+    #                 out_channels[i],
+    #                 3,
+    #                 stride=layer_strides[i],
+    #                 padding=1),
+    #             build_norm_layer(norm_cfg, out_channels[i])[1],
+    #             nn.ReLU(inplace=True),
+    #         ]
+    #         for j in range(layer_num):
+    #             block.append(
+    #                 build_conv_layer(
+    #                     conv_cfg,
+    #                     out_channels[i],
+    #                     out_channels[i],
+    #                     3,
+    #                     padding=1))
+    #             block.append(build_norm_layer(norm_cfg, out_channels[i])[1])
+    #             block.append(nn.ReLU(inplace=True))
+
+    #         block = nn.Sequential(*block)
+    #         blocks.append(block)
+
+    #     self.blocks = nn.ModuleList(blocks)
+
+    #     assert not (init_cfg and pretrained), \
+    #         'init_cfg and pretrained cannot be setting at the same time'
+    #     if isinstance(pretrained, str):
+    #         warnings.warn('DeprecationWarning: pretrained is a deprecated, '
+    #                       'please use "init_cfg" instead')
+    #         self.init_cfg = dict(type='Pretrained', checkpoint=pretrained)
+    #     else:
+    #         self.init_cfg = dict(type='Kaiming', layer='Conv2d')
+    
     def __init__(self,
-                 in_channels=128,
-                 out_channels=[128, 128, 256],
+                 in_channels=64,  # <-- 수정: 4 또는 128이 아닌 64로 변경
+                 out_channels=[64, 128, 256], # <-- 수정: 첫 블록의 출력을 64로, 이후는 일반적인 구성으로 변경
                  layer_nums=[3, 5, 5],
                  layer_strides=[2, 2, 2],
                  norm_cfg=dict(type='BN', eps=1e-3, momentum=0.01),

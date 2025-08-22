@@ -44,15 +44,15 @@ from image_processing_unit_Ver15_0 import (find_all_depthmap_z_adv,find_rois_non
                                            deduplicate_obj_ids,merge_point_clouds,differentiable_deduplicate,differentiable_object_matching,
                                            differentiable_object_matching,differentiable_merge_point_clouds,
                                            convert_to_bbox_coordinates_matched, get_center_points,
-                                           batch_rois_center_by_cam_id,remove_duplicate_objs)
+                                           batch_rois_center_by_cam_id,remove_duplicate_objs,print_peak_memory_if_exceeded)
 
 
 @HEADS.register_module()
 class MV2DSHead(MV2DHead):
     def __init__(self,
                  # denoise setting
-                 voxelizer,
-                 voxelnet,
+                #  voxelizer,
+                #  voxelnet,
                  corr,
                  corr_loss,
                  z_estimator,
@@ -98,8 +98,8 @@ class MV2DSHead(MV2DHead):
         # self.corr_loss = build_head(corr_loss)
         self.z_estimator = build_head(z_estimator)
 
-        self.voxelization = build_head(voxelizer)
-        self.lidar_voxelnet = build_head(voxelnet)
+        # self.voxelization = build_head(voxelizer)
+        # self.lidar_voxelnet = build_head(voxelnet)
        
         # self.z_estimator = ZEstimator(enc_channels=312, bbox_channels=256, uv_dim=2, hidden_dim=512)
         # self.pts_regressor = pts_regressor()
@@ -246,7 +246,7 @@ class MV2DSHead(MV2DHead):
         scaled = (tanh_out + 1) * 0.5  # [0, 1] 범위로 변환
         return min_val + (max_val - min_val) * scaled
 
-    def _bbox_forward_denoise(self, img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4): # for SJMOON
+    def _bbox_forward_denoise(self, img,img_metas,bev_feat,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4): # for SJMOON
     # def _bbox_forward_denoise(self, x, proposal_list, img_metas): # for original 
         # avoid empty 2D detection
         if sum([len(p) for p in proposal_list]) == 0:
@@ -279,9 +279,9 @@ class MV2DSHead(MV2DHead):
             intrinsic=self.process_intrins_feat(rois, intrinsics)
         )
 
-        #### voxelization ######
-        pts_voxels,pts_coords,pts_num_points = self.voxelization(raw_points)
-        bev_feat = self.lidar_voxelnet(pts_voxels, pts_coords, pts_num_points)
+        # #### voxelization ######
+        # pts_voxels,pts_coords,pts_num_points = self.voxelization(raw_points)
+        # bev_feat = self.lidar_voxelnet(pts_voxels, pts_coords, pts_num_points)
 
         ###### SJ MOON 수정 #############
         # with torch.no_grad():
@@ -772,7 +772,7 @@ class MV2DSHead(MV2DHead):
             #                                                 cross_attn_mask=None,  # confidence 기반 cross-attention mask
             #                                                 confidence_scores=confidence_scores,  # confidence_scores 추가
             #                                                 force_fp32=self.force_fp32,)
-
+            # print_peak_memory_if_exceeded(11000,"roi_head entry")
             all_cls_scores, all_bbox_preds = self.bbox_head(ref_points[:, None],
                                                             corr_feats,
                                                             ~mask[..., None, None].expand_as(corr_feats[:, :, 0]),
@@ -812,10 +812,10 @@ class MV2DSHead(MV2DHead):
         return bbox_results
 
     # def _bbox_forward(self, x, proposal_list, img_metas): # for original 
-    def _bbox_forward(self,img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4): ### this modified moon
+    def _bbox_forward(self,img,img_metas,bev_feat,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4): ### this modified moon
         # bbox_results = self._bbox_forward_denoise(x, proposal_list, img_metas) # for original 
         # bbox_results , loss_corr = self._bbox_forward_denoise(img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON 
-        bbox_results = self._bbox_forward_denoise(img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON 
+        bbox_results = self._bbox_forward_denoise(img,img_metas,bev_feat,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON 
         # return bbox_results , loss_corr
         return bbox_results
 
@@ -837,11 +837,11 @@ class MV2DSHead(MV2DHead):
         num_tgt = known_indice.numel()
         return known_labels, known_bboxs, output_known_class, output_known_coord, num_tgt
     
-    def _bbox_forward_train(self, img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4): # for SJMOON
+    def _bbox_forward_train(self, img,img_metas,bev_feat,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4): # for SJMOON
     # def _bbox_forward_train(self, x, proposal_list, img_metas): # for original 
         """Run forward function and calculate loss for box head in training."""
         # bbox_results , loss_corr = self._bbox_forward(img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON
-        bbox_results = self._bbox_forward(img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
+        bbox_results = self._bbox_forward(img,img_metas,bev_feat,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
         # bbox_results = self._bbox_forward(x, proposal_list, img_metas) # for original 
         bbox_results.update(pred={'cls_scores': bbox_results['cls_scores'], 'bbox_preds': bbox_results['bbox_preds']})
 
@@ -851,7 +851,7 @@ class MV2DSHead(MV2DHead):
     def forward_train(self,
                       img,
                       img_metas,
-                      raw_points,
+                      bev_feat,
                       lidar_depth_mis,
                       x,
                       proposal_list,
@@ -897,7 +897,7 @@ class MV2DSHead(MV2DHead):
             img_metas[0]['gt_labels_3d'] = ori_gt_labels_3d[0]
 
         # results_from_last , loss_corr = self._bbox_forward_train(img,img_metas,raw_points,lidar_depth_mis, x, proposal_boxes, uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJ MOON 
-        results_from_last = self._bbox_forward_train(img,img_metas,raw_points,lidar_depth_mis, x, proposal_boxes, uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
+        results_from_last = self._bbox_forward_train(img,img_metas,bev_feat,lidar_depth_mis, x, proposal_boxes, uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
         # results_from_last = self._bbox_forward_train(x, proposal_boxes, img_metas) # for original 
         preds = results_from_last['pred']
         # Confidence 손실 추출

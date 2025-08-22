@@ -31,6 +31,7 @@ from mmcv.utils import (ConfigDict, build_from_cfg, deprecated_api_warning,
                         to_2tuple)
 import copy
 import torch.utils.checkpoint as cp
+from image_processing_unit_Ver15_0 import print_peak_memory_if_exceeded
 
 
 @TRANSFORMER.register_module()
@@ -591,3 +592,25 @@ class PETRTransformerDecoder(TransformerLayerSequence):
                 else:
                     intermediate.append(query)
         return torch.stack(intermediate)
+
+    # def forward(self, query, *args, **kwargs):
+    #     if not self.return_intermediate:
+    #         x = super().forward(query, *args, **kwargs)
+    #         if self.post_norm:
+    #             x = self.post_norm(x)[None]
+    #         return x
+        
+    #     print_peak_memory_if_exceeded(11000,"intermediate entry point")
+    #     intermediate = []
+    #     for layer in self.layers:
+    #         query = layer(query, *args, **kwargs)
+    #         if self.return_intermediate:
+    #             if self.post_norm:
+    #                 out = self.post_norm(query)
+    #             else:
+    #                 out = query
+    #             # 필요하면 detach 할 수도 있지만, 학습에 영향을 미치니 신중히 결정해야 함
+    #             intermediate.append(out) 
+    #     print_peak_memory_if_exceeded(11000,"intermediate endpoint") 
+    #     torch.cuda.empty_cache()
+    #     return torch.stack(intermediate)

@@ -17,6 +17,7 @@ from mmdet.models.utils.transformer import inverse_sigmoid
 from mmdet3d_plugin.core.bbox.util import normalize_bbox
 from mmdet3d_plugin.models.utils.pe import pos2posemb3d
 from mmdet3d_plugin.models.utils import PETRTransformer
+from image_processing_unit_Ver15_0 import print_peak_memory_if_exceeded
 
 ############ sparse cross attention lidar voxel feature #############
 @TRANSFORMER.register_module()
@@ -25,20 +26,48 @@ class MV2DTransformer_lidar(PETRTransformer):
         super().__init__(**kwargs)
         self.proj_bev_feat = nn.Conv2d(128, embed_dims, 1)  # 128 → 256으로 projection
     
+    # def forward(self, x, mask, query_embed, pos_embed,
+    #             attn_mask=None, cross_attn_mask=None, **kwargs):
+    #     x = self.proj_bev_feat(x.squeeze(1)).unsqueeze(1)  # squeeze/add n-dim as needed
+    #     # x: [bs, n, c, h, w], mask: [bs, n, h, w], query_embed: [bs, n_query, c]
+    #     bs, n, c, h, w = x.shape
+    #     memory = x.permute(1, 3, 4, 0, 2).reshape(n * h * w, bs, c) # [bs, n, c, h, w] -> [n*h*w, bs, c]
+    #     mask = mask.view(bs, n * h * w)  # [bs, n, h, w] -> [bs, n*h*w]
+    #     query_embed = query_embed.permute(1, 0, 2)
+    #     pos_embed = pos_embed.permute(1, 3, 4, 0, 2).reshape(n * h * w, bs, c) # [bs, n, c, h, w] -> [n*h*w, bs, c]
+    #     target = torch.zeros_like(query_embed)
+    #     if cross_attn_mask is not None:
+    #         cross_attn_mask = cross_attn_mask.flatten(1, 3)   # [n_query, n, h, w] -> [n_query, n * h * w]
+        
+    #     # out_dec: [num_layers, num_query, bs, dim]
+    #     out_dec = self.decoder(
+    #         query=target,
+    #         key=memory,
+    #         value=memory,
+    #         key_pos=pos_embed,
+    #         query_pos=query_embed,
+    #         key_padding_mask=mask,
+    #         attn_masks=[attn_mask, cross_attn_mask],
+    #         **kwargs,
+    #         )
+    #     out_dec = out_dec.transpose(1, 2)
+    #     memory = memory.reshape(n, h, w, bs, c).permute(3, 0, 4, 1, 2)
+    #     return out_dec, memory
+    
+    ##### memory leakage 방지 #######
     def forward(self, x, mask, query_embed, pos_embed,
-                attn_mask=None, cross_attn_mask=None, **kwargs):
-        x = self.proj_bev_feat(x.squeeze(1)).unsqueeze(1)  # squeeze/add n-dim as needed
-        # x: [bs, n, c, h, w], mask: [bs, n, h, w], query_embed: [bs, n_query, c]
+            attn_mask=None, cross_attn_mask=None, **kwargs):
+        
+        x = self.proj_bev_feat(x.squeeze(1)).unsqueeze(1)
         bs, n, c, h, w = x.shape
-        memory = x.permute(1, 3, 4, 0, 2).reshape(n * h * w, bs, c) # [bs, n, c, h, w] -> [n*h*w, bs, c]
-        mask = mask.view(bs, n * h * w)  # [bs, n, h, w] -> [bs, n*h*w]
-        query_embed = query_embed.permute(1, 0, 2)
-        pos_embed = pos_embed.permute(1, 3, 4, 0, 2).reshape(n * h * w, bs, c) # [bs, n, c, h, w] -> [n*h*w, bs, c]
+        memory = x.permute(1, 3, 4, 0, 2).contiguous().reshape(n * h * w, bs, c)
+        mask = mask.view(bs, n * h * w)
+        query_embed = query_embed.permute(1, 0, 2).contiguous()
+        pos_embed = pos_embed.permute(1, 3, 4, 0, 2).contiguous().reshape(n * h * w, bs, c)
         target = torch.zeros_like(query_embed)
         if cross_attn_mask is not None:
-            cross_attn_mask = cross_attn_mask.flatten(1, 3)   # [n_query, n, h, w] -> [n_query, n * h * w]
-        
-        # out_dec: [num_layers, num_query, bs, dim]
+            cross_attn_mask = cross_attn_mask.flatten(1, 3).contiguous()
+        # print_peak_memory_if_exceeded(11000,"lidar cross_attention pre-processing endpoint")
         out_dec = self.decoder(
             query=target,
             key=memory,
@@ -48,9 +77,10 @@ class MV2DTransformer_lidar(PETRTransformer):
             key_padding_mask=mask,
             attn_masks=[attn_mask, cross_attn_mask],
             **kwargs,
-            )
-        out_dec = out_dec.transpose(1, 2)
-        memory = memory.reshape(n, h, w, bs, c).permute(3, 0, 4, 1, 2)
+        )
+        # print_peak_memory_if_exceeded(11000,"lidar cross_attention decoder endpoint")
+        out_dec = out_dec.transpose(1, 2).contiguous()
+        memory = memory.reshape(n, h, w, bs, c).permute(3, 0, 4, 1, 2).contiguous()
         return out_dec, memory
 
 @TRANSFORMER.register_module()
@@ -321,6 +351,7 @@ class CrossAttentionBoxHead(BaseModule):
 
         #### SJMoon #### 
         # self.corr_linear = nn.Linear()
+        self.cached_mask_lidar = torch.zeros((1, 1, 450, 800), dtype=torch.bool, device='cuda')  # 225x400은 BEV의 크기
 
     def init_weights(self):
         """Initialize the transformer weights."""
@@ -383,12 +414,16 @@ class CrossAttentionBoxHead(BaseModule):
         if not self.pre_embed:
             query_embeds = self.position_embedding(reference_points)
 
-        bev_input = bev_feat[1][:, None]  # [1, 1, 128, 225, 400]
-        query_input_lidar = query_embeds.permute(1, 0, 2).contiguous()  # [1, 81, 256]
-        pos_embed_lidar = self.get_bev3d_pos_embed(bev_input)
-        # pos_embed_lidar = torch.zeros((1, 1, 256, 225, 400),dtype=bev_input.dtype, device=bev_input.device)
-        mask_lidar = torch.zeros((1, 1, 225, 400), dtype=torch.bool, device=bev_input.device)
-       
+        # bev_feat는 그래디언트 유지
+        bev_input = bev_feat[1][:, None]  
+        # pos_embed_lidar 생성 시에만 no grad 문맥 적용
+        with torch.no_grad():
+            pos_embed_lidar = self.get_bev3d_pos_embed(bev_input,h=450, w=800, c=256)
+        mask_lidar = self.cached_mask_lidar  # 미리 초기화된 mask 재사용
+        query_input_lidar = query_embeds.permute(1, 0, 2).contiguous()
+
+        # print_peak_memory_if_exceeded(11000,"cross_attention entry")
+
         if force_fp32:
             with torch.autocast('cuda', enabled=False):
                 # outs_dec_camera, _ = self.transformer(x.float(), masks, query_embeds.float(), pos_embed.float(),
@@ -397,7 +432,8 @@ class CrossAttentionBoxHead(BaseModule):
                 
                 outs_dec_lidar, _ = self.transformer_lidar(bev_input, mask_lidar, query_input_lidar, pos_embed_lidar,
                                                attn_mask=attn_mask, cross_attn_mask=cross_attn_mask,
-                                               confidence_scores=confidence_scores, **kwargs)                
+                                               confidence_scores=confidence_scores, **kwargs)  
+                # print_peak_memory_if_exceeded(11000,"cross_attention endpoint")              
         else:
             outs_dec_camera, _ = self.transformer_camera(x, masks, query_embeds, pos_embed,
                                            attn_mask=attn_mask, cross_attn_mask=cross_attn_mask, **kwargs)

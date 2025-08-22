@@ -5,4 +5,6 @@
 # Copyright (c) 2021 Wang, Yue
 # ------------------------------------------------------------------------
 from .vovnetcp import VoVNetCP
+from .voxelnet import SimpleVoxelization, SimpleVoxelNet 
 
+__all__ = ['SimpleVoxelization','SimpleVoxelNet']
