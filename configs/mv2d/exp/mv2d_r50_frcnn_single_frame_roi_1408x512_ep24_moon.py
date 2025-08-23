@@ -247,6 +247,9 @@ evaluation = dict(interval=72, )
 # checkpoint_config 추가
 checkpoint_config = dict(interval=1)  # 매 epoch마다 저장
 
+# # Main switch to turn ON AMP for the entire training
+# fp16 = dict(loss_scale=512.)
+
 # # 수정된 설정 (기존 epoch 대신 iteration 기준 사용)
 # checkpoint_config = dict(
 #     interval=200,      # 300 iteration마다 저장

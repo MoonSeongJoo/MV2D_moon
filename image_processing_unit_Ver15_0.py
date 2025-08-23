@@ -3845,7 +3845,8 @@ def dense_map_from_depth_batch(lidar_depth_mis, grid=5, iterations=3):
             
             # 가중 평균 계산 및 업데이트
             new_depth = depth.clone()
-            new_depth[new_mask] = (weighted_depth / (weight_sum + 1e-8))[0, 0][new_mask]
+            # new_depth[new_mask] = (weighted_depth / (weight_sum + 1e-8))[0, 0][new_mask]
+            new_depth[new_mask] = (weighted_depth / (weight_sum + 1e-8))[0, 0].to(new_depth.dtype)[new_mask]
             
             # 업데이트
             depth = new_depth

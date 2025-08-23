@@ -17,6 +17,7 @@ from mmdet.models.utils.transformer import inverse_sigmoid
 from mmdet3d_plugin.core.bbox.util import normalize_bbox
 from mmdet3d_plugin.models.utils.pe import pos2posemb3d
 from mmdet3d_plugin.models.utils import PETRTransformer
+from torch.utils.checkpoint import checkpoint
 
 ############ sparse cross attention lidar voxel feature #############
 @TRANSFORMER.register_module()
@@ -206,7 +207,7 @@ class RegLayer(nn.Module):
         reg_feat = self.reg_branch(x)
         outs = []
         for task_head in self.task_heads:
-            out = task_head(reg_feat.clone())
+            out = task_head(reg_feat)
             outs.append(out)
         outs = torch.cat(outs, -1)
         return outs
@@ -401,57 +402,56 @@ class CrossAttentionBoxHead(BaseModule):
 
     #     return posemb_c
 
-    # def forward_calib_attn(self, reference_points, x, masks, pos_embed,
-    #             attn_mask=None, cross_attn_mask=None, force_fp32=False, query_embeds=None,
-    #             return_query_feats=False, **kwargs):
-    #     if not self.pre_embed:
-    #         query_embeds = self.position_embedding(reference_points)
-
-    #     if force_fp32:
-    #         with torch.autocast('cuda', enabled=False):
-    #             outs_dec, _ = self.transformer_camera(x.float(), masks, query_embeds.float(), pos_embed.float(),
-    #                                            attn_mask=attn_mask, cross_attn_mask=cross_attn_mask, **kwargs)
-    #     else:
-    #         outs_dec, _ = self.transformer_camera(x, masks, query_embeds, pos_embed,
-    #                                        attn_mask=attn_mask, cross_attn_mask=cross_attn_mask, **kwargs)
-    #     return outs_dec
-
-    def forward(self, reference_points, x,  masks, pos_embed, bev_feat,
-                attn_mask=None, cross_attn_mask=None,confidence_scores=None, force_fp32=False, query_embeds=None,
+    def forward(self, reference_points, x, masks, pos_embed, bev_feat,
+                attn_mask=None, cross_attn_mask=None, confidence_scores=None, force_fp32=False, query_embeds=None,
                 return_query_feats=False, **kwargs):
+        
+        # ❗ Checkpointing을 사용하므로, 이 로직은 checkpoint wrapper 내부에서 처리되도록 합니다.
+        # if force_fp32: ... else: ... 로직은 잠시 비활성화하고 아래 로직을 따릅니다.
+        # 만약 FP32 강제가 필요하다면, 아래 wrapper 함수 내부에서 처리해야 합니다.
+
         if not self.pre_embed:
             query_embeds = self.position_embedding(reference_points)
 
-        bev_input = bev_feat[1][:, None]  # [1, 1, 128, 225, 400]
-        query_input_lidar = query_embeds.permute(1, 0, 2).contiguous()  # [1, 81, 256]
-        # pos_embed_lidar = self.get_bev3d_pos_embed(bev_input)
-        pos_embed_lidar = self.pos_embed_lidar.to(bev_input.dtype) # <--- 버퍼를 직접 사용
-        # pos_embed_lidar = torch.zeros((1, 1, 256, 225, 400),dtype=bev_input.dtype, device=bev_input.device)
+        bev_input = bev_feat[1][:, None]
+        query_input_lidar = query_embeds.permute(1, 0, 2).contiguous()
+        pos_embed_lidar = self.pos_embed_lidar.to(bev_input.dtype)
         mask_lidar = torch.zeros((1, 1, 225, 400), dtype=torch.bool, device=bev_input.device)
-       
-        if force_fp32:
-            with torch.autocast('cuda', enabled=False):
-                outs_dec_camera, _ = self.transformer(x.float(), masks, query_embeds.float(), pos_embed.float(),
-                                               attn_mask=attn_mask, cross_attn_mask=cross_attn_mask,
-                                               confidence_scores=confidence_scores, **kwargs)
-                
-                outs_dec_lidar, _ = self.transformer_lidar(bev_input, mask_lidar, query_input_lidar, pos_embed_lidar,
-                                               attn_mask=attn_mask, cross_attn_mask=cross_attn_mask,
-                                               confidence_scores=confidence_scores, **kwargs)                
-        else:
-            outs_dec_camera, _ = self.transformer_camera(x, masks, query_embeds, pos_embed,
-                                           attn_mask=attn_mask, cross_attn_mask=cross_attn_mask, **kwargs)
-            # outs_dec_lidar, _ = self.transformer_lidar(bev_feat, mask_lidar, query_input_lidar, pos_embed_lidar,
-            #                     attn_mask=attn_mask, cross_attn_mask=cross_attn_mask,
-            #                     confidence_scores=confidence_scores, **kwargs)  
 
+        # ==================== 1. Camera Transformer Checkpointing ====================
+        # checkpoint에 직접 전달할 수 없는 kwargs와 non-tensor 인자들을 처리하기 위한 wrapper 함수
+        def create_camera_transformer_closure(x_c, masks_c, query_embeds_c, pos_embed_c):
+            # 이 함수는 외부 scope의 attn_mask, cross_attn_mask, confidence_scores, kwargs를 "기억"합니다.
+            return self.transformer(x_c, masks_c, query_embeds_c, pos_embed_c,
+                                    attn_mask=attn_mask,
+                                    cross_attn_mask=cross_attn_mask,
+                                    confidence_scores=confidence_scores,
+                                    **kwargs)
+
+        # checkpoint 함수에는 텐서 입력만 전달합니다.
+        # use_reentrant=False는 최신 PyTorch에서 권장하는 더 효율적인 방식입니다.
+        outs_dec_camera, _ = checkpoint(create_camera_transformer_closure, x, masks, query_embeds, pos_embed, use_reentrant=False)
+
+        # ===================== 2. Lidar Transformer Checkpointing =====================
+        def create_lidar_transformer_closure(bev_input_l, mask_l, query_input_lidar_l, pos_embed_lidar_l):
+            return self.transformer_lidar(bev_input_l, mask_l, query_input_lidar_l, pos_embed_lidar_l,
+                                        attn_mask=attn_mask,
+                                        cross_attn_mask=cross_attn_mask,
+                                        confidence_scores=confidence_scores,
+                                        **kwargs)
+        
+        outs_dec_lidar, _ = checkpoint(create_lidar_transformer_closure, bev_input, mask_lidar, query_input_lidar, pos_embed_lidar, use_reentrant=False)
+        
+        # ==============================================================================
+
+        # 이하 로직은 동일합니다.
         outputs_classes = []
         outputs_coords = []
         outs_dec_lidar = outs_dec_lidar.permute(0,2,1,3)
-        # outs_dec = outs_dec_camera
         outs_dec = torch.cat([outs_dec_camera, outs_dec_lidar], dim=-1)
+        
         for lvl in range(outs_dec.shape[0]):
-            reference = inverse_sigmoid(reference_points.clone())
+            reference = inverse_sigmoid(reference_points)
             assert reference.shape[-1] == 3
             outputs_class = self.cls_branches[lvl](outs_dec[lvl])
             tmp = self.reg_branches[lvl](outs_dec[lvl])
@@ -475,6 +475,67 @@ class CrossAttentionBoxHead(BaseModule):
         if return_query_feats:
             return all_cls_scores, all_bbox_preds, outs_dec[-1]
         return all_cls_scores, all_bbox_preds
+
+    # def forward(self, reference_points, x,  masks, pos_embed, bev_feat,
+    #             attn_mask=None, cross_attn_mask=None,confidence_scores=None, force_fp32=False, query_embeds=None,
+    #             return_query_feats=False, **kwargs):
+    #     if not self.pre_embed:
+    #         query_embeds = self.position_embedding(reference_points)
+
+    #     bev_input = bev_feat[1][:, None]  # [1, 1, 128, 225, 400]
+    #     query_input_lidar = query_embeds.permute(1, 0, 2).contiguous()  # [1, 81, 256]
+    #     # pos_embed_lidar = self.get_bev3d_pos_embed(bev_input)
+    #     pos_embed_lidar = self.pos_embed_lidar.to(bev_input.dtype) # <--- 버퍼를 직접 사용
+    #     # pos_embed_lidar = torch.zeros((1, 1, 256, 225, 400),dtype=bev_input.dtype, device=bev_input.device)
+    #     mask_lidar = torch.zeros((1, 1, 225, 400), dtype=torch.bool, device=bev_input.device)
+       
+    #     if force_fp32:
+    #         with torch.autocast('cuda', enabled=False):
+    #             outs_dec_camera, _ = self.transformer(x.float(), masks, query_embeds.float(), pos_embed.float(),
+    #                                            attn_mask=attn_mask, cross_attn_mask=cross_attn_mask,
+    #                                            confidence_scores=confidence_scores, **kwargs)
+                
+    #             outs_dec_lidar, _ = self.transformer_lidar(bev_input.float(), mask_lidar, query_input_lidar.float(), pos_embed_lidar.float(),
+    #                                            attn_mask=attn_mask, cross_attn_mask=cross_attn_mask,
+    #                                            confidence_scores=confidence_scores, **kwargs)                
+    #     else:
+    #         outs_dec_camera, _ = self.transformer(x, masks, query_embeds, pos_embed,
+    #                                         attn_mask=attn_mask, cross_attn_mask=cross_attn_mask,
+    #                                         confidence_scores=confidence_scores, **kwargs)
+    #         outs_dec_lidar, _ = self.transformer_lidar(bev_input, mask_lidar, query_input_lidar, pos_embed_lidar,
+    #                                     attn_mask=attn_mask, cross_attn_mask=cross_attn_mask,
+    #                                     confidence_scores=confidence_scores, **kwargs)   
+
+    #     outputs_classes = []
+    #     outputs_coords = []
+    #     outs_dec_lidar = outs_dec_lidar.permute(0,2,1,3)
+    #     # outs_dec = outs_dec_camera
+    #     outs_dec = torch.cat([outs_dec_camera, outs_dec_lidar], dim=-1)
+    #     for lvl in range(outs_dec.shape[0]):
+    #         reference = inverse_sigmoid(reference_points.clone())
+    #         assert reference.shape[-1] == 3
+    #         outputs_class = self.cls_branches[lvl](outs_dec[lvl])
+    #         tmp = self.reg_branches[lvl](outs_dec[lvl])
+
+    #         tmp[..., 0:2] += reference[..., 0:2]
+    #         tmp[..., 0:2] = tmp[..., 0:2].sigmoid()
+    #         tmp[..., 4:5] += reference[..., 2:3]
+    #         tmp[..., 4:5] = tmp[..., 4:5].sigmoid()
+
+    #         outputs_coord = tmp
+    #         outputs_classes.append(outputs_class)
+    #         outputs_coords.append(outputs_coord)
+
+    #     all_cls_scores = torch.stack(outputs_classes)
+    #     all_bbox_preds = torch.stack(outputs_coords)
+
+    #     all_bbox_preds[..., 0:1] = (all_bbox_preds[..., 0:1] * (self.pc_range[3] - self.pc_range[0]) + self.pc_range[0])
+    #     all_bbox_preds[..., 1:2] = (all_bbox_preds[..., 1:2] * (self.pc_range[4] - self.pc_range[1]) + self.pc_range[1])
+    #     all_bbox_preds[..., 4:5] = (all_bbox_preds[..., 4:5] * (self.pc_range[5] - self.pc_range[2]) + self.pc_range[2])
+
+    #     if return_query_feats:
+    #         return all_cls_scores, all_bbox_preds, outs_dec[-1]
+    #     return all_cls_scores, all_bbox_preds
 
     def _get_target_single(self,
                            cls_score,
