@@ -215,7 +215,7 @@ data = dict(
 optimizer = dict(
     _delete_=True,
     type='AdamW',
-    lr=6e-5,
+    lr=2e-5,
     paramwise_cfg=dict(
         custom_keys={
             'base_detector.backbone': dict(lr_mult=0.25),
@@ -237,7 +237,7 @@ total_epochs = 72
 
 # 학습 재개를 위한 설정
 # load_from = None
-load_from = 'data/saved_models/model_iter_2000_lidar_camera_fusion.pth' #check point path
+load_from = 'data/weights/backbone2d_corr_rev1.0.pth' #check point path
 # resume_from = 'data/saved_models/model_iter_2000_lidar_only.pth'  # 같은 체크포인트 경로
 resume_from = None
 runner = dict(type='EpochBasedRunner', max_epochs=total_epochs)
@@ -256,24 +256,24 @@ checkpoint_config = dict(interval=1)  # 매 epoch마다 저장
 
 find_unused_parameters = False
 log_config = dict(interval=50)
-# lr_config = dict(
-#     _delete_=True,
-#     policy='CosineAnnealing',
-#     warmup='linear',
-#     warmup_iters=500,
-#     warmup_ratio=1.0 / 3,
-#     min_lr_ratio=1e-3,
-# )
-
 lr_config = dict(
     _delete_=True,
-    policy='Step',
-    step=[5,10,15,20,30,40,50,60,70,80,90,100],  # 8번째와 16번째 에포크에서 학습률 감소
-    gamma=0.5,  # 각 스텝에서 학습률을 0.1배로 감소
-    # warmup='linear',
-    # warmup_iters=500,
-    # warmup_ratio=1.0 / 3,
+    policy='CosineAnnealing',
+    warmup='linear',
+    warmup_iters=500,
+    warmup_ratio=1.0 / 3,
+    min_lr_ratio=1e-3,
 )
+
+# lr_config = dict(
+#     _delete_=True,
+#     policy='Step',
+#     step=[5,10,15,20,30,40,50,60,70,80,90,100],  # 8번째와 16번째 에포크에서 학습률 감소
+#     gamma=0.5,  # 각 스텝에서 학습률을 0.1배로 감소
+#     # warmup='linear',
+#     # warmup_iters=500,
+#     # warmup_ratio=1.0 / 3,
+# )
 
 # lr_config = dict(
 #     _delete_=True,

@@ -97,4 +97,9 @@ class SimpleVoxelNet(nn.Module):
         voxel_features = self.voxel_encoder(voxels, num_points, coors)  # [num_voxels, C]
         x = self.middle_encoder(voxel_features, coors, batch_size=1)
         x = self.backbone_3d(x)
+
+        # 필요 없다면 반환 직후 caller에서 반드시 아래처럼 관리!
+        del voxel_features, num_points, coors, voxels
+        torch.cuda.empty_cache()
+        
         return x  # [B, C, H, W]
