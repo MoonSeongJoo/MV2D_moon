@@ -318,11 +318,16 @@ class CrossAttentionBoxHead(BaseModule):
         self.test_cfg = test_cfg
 
         self.fp16_enabled = False
+
+        # in CrossAttentionBoxHead.__init__()
+        pos_embed_lidar = self.get_bev3d_pos_embed_init()
+        self.register_buffer('pos_embed_lidar', pos_embed_lidar)
+
     
     def init_weights(self):
         """Initialize the transformer weights."""
         self.transformer.init_weights()
-        # self.transformer_lidar.init_weights()
+        self.transformer_lidar.init_weights()
         bias_init = bias_init_with_prob(0.01)
         for m in self.cls_branches:
             nn.init.constant_(m[-1].bias, bias_init)
@@ -330,34 +335,71 @@ class CrossAttentionBoxHead(BaseModule):
     def position_embedding(self, query_pos):
         return self.query_embedding(pos2posemb3d(query_pos, num_pos_feats=self.embed_dims//2))
     
-    def get_bev3d_pos_embed(self, bev_feat, h=225, w=400, c=256):
-        device = bev_feat.device
-        dtype = bev_feat.dtype
-
-        # 1. grid 좌표 생성 (x, y, z=0)
-        x_range = torch.linspace(0, w-1, w, device=device, dtype=dtype)
-        y_range = torch.linspace(0, h-1, h, device=device, dtype=dtype)
+    def get_bev3d_pos_embed_init(self, h=225, w=400, c=256, device='cuda', dtype=torch.float32):
+        """
+        BEV 공간에 대한 3D 위치 임베딩을 생성합니다.
+        모델 초기화 시 한 번만 호출하기 위한 함수입니다.
+        """
+        # 1. BEV 그리드에 대한 3차원 좌표 (x, y, z)를 생성합니다. (z=0으로 고정)
+        x_range = torch.linspace(0, w - 1, w, device=device, dtype=dtype)
+        y_range = torch.linspace(0, h - 1, h, device=device, dtype=dtype)
         z_range = torch.tensor([0.0], device=device, dtype=dtype)
+        
+        # meshgrid를 사용하여 그리드 좌표를 만듭니다.
         zz, yy, xx = torch.meshgrid(z_range, y_range, x_range, indexing='ij')
+        
+        # 좌표를 (N, 3) 형태로 펼칩니다. N = h * w 입니다.
         positions = torch.stack([xx, yy, zz], dim=-1).reshape(-1, 3)
 
-        # 2. 3D sinusoidal positional embedding
-        num_pos_feats = c // 3
-        posemb_flat = pos2posemb3d(positions, num_pos_feats=num_pos_feats)  # [h*w, 3*num_pos_feats]
+        # 2. 3D 좌표를 sinusoidal positional embedding으로 변환합니다.
+        # 이 결과가 바로 'posemb_flat' 변수입니다.
+        num_pos_feats = c // 3  # 3D 좌표(x,y,z)이므로 일반적으로 채널을 3으로 나눕니다.
+        posemb_flat = pos2posemb3d(positions, num_pos_feats=num_pos_feats)
 
-        # 3. 패딩 보강 로직: 채널 수 부족하면 zero padding
+        # 3. 임베딩 채널(c)의 크기를 맞추기 위해 패딩 또는 절삭을 수행합니다.
         out_dim = posemb_flat.shape[1]
         if out_dim < c:
+            # 채널 수가 부족하면 0으로 채웁니다(padding).
             pad = torch.zeros((posemb_flat.shape[0], c - out_dim), device=device, dtype=dtype)
             posemb_flat = torch.cat([posemb_flat, pad], dim=1)
         elif out_dim > c:
-            posemb_flat = posemb_flat[:, :c]  # 너무 많은 경우 잘라냄
+            # 채널 수가 더 많으면 잘라냅니다(truncating).
+            posemb_flat = posemb_flat[:, :c]
 
-        # 4. shape [c, h, w] → [1, 1, c, h, w]
+        # 4. 최종적으로 원하는 [1, 1, c, h, w] 형태로 모양을 변경합니다.
         posemb_c = posemb_flat.reshape(h, w, c).permute(2, 0, 1)
         posemb_c = posemb_c.unsqueeze(0).unsqueeze(0)
-
+        
         return posemb_c
+    
+    # def get_bev3d_pos_embed(self, bev_feat, h=225, w=400, c=256):
+    #     device = bev_feat.device
+    #     dtype = bev_feat.dtype
+
+    #     # 1. grid 좌표 생성 (x, y, z=0)
+    #     x_range = torch.linspace(0, w-1, w, device=device, dtype=dtype)
+    #     y_range = torch.linspace(0, h-1, h, device=device, dtype=dtype)
+    #     z_range = torch.tensor([0.0], device=device, dtype=dtype)
+    #     zz, yy, xx = torch.meshgrid(z_range, y_range, x_range, indexing='ij')
+    #     positions = torch.stack([xx, yy, zz], dim=-1).reshape(-1, 3)
+
+    #     # 2. 3D sinusoidal positional embedding
+    #     num_pos_feats = c // 3
+    #     posemb_flat = pos2posemb3d(positions, num_pos_feats=num_pos_feats)  # [h*w, 3*num_pos_feats]
+
+    #     # 3. 패딩 보강 로직: 채널 수 부족하면 zero padding
+    #     out_dim = posemb_flat.shape[1]
+    #     if out_dim < c:
+    #         pad = torch.zeros((posemb_flat.shape[0], c - out_dim), device=device, dtype=dtype)
+    #         posemb_flat = torch.cat([posemb_flat, pad], dim=1)
+    #     elif out_dim > c:
+    #         posemb_flat = posemb_flat[:, :c]  # 너무 많은 경우 잘라냄
+
+    #     # 4. shape [c, h, w] → [1, 1, c, h, w]
+    #     posemb_c = posemb_flat.reshape(h, w, c).permute(2, 0, 1)
+    #     posemb_c = posemb_c.unsqueeze(0).unsqueeze(0)
+
+    #     return posemb_c
 
     # def forward_calib_attn(self, reference_points, x, masks, pos_embed,
     #             attn_mask=None, cross_attn_mask=None, force_fp32=False, query_embeds=None,
@@ -382,7 +424,8 @@ class CrossAttentionBoxHead(BaseModule):
 
         bev_input = bev_feat[1][:, None]  # [1, 1, 128, 225, 400]
         query_input_lidar = query_embeds.permute(1, 0, 2).contiguous()  # [1, 81, 256]
-        pos_embed_lidar = self.get_bev3d_pos_embed(bev_input)
+        # pos_embed_lidar = self.get_bev3d_pos_embed(bev_input)
+        pos_embed_lidar = self.pos_embed_lidar.to(bev_input.dtype) # <--- 버퍼를 직접 사용
         # pos_embed_lidar = torch.zeros((1, 1, 256, 225, 400),dtype=bev_input.dtype, device=bev_input.device)
         mask_lidar = torch.zeros((1, 1, 225, 400), dtype=torch.bool, device=bev_input.device)
        
