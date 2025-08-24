@@ -64,8 +64,8 @@ model = dict(
         ),
         voxelnet=dict(
             type='SimpleVoxelNet',
-            load_pretrained_path='data/weights/hv_pointpillars_secfpn_sbn-all_4x8_2x_nus-3d_20210826_225857-f19d00a3.pth',
-            device='cpu',
+            init_cfg=dict(type='Pretrained', 
+                checkpoint='data/weights/hv_pointpillars_secfpn_sbn-all_4x8_2x_nus-3d_20210826_225857-f19d00a3.pth'),
         ),
         corr=dict(
             type='COTR',
