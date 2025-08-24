@@ -253,7 +253,7 @@ class MV2DSHead(MV2DHead):
         #### voxelization ######
         with torch.no_grad():
             pts_voxels,pts_coords,pts_num_points = self.voxelization(raw_points)
-        bev_feat = self.lidar_voxelnet(pts_voxels, pts_coords, pts_num_points)
+            bev_feat = self.lidar_voxelnet(pts_voxels, pts_coords, pts_num_points)
         
         with torch.no_grad():
             if sum([len(p) for p in proposal_list]) == 0:
