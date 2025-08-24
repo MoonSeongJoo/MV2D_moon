@@ -257,22 +257,22 @@ class CrossAttentionBoxHead(BaseModule):
         self.cls_out_channels = num_classes
         cls_branch = []
         for _ in range(num_reg_fcs):
-            cls_branch.append(Linear(self.embed_dims*2, self.embed_dims*2))
-            cls_branch.append(nn.LayerNorm(self.embed_dims*2))
+            cls_branch.append(Linear(self.embed_dims, self.embed_dims))
+            cls_branch.append(nn.LayerNorm(self.embed_dims))
             cls_branch.append(nn.ReLU(inplace=True))
-        cls_branch.append(Linear(self.embed_dims*2, self.cls_out_channels))
+        cls_branch.append(Linear(self.embed_dims, self.cls_out_channels))
         fc_cls = nn.Sequential(*cls_branch)
         self.cls_branches = nn.ModuleList(
             [copy.deepcopy(fc_cls) for _ in range(self.num_pred)])
         if not use_reg_layer:
             reg_branch = []
             for _ in range(num_reg_fcs):
-                reg_branch.append(Linear(self.embed_dims*2, self.embed_dims*2))
+                reg_branch.append(Linear(self.embed_dims, self.embed_dims))
                 reg_branch.append(nn.ReLU())
-            reg_branch.append(Linear(self.embed_dims*2, sum(group_reg_dims)))
+            reg_branch.append(Linear(self.embed_dims, sum(group_reg_dims)))
             reg_branch = nn.Sequential(*reg_branch)
         else:
-            reg_branch = RegLayer(self.embed_dims*2, num_reg_fcs, group_reg_dims)
+            reg_branch = RegLayer(self.embed_dims, num_reg_fcs, group_reg_dims)
         self.reg_branches = nn.ModuleList(
             [copy.deepcopy(reg_branch) for _ in range(self.num_pred)])
 
@@ -323,6 +323,11 @@ class CrossAttentionBoxHead(BaseModule):
         # in CrossAttentionBoxHead.__init__()
         pos_embed_lidar = self.get_bev3d_pos_embed_init()
         self.register_buffer('pos_embed_lidar', pos_embed_lidar)
+        self.fusion_mlp = nn.Sequential(
+            nn.Linear(self.embed_dims*2, self.embed_dims),
+            nn.ReLU(),
+            nn.Linear(self.embed_dims, self.embed_dims)
+        )
 
     
     def init_weights(self):
@@ -448,7 +453,8 @@ class CrossAttentionBoxHead(BaseModule):
         outputs_classes = []
         outputs_coords = []
         outs_dec_lidar = outs_dec_lidar.permute(0,2,1,3)
-        outs_dec = torch.cat([outs_dec_camera, outs_dec_lidar], dim=-1)
+        concat_outs_dec = torch.cat([outs_dec_camera, outs_dec_lidar], dim=-1)
+        outs_dec =  self.fusion_mlp(concat_outs_dec) 
         
         for lvl in range(outs_dec.shape[0]):
             reference = inverse_sigmoid(reference_points)
