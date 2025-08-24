@@ -249,6 +249,12 @@ class MV2DSHead(MV2DHead):
     def _bbox_forward_denoise(self, img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4): # for SJMOON
     # def _bbox_forward_denoise(self, x, proposal_list, img_metas): # for original 
         # avoid empty 2D detection
+        
+        #### voxelization ######
+        with torch.no_grad():
+            pts_voxels,pts_coords,pts_num_points = self.voxelization(raw_points)
+        bev_feat = self.lidar_voxelnet(pts_voxels, pts_coords, pts_num_points)
+        
         with torch.no_grad():
             if sum([len(p) for p in proposal_list]) == 0:
                 proposal = torch.tensor([[0, 50, 50, 100, 100, 0]], dtype=proposal_list[0].dtype,
@@ -280,9 +286,6 @@ class MV2DSHead(MV2DHead):
                 intrinsic=self.process_intrins_feat(rois, intrinsics)
             )
 
-            #### voxelization ######
-            pts_voxels,pts_coords,pts_num_points = self.voxelization(raw_points)
-            bev_feat = self.lidar_voxelnet(pts_voxels, pts_coords, pts_num_points)
 
             ###### SJ MOON 수정 #############
             # with torch.no_grad():

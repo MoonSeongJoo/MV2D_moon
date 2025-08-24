@@ -87,6 +87,8 @@ class MV2D(Base3DDetector):
                 param.requires_grad = False
             elif 'z_estimator' in name:
                 param.requires_grad = False
+            elif 'position_encoding' in name:
+                param.requires_grad = False
         
         # # 5. ROI Head 내 bbox_head.transformer만 동결
         for name, param in self.roi_head.named_parameters():

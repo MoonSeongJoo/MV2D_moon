@@ -20,7 +20,7 @@ class MV2DHead(BaseRoIHead, BBoxTestMixin, MaskTestMixin):
     def __init__(self,
                  bbox_roi_extractor,
                  bbox_head,
-                 query_generator,
+                #  query_generator,
                  pe,
                  box_correlation,
                  pc_range,

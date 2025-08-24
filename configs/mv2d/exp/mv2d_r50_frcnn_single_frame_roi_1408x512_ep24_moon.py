@@ -148,19 +148,19 @@ model = dict(
             ),
             loss_bbox=dict(type='L1Loss', loss_weight=0.25),
         ),
-        query_generator=dict(
-            with_avg_pool=True,
-            num_shared_convs=1,
-            num_shared_fcs=1,
-            in_channels=256,
-            fc_out_channels=1024,
-            roi_feat_size=roi_size,
-            extra_encoding=dict(
-                num_layers=2,
-                feat_channels=[512, 256],
-                features=[dict(type='intrinsic', in_channels=16,)]
-            ),
-        ),
+        # query_generator=dict(
+        #     with_avg_pool=True,
+        #     num_shared_convs=1,
+        #     num_shared_fcs=1,
+        #     in_channels=256,
+        #     fc_out_channels=1024,
+        #     roi_feat_size=roi_size,
+        #     extra_encoding=dict(
+        #         num_layers=2,
+        #         feat_channels=[512, 256],
+        #         features=[dict(type='intrinsic', in_channels=16,)]
+        #     ),
+        # ),
         pe=dict(
             positional_encoding=dict(
                 type='SinePositionalEncoding3D', num_feats=128, normalize=True),
@@ -238,7 +238,7 @@ total_epochs = 72
 # 학습 재개를 위한 설정
 # load_from = None
 load_from = 'data/weights/backbone2d_corr_rev1.0.pth' #check point path
-# resume_from = 'data/saved_models/model_iter_2000_lidar_only.pth'  # 같은 체크포인트 경로
+# resume_from = 'data/weights/epoch_1.pth'  # 같은 체크포인트 경로
 resume_from = None
 runner = dict(type='EpochBasedRunner', max_epochs=total_epochs)
 evaluation = dict(interval=72, )

@@ -52,6 +52,7 @@ class SimpleVoxelNet(nn.Module):
         self.voxel_encoder = HardSimpleVFE(num_features=4)
         # Middle encoder (BEV 변환)
         self.middle_encoder = PointPillarsScatter(in_channels=4, output_shape=[900, 1600])
+       
         # 2D BEV backbone
         self.backbone_3d = SECOND(
             in_channels=4,
@@ -59,35 +60,42 @@ class SimpleVoxelNet(nn.Module):
             layer_strides=[2, 2],
             out_channels=[64, 128]
         )
-                # pretrained 가중치 로드
-        if load_pretrained_path is not None:
-            self._load_pretrained_weights(load_pretrained_path, device)
+        # self.backbone_3d = SECOND(
+        #     in_channels=4,
+        #     layer_nums=[3, 5, 5],        # 3번째 블록 추가
+        #     layer_strides=[2, 2, 2],    # stride도 1개 추가
+        #     out_channels=[64, 128, 256] # 3번째 블록의 출력 채널 추가
+        # )
+    
+    #             # pretrained 가중치 로드
+    #     if load_pretrained_path is not None:
+    #         self._load_pretrained_weights(load_pretrained_path, device)
 
-    def _load_pretrained_weights(self, checkpoint_path, device):
-        checkpoint = torch.load(checkpoint_path, map_location=device)
-        if 'model_state_dict' in checkpoint:
-            pretrained_sd = checkpoint['model_state_dict']
-        elif 'state_dict' in checkpoint:
-            pretrained_sd = checkpoint['state_dict']
-        else:
-            pretrained_sd = checkpoint
+    # def _load_pretrained_weights(self, checkpoint_path, device):
+    #     checkpoint = torch.load(checkpoint_path, map_location=device)
+    #     if 'model_state_dict' in checkpoint:
+    #         pretrained_sd = checkpoint['model_state_dict']
+    #     elif 'state_dict' in checkpoint:
+    #         pretrained_sd = checkpoint['state_dict']
+    #     else:
+    #         pretrained_sd = checkpoint
 
-        model_sd = self.state_dict()
-        new_sd = {}
-        required_prefix = 'roi_head.lidar_voxelnet.'
+    #     model_sd = self.state_dict()
+    #     new_sd = {}
+    #     required_prefix = 'roi_head.lidar_voxelnet.'
 
-        for k, v in pretrained_sd.items():
-            # 'model_state', 'global_step' 등 메타키 건너뛰기
-            if not isinstance(k, str) or '.' not in k:
-                continue
-            new_k = required_prefix + k if not k.startswith(required_prefix) else k
-            if new_k in model_sd and model_sd[new_k].shape == v.shape:
-                new_sd[new_k] = v
+    #     for k, v in pretrained_sd.items():
+    #         # 'model_state', 'global_step' 등 메타키 건너뛰기
+    #         if not isinstance(k, str) or '.' not in k:
+    #             continue
+    #         new_k = required_prefix + k if not k.startswith(required_prefix) else k
+    #         if new_k in model_sd and model_sd[new_k].shape == v.shape:
+    #             new_sd[new_k] = v
 
-        load_res = self.load_state_dict(new_sd, strict=False)
-        print(f"Pretrained weights loaded with missing keys: {load_res.missing_keys}")
-        print(f"Pretrained weights loaded with unexpected keys: {load_res.unexpected_keys}")
-        print("loaded end")
+    #     load_res = self.load_state_dict(new_sd, strict=False)
+    #     print(f"Pretrained weights loaded with missing keys: {load_res.missing_keys}")
+    #     print(f"Pretrained weights loaded with unexpected keys: {load_res.unexpected_keys}")
+    #     print("loaded end")
 
 
     def forward(self, voxels, coors, num_points):
@@ -99,7 +107,7 @@ class SimpleVoxelNet(nn.Module):
         x = self.backbone_3d(x)
 
         # 필요 없다면 반환 직후 caller에서 반드시 아래처럼 관리!
-        del voxel_features, num_points, coors, voxels
-        torch.cuda.empty_cache()
+        # del voxel_features, num_points, coors, voxels
+        # torch.cuda.empty_cache()
         
         return x  # [B, C, H, W]
