@@ -402,7 +402,7 @@ class CrossAttentionBoxHead(BaseModule):
 
     #     return posemb_c
 
-    def forward(self, reference_points, x, masks, pos_embed, bev_feat,
+    def forward(self, reference_points, x, masks, pos_embed, bev_input,
                 attn_mask=None, cross_attn_mask=None, confidence_scores=None, force_fp32=False, query_embeds=None,
                 return_query_feats=False, **kwargs):
         
@@ -413,7 +413,7 @@ class CrossAttentionBoxHead(BaseModule):
         if not self.pre_embed:
             query_embeds = self.position_embedding(reference_points)
 
-        bev_input = bev_feat[1][:, None]
+        # bev_input = bev_feat[1][:, None]
         query_input_lidar = query_embeds.permute(1, 0, 2).contiguous()
         pos_embed_lidar = self.pos_embed_lidar.to(bev_input.dtype)
         mask_lidar = torch.zeros((1, 1, 225, 400), dtype=torch.bool, device=bev_input.device)

@@ -49,15 +49,22 @@ model = dict(
             roi_layer=dict(type='RoIAlign', output_size=roi_size, sampling_ratio=-1),
             featmap_strides=roi_srides,
             out_channels=512, ),
+        # voxelizer=dict(
+        #     type='SimpleVoxelization',
+        #     voxel_size=[0.2, 0.2, 8], 
+        #     point_cloud_range=[0, -40, -3, 70.4, 40, 1], 
+        #     max_num_points=32, max_voxels=(16000, 40000),
+        #     ),
         voxelizer=dict(
             type='SimpleVoxelization',
-            voxel_size=[0.2, 0.2, 8], 
-            point_cloud_range=[0, -40, -3, 70.4, 40, 1], 
-            max_num_points=32, max_voxels=(16000, 40000),
-            ),
+            voxel_size=[0.3, 0.3, 8],           # voxel 크기 늘림 (ex: 0.2 -> 0.3)
+            point_cloud_range=[0, -30, -3, 60, 30, 1],  # 범위 축소
+            max_num_points=16,                  # voxel 당 최대 점 수 감소
+            max_voxels=(8000, 20000),           # 최대 voxel 수 감소
+        ),
         voxelnet=dict(
             type='SimpleVoxelNet',
-            load_pretrained_path=None,
+            load_pretrained_path='data/weights/hv_pointpillars_secfpn_sbn-all_4x8_2x_nus-3d_20210826_225857-f19d00a3.pth',
             device='cpu',
         ),
         corr=dict(
@@ -237,8 +244,8 @@ total_epochs = 72
 
 # 학습 재개를 위한 설정
 # load_from = None
-load_from = 'data/weights/backbone2d_corr_rev1.0.pth' #check point path
-# resume_from = 'data/weights/epoch_1.pth'  # 같은 체크포인트 경로
+load_from = 'data/work_dirs/20250822_lidar_camera_fusion/latest.pth' #check point path
+# resume_from = 'data/work_dirs/20250822_lidar_camera_fusion/latest.pth'  # 같은 체크포인트 경로
 resume_from = None
 runner = dict(type='EpochBasedRunner', max_epochs=total_epochs)
 evaluation = dict(interval=72, )

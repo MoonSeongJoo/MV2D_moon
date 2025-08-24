@@ -776,12 +776,13 @@ class MV2DSHead(MV2DHead):
             # 작은 결과들을 마지막에 하나로 합침
             corr_feats = torch.stack(corr_feats_list, dim=0)
             corr_pe = torch.stack(corr_pe_list, dim=0)
+            bev_input = bev_feat[1][:, None]
 
             all_cls_scores, all_bbox_preds = self.bbox_head(ref_points[:, None],
                                                             corr_feats,
                                                             ~mask[..., None, None].expand_as(corr_feats[:, :, 0]),
                                                             corr_pe,
-                                                            bev_feat,
+                                                            bev_input,
                                                             attn_mask=None,
                                                             cross_attn_mask=None,
                                                             force_fp32=self.force_fp32, )
@@ -821,6 +822,7 @@ class MV2DSHead(MV2DHead):
         # bbox_results , loss_corr = self._bbox_forward_denoise(img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON 
         bbox_results = self._bbox_forward_denoise(img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON 
         # return bbox_results , loss_corr
+        torch.cuda.empty_cache()
         return bbox_results
 
     def prepare_for_dn_loss(self, mask_dict):

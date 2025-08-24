@@ -58,13 +58,15 @@ class SimpleVoxelNet(nn.Module):
             in_channels=4,
             layer_nums=[3, 5],
             layer_strides=[2, 2],
-            out_channels=[64, 128]
+            out_channels=[64, 128],
+            pretrained=load_pretrained_path,
         )
         # self.backbone_3d = SECOND(
         #     in_channels=4,
         #     layer_nums=[3, 5, 5],        # 3번째 블록 추가
         #     layer_strides=[2, 2, 2],    # stride도 1개 추가
-        #     out_channels=[64, 128, 256] # 3번째 블록의 출력 채널 추가
+        #     out_channels=[64, 128, 256], # 3번째 블록의 출력 채널 추가
+        #     pretrained=load_pretrained_path,
         # )
     
     #             # pretrained 가중치 로드
@@ -107,7 +109,7 @@ class SimpleVoxelNet(nn.Module):
         x = self.backbone_3d(x)
 
         # 필요 없다면 반환 직후 caller에서 반드시 아래처럼 관리!
-        # del voxel_features, num_points, coors, voxels
-        # torch.cuda.empty_cache()
+        del voxel_features, num_points, coors, voxels
+        torch.cuda.empty_cache()
         
         return x  # [B, C, H, W]
