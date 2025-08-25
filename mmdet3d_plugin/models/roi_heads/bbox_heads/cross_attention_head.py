@@ -252,7 +252,7 @@ class CrossAttentionBoxHead(BaseModule):
             )
 
         self.num_pred = transformer['decoder']['num_layers']
-        # self.num_pred = transformer_lidar['decoder']['num_layers']
+        self.num_pred_lidar = transformer_lidar['decoder']['num_layers']
         self.num_classes = num_classes
         self.cls_out_channels = num_classes
         cls_branch = []
