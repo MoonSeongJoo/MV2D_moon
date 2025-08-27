@@ -46,6 +46,21 @@ from image_processing_unit_Ver15_0 import (find_all_depthmap_z_adv,find_rois_non
                                            convert_to_bbox_coordinates_matched, get_center_points,
                                            batch_rois_center_by_cam_id,remove_duplicate_objs)
 
+class HeatmapHead(nn.Module):
+    def __init__(self, in_channels, num_classes):
+        super().__init__()
+        self.head = nn.Sequential(
+            nn.Conv2d(in_channels, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(128, num_classes, kernel_size=1),
+            nn.Sigmoid()
+        )
+    
+    def forward(self, x):
+        # x: BEV feature map [B, C, H, W]
+        heatmap = self.head(x)
+        return heatmap  # [B, num_classes, H, W]
 
 @HEADS.register_module()
 class MV2DSHead(MV2DHead):
@@ -100,6 +115,7 @@ class MV2DSHead(MV2DHead):
 
         self.voxelization = build_head(voxelizer)
         self.lidar_voxelnet = build_head(voxelnet)
+        self.heat_map = HeatmapHead(in_channels=1, num_classes=10) #bev_feat.shape[1]
        
         # self.z_estimator = ZEstimator(enc_channels=312, bbox_channels=256, uv_dim=2, hidden_dim=512)
         # self.pts_regressor = pts_regressor()
@@ -245,6 +261,61 @@ class MV2DSHead(MV2DHead):
         tanh_out = torch.tanh(x)  # [-1, 1] 범위
         scaled = (tanh_out + 1) * 0.5  # [0, 1] 범위로 변환
         return min_val + (max_val - min_val) * scaled
+    
+    def get_reference_points_from_heatmap(self, heatmap, voxel_size, pc_range, top_k=100):
+        """
+        heatmap: [B, num_classes, H, W]
+        voxel_size: (vx, vy)
+        pc_range: [x_min, y_min, z_min, x_max, y_max, z_max]
+        """
+        B, num_classes, H, W = heatmap.shape
+        batch_ref_points = []
+        for b in range(B):
+            heat_b = heatmap[b]  # [num_classes, H, W]
+            scores, indices = torch.topk(heat_b.view(num_classes, -1), k=top_k, dim=1)
+            # indices shape: [num_classes, top_k]
+
+            ys = indices // W
+            xs = indices % W
+
+            # BEV 좌표 → 실제 좌표 변환
+            x_min, y_min = pc_range[0], pc_range[1]
+            vx, vy = voxel_size
+            xs_real = xs * vx + x_min
+            ys_real = ys * vy + y_min
+
+            # reference points: (num_classes*top_k, 2), batch차원 포함할 수도 있음
+            ref_points = torch.stack([xs_real, ys_real], dim=-1).reshape(-1, 2)
+            batch_ref_points.append(ref_points)
+        
+        return batch_ref_points
+    
+    # def prepare_lidar_reference_points(self, lidar_reference_points, batch_size=1):
+    #     """
+    #     lidar_reference_points: list of tensor, 각 원소 shape = (num_proposals, 2)
+    #     batch_size: 배치 크기
+
+    #     반환 : tensor, shape = (batch_size, num_queries, 3)
+    #     """
+
+    #     # 1) list 내 각 batch 텐서 z 축 0 추가
+    #     processed_list = []
+    #     for points in lidar_reference_points:
+    #         # points: (num_proposals, 2)
+    #         num_points = points.shape[0]
+    #         z = torch.zeros((num_points, 1), device=points.device, dtype=points.dtype)  # z=0 추가
+    #         points_3d = torch.cat([points, z], dim=1)  # (num_proposals, 3)
+    #         processed_list.append(points_3d)
+
+    #     # 2) 리스트 텐서들 배치 차원으로 concat 또는 stack
+    #     # 여기선 batch단위로 합치기 위해 pad or stack 시도 (간단히 배치=1 가정 시)
+    #     # 만약 batch_size > 1이면 별도 로직 필요
+    #     ref_points = torch.stack(processed_list, dim=0)  # (batch_size, num_proposals, 3)
+
+    #     # 3) 배치 차원 맞추기 (원래 코드 대비) + query 차원 추가 (1)
+    #     ref_points = ref_points.unsqueeze(2)  # (batch_size, num_proposals, 1, 3)
+
+    #     return ref_points
 
     def _bbox_forward_denoise(self, img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4): # for SJMOON
     # def _bbox_forward_denoise(self, x, proposal_list, img_metas): # for original 
@@ -253,7 +324,21 @@ class MV2DSHead(MV2DHead):
         #### voxelization ######
         with torch.no_grad():
             pts_voxels,pts_coords,pts_num_points = self.voxelization(raw_points)
-        bev_feat = self.lidar_voxelnet(pts_voxels, pts_coords, pts_num_points)
+        point_pillar = self.lidar_voxelnet(pts_voxels, pts_coords, pts_num_points)
+        bev_feat = point_pillar[1].sum(dim=1).unsqueeze(1)  # [B, C, H, W]
+        heatmap = self.heat_map(bev_feat)
+        xy_ref_point =self.get_reference_points_from_heatmap(heatmap,voxel_size=(0.2, 0.2), pc_range=[0, -40, -3, 70.4, 40, 1], top_k=10)
+        dummy_z = torch.zeros((100, 1), device=bev_feat.device, dtype=bev_feat.dtype)  # z=0 추가
+        lidar_reference_point = torch.cat([xy_ref_point[0], dummy_z], dim=1)  # (num_proposals, 3)
+
+        lidar_ref_point = lidar_reference_point.clone()
+        lidar_ref_point[..., 0:1] = (lidar_ref_point[..., 0:1] - self.pc_range[0]) / (
+            self.pc_range[3] - self.pc_range[0])
+        lidar_ref_point[..., 1:2] = (lidar_ref_point[..., 1:2] - self.pc_range[1]) / (
+                self.pc_range[4] - self.pc_range[1])
+        lidar_ref_point[..., 2:3] = (lidar_ref_point[..., 2:3] - self.pc_range[2]) / (
+                self.pc_range[5] - self.pc_range[2])
+        lidar_ref_point = lidar_ref_point.clamp(min=0, max=1)
         
         with torch.no_grad():
             if sum([len(p) for p in proposal_list]) == 0:
@@ -776,9 +861,9 @@ class MV2DSHead(MV2DHead):
             # 작은 결과들을 마지막에 하나로 합침
             corr_feats = torch.stack(corr_feats_list, dim=0)
             corr_pe = torch.stack(corr_pe_list, dim=0)
-            bev_input = bev_feat[1][:, None]
+            bev_input = point_pillar[1][:, None]
 
-            all_cls_scores, all_bbox_preds = self.bbox_head(ref_points[:, None],
+            all_cls_scores, all_bbox_preds = self.bbox_head(lidar_ref_point[:, None],
                                                             corr_feats,
                                                             ~mask[..., None, None].expand_as(corr_feats[:, :, 0]),
                                                             corr_pe,
