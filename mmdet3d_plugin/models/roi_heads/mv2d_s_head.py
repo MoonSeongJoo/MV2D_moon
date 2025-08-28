@@ -61,6 +61,19 @@ class HeatmapHead(nn.Module):
         # x: BEV feature map [B, C, H, W]
         heatmap = self.head(x)
         return heatmap  # [B, num_classes, H, W]
+    
+class FusionMLP(nn.Module):
+    def __init__(self, in_features=6, out_features=3):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(in_features, 32),
+            nn.ReLU(),
+            nn.Linear(32, out_features)
+        )
+    def forward(self, img_ref, lidar_ref):
+        # img_ref, lidar_ref: [N, 3]씩
+        x = torch.cat([img_ref, lidar_ref], dim=1)  # [N, 6]
+        return self.mlp(x)  # [N, 3]
 
 @HEADS.register_module()
 class MV2DSHead(MV2DHead):
@@ -116,6 +129,7 @@ class MV2DSHead(MV2DHead):
         self.voxelization = build_head(voxelizer)
         self.lidar_voxelnet = build_head(voxelnet)
         self.heat_map = HeatmapHead(in_channels=1, num_classes=10) #bev_feat.shape[1]
+        self.fuse_mlp = FusionMLP(in_features=6, out_features=3)
        
         # self.z_estimator = ZEstimator(enc_channels=312, bbox_channels=256, uv_dim=2, hidden_dim=512)
         # self.pts_regressor = pts_regressor()
@@ -316,6 +330,32 @@ class MV2DSHead(MV2DHead):
     #     ref_points = ref_points.unsqueeze(2)  # (batch_size, num_proposals, 1, 3)
 
     #     return ref_points
+
+    def fuse_reference_points(self,lidar_ref_point, ref_points):
+        """
+        lidar_ref_point: [num_lidar_candidates, 3]
+        ref_points: [num_objects, 3]
+        반환: fused_ref_points [num_objects, 3]
+        """
+        num_obj = ref_points.shape[0]
+        num_lidar = lidar_ref_point.shape[0]
+
+        # 모든 객체에 대해 lidar 후보와의 거리를 구함
+        # 거리: [num_objects, num_lidar_candidates]
+        distances = torch.norm(ref_points[:, None, :] - lidar_ref_point[None, :, :], dim=2) 
+
+        # 각 object 별로 가장 가까운 lidar candidate 추출
+        closest_indices = distances.argmin(dim=1)  # [num_objects]
+        matched_lidar_points = lidar_ref_point[closest_indices]  # [num_objects, 3]
+
+        # 임베딩 fusion: 간단히 평균, 혹은 weighted sum/MLP로 가능
+        # fused_ref_points = 0.5 * ref_points + 0.5 * matched_lidar_points
+
+        # 더 고급: torch.cat 후 linear/MLP/attention으로 임베딩 융합 가능
+        # fused_ref_points = fusion_mlp(torch.cat([ref_points, matched_lidar_points], dim=1))  # [num_objects, 3]
+
+        return matched_lidar_points
+    
 
     def _bbox_forward_denoise(self, img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4): # for SJMOON
     # def _bbox_forward_denoise(self, x, proposal_list, img_metas): # for original 
@@ -680,7 +720,9 @@ class MV2DSHead(MV2DHead):
             # ref_points_with_index = merge_point_clouds(reference_points_with_indices, detection_xyz_normal)
             # ref_points_with_index = differentiable_merge_point_clouds(reference_points_with_indices, gt_pts)
             ref_points = detection_xyz_normalized
-            
+            matched_lidar_points = self.fuse_reference_points(lidar_ref_point, ref_points)
+            fused_ref_points = self.fuse_mlp(ref_points, matched_lidar_points)
+
             # generate box correlation
             corr, mask = self.box_corr_module.gen_box_roi_correlation(rois, [len(p) for p in proposal_list], img_metas)
             # corr, mask = self.box_corr_module.gen_box_roi_correlation(rois_with_indices,pred_pts, [len(p) for p in proposal_list], img_metas)
@@ -863,7 +905,7 @@ class MV2DSHead(MV2DHead):
             corr_pe = torch.stack(corr_pe_list, dim=0)
             bev_input = point_pillar[1][:, None]
 
-            all_cls_scores, all_bbox_preds = self.bbox_head(lidar_ref_point[:, None],
+            all_cls_scores, all_bbox_preds = self.bbox_head(fused_ref_points[:, None],
                                                             corr_feats,
                                                             ~mask[..., None, None].expand_as(corr_feats[:, :, 0]),
                                                             corr_pe,
