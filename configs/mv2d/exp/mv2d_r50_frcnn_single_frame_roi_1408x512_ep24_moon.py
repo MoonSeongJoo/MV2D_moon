@@ -119,7 +119,7 @@ model = dict(
                 decoder=dict(
                     type='PETRTransformerDecoder',
                     return_intermediate=True,
-                    num_layers=3,
+                    num_layers=6,
                     transformerlayers=dict(
                         type='PETRTransformerDecoderLayer',
                         attn_cfgs=[
@@ -223,7 +223,7 @@ data = dict(
 optimizer = dict(
     _delete_=True,
     type='AdamW',
-    lr=2e-4,
+    lr=1e-4,
     paramwise_cfg=dict(
         custom_keys={
             'base_detector.backbone': dict(lr_mult=0.25),
@@ -244,8 +244,8 @@ optimizer_config = dict(
 total_epochs = 72
 
 # 학습 재개를 위한 설정
-load_from = None
-# load_from = 'data/weights/epoch_5.pth' #check point path
+# load_from = None
+load_from = 'data/weights/epoch_48.pth' #check point path
 # resume_from = 'data/work_dirs/20250822_lidar_camera_fusion/latest.pth'  # 같은 체크포인트 경로
 resume_from = None
 runner = dict(type='EpochBasedRunner', max_epochs=total_epochs)

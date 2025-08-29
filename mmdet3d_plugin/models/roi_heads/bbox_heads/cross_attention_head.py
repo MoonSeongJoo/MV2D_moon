@@ -24,24 +24,55 @@ from torch.utils.checkpoint import checkpoint
 class MV2DTransformer_lidar(PETRTransformer):
     def __init__(self, embed_dims=256, **kwargs):
         super().__init__(**kwargs)
-        self.proj_bev_feat = nn.Conv2d(128, embed_dims, 1)  # 128 → 256으로 projection
+        self.proj_bev_feat = nn.Conv2d(192, embed_dims, 1)  # 128 → 256으로 projection
+    
+    # def forward(self, x, mask, query_embed, pos_embed,
+    #             attn_mask=None, cross_attn_mask=None, **kwargs):
+    #     x = self.proj_bev_feat(x.squeeze(1)).unsqueeze(1)  # squeeze/add n-dim as needed
+    #     # x: [bs, n, c, h, w], mask: [bs, n, h, w], query_embed: [bs, n_query, c]
+    #     bs, n, c, h, w = x.shape
+    #     memory = x.permute(1, 3, 4, 0, 2).reshape(n * h * w, bs, c) # [bs, n, c, h, w] -> [n*h*w, bs, c]
+    #     mask = mask.view(bs, n * h * w)  # [bs, n, h, w] -> [bs, n*h*w]
+    #     query_embed = query_embed.permute(1, 0, 2)
+    #     pos_embed = pos_embed.permute(1, 3, 4, 0, 2).reshape(n * h * w, bs, c) # [bs, n, c, h, w] -> [n*h*w, bs, c]
+    #     target = torch.zeros_like(query_embed)
+    #     if cross_attn_mask is not None:
+    #         cross_attn_mask = cross_attn_mask.flatten(1, 3)   # [n_query, n, h, w] -> [n_query, n * h * w]
+        
+    #     # out_dec: [num_layers, num_query, bs, dim]
+    #     out_dec = self.decoder(
+    #         query=target,
+    #         key=memory,
+    #         value=memory,
+    #         key_pos=pos_embed,
+    #         query_pos=query_embed,
+    #         key_padding_mask=mask,
+    #         attn_masks=[attn_mask, cross_attn_mask],
+    #         **kwargs,
+    #         )
+    #     out_dec = out_dec.transpose(1, 2)
+    #     memory = memory.reshape(n, h, w, bs, c).permute(3, 0, 4, 1, 2)
+    #     return out_dec, memory
     
     def forward(self, x, mask, query_embed, pos_embed,
-                attn_mask=None, cross_attn_mask=None, **kwargs):
+            attn_mask=None, cross_attn_mask=None, **kwargs):
         x = self.proj_bev_feat(x.squeeze(1)).unsqueeze(1)  # squeeze/add n-dim as needed
         # x: [bs, n, c, h, w], mask: [bs, n, h, w], query_embed: [bs, n_query, c]
-        bs, n, c, h, w = x.shape
-        memory = x.permute(1, 3, 4, 0, 2).reshape(n * h * w, bs, c) # [bs, n, c, h, w] -> [n*h*w, bs, c]
-        mask = mask.view(bs, n * h * w)  # [bs, n, h, w] -> [bs, n*h*w]
-        query_embed = query_embed.permute(1, 0, 2)
+        # bs = 1  # batch size 보통 1 또는 실제 batch 확인 필요
+        n, bs, c, h, w = x.shape  # 100,1,128,7,7
+        x = x.view(bs * n, c, h, w)  # [100*1, 128,7,7] 필요에 따라 스퀴즈/리쉐이프
+
+        # BEV feature를 key/value 용 시퀀스 텐서로 변환
+        memory = x.permute(0, 2, 3, 1).reshape(n * h * w, bs, c)  # shape: [seq_len, batch, embed_dim]
         pos_embed = pos_embed.permute(1, 3, 4, 0, 2).reshape(n * h * w, bs, c) # [bs, n, c, h, w] -> [n*h*w, bs, c]
-        target = torch.zeros_like(query_embed)
-        if cross_attn_mask is not None:
-            cross_attn_mask = cross_attn_mask.flatten(1, 3)   # [n_query, n, h, w] -> [n_query, n * h * w]
-        
-        # out_dec: [num_layers, num_query, bs, dim]
+
+        # query_embed: [num_objects, batch, embed_dim]
+        query_embed = query_embed.permute(1, 0, 2).contiguous()  # [num_queries, batch, embed_dim]
+        mask = mask.view(bs, n * h * w)  # [bs, n, h, w] -> [bs, n*h*w]
+
+        # 이후 decoder 호출
         out_dec = self.decoder(
-            query=target,
+            query=torch.zeros_like(query_embed),  # 초기 타겟 텐서 생성
             key=memory,
             value=memory,
             key_pos=pos_embed,
@@ -49,7 +80,7 @@ class MV2DTransformer_lidar(PETRTransformer):
             key_padding_mask=mask,
             attn_masks=[attn_mask, cross_attn_mask],
             **kwargs,
-            )
+        )
         out_dec = out_dec.transpose(1, 2)
         memory = memory.reshape(n, h, w, bs, c).permute(3, 0, 4, 1, 2)
         return out_dec, memory
@@ -70,10 +101,10 @@ class MV2DTransformer(PETRTransformer):
         #     nn.Sigmoid()
         # )
         
-        # 4. Dynamic Threshold 파라미터
-        self.dynamic_threshold = dynamic_threshold
-        self.register_buffer('min_threshold', torch.tensor(0.1))
-        self.register_buffer('max_threshold', torch.tensor(0.7))
+        # # 4. Dynamic Threshold 파라미터
+        # self.dynamic_threshold = dynamic_threshold
+        # self.register_buffer('min_threshold', torch.tensor(0.1))
+        # self.register_buffer('max_threshold', torch.tensor(0.7))
 
     def forward(self, x, mask, query_embed, pos_embed,
                 attn_mask=None, cross_attn_mask=None, 
@@ -321,7 +352,8 @@ class CrossAttentionBoxHead(BaseModule):
         self.fp16_enabled = False
 
         # in CrossAttentionBoxHead.__init__()
-        pos_embed_lidar = self.get_bev3d_pos_embed_init()
+        # pos_embed_lidar = self.get_bev3d_pos_embed_init()
+        pos_embed_lidar = self.get_bev3d_pos_embed_init(bs=10*10, h=7, w=7, c=256)
         self.register_buffer('pos_embed_lidar', pos_embed_lidar)
 
     
@@ -336,7 +368,7 @@ class CrossAttentionBoxHead(BaseModule):
     def position_embedding(self, query_pos):
         return self.query_embedding(pos2posemb3d(query_pos, num_pos_feats=self.embed_dims//2))
     
-    def get_bev3d_pos_embed_init(self, h=225, w=400, c=256, device='cuda', dtype=torch.float32):
+    def get_bev3d_pos_embed_init(self, bs=1, h=225, w=400, c=256, device='cuda', dtype=torch.float32):
         """
         BEV 공간에 대한 3D 위치 임베딩을 생성합니다.
         모델 초기화 시 한 번만 호출하기 위한 함수입니다.
@@ -353,25 +385,25 @@ class CrossAttentionBoxHead(BaseModule):
         positions = torch.stack([xx, yy, zz], dim=-1).reshape(-1, 3)
 
         # 2. 3D 좌표를 sinusoidal positional embedding으로 변환합니다.
-        # 이 결과가 바로 'posemb_flat' 변수입니다.
         num_pos_feats = c // 3  # 3D 좌표(x,y,z)이므로 일반적으로 채널을 3으로 나눕니다.
         posemb_flat = pos2posemb3d(positions, num_pos_feats=num_pos_feats)
 
         # 3. 임베딩 채널(c)의 크기를 맞추기 위해 패딩 또는 절삭을 수행합니다.
         out_dim = posemb_flat.shape[1]
         if out_dim < c:
-            # 채널 수가 부족하면 0으로 채웁니다(padding).
             pad = torch.zeros((posemb_flat.shape[0], c - out_dim), device=device, dtype=dtype)
             posemb_flat = torch.cat([posemb_flat, pad], dim=1)
         elif out_dim > c:
-            # 채널 수가 더 많으면 잘라냅니다(truncating).
             posemb_flat = posemb_flat[:, :c]
 
-        # 4. 최종적으로 원하는 [1, 1, c, h, w] 형태로 모양을 변경합니다.
-        posemb_c = posemb_flat.reshape(h, w, c).permute(2, 0, 1)
-        posemb_c = posemb_c.unsqueeze(0).unsqueeze(0)
+        # 4. 원하는 [bs, 1, c, h, w] 형태로 모양을 변경합니다.
+        posemb_c = posemb_flat.reshape(h, w, c).permute(2, 0, 1)  # [c, h, w]
+        posemb_c = posemb_c.unsqueeze(0).unsqueeze(0)  # [1, 1, c, h, w]
+        if bs > 1:
+            posemb_c = posemb_c.expand(bs, -1, -1, -1, -1)  # [bs, 1, c, h, w]
         
         return posemb_c
+
     
     # def get_bev3d_pos_embed(self, bev_feat, h=225, w=400, c=256):
     #     device = bev_feat.device
