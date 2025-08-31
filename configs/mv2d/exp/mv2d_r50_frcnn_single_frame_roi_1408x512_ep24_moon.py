@@ -223,7 +223,7 @@ data = dict(
 optimizer = dict(
     _delete_=True,
     type='AdamW',
-    lr=1e-4,
+    lr=6e-5,
     paramwise_cfg=dict(
         custom_keys={
             'base_detector.backbone': dict(lr_mult=0.25),
@@ -245,7 +245,7 @@ total_epochs = 72
 
 # 학습 재개를 위한 설정
 # load_from = None
-load_from = 'data/work_dirs/20240814_mv2d_modi_cameraonly_base_ver2.0/latest.pth' #check point path
+load_from = 'data/work_dirs/20240811_mv2d_modi_cameraonly_base/latest.pth' #check point path
 # resume_from = 'data/work_dirs/20250822_lidar_camera_fusion/latest.pth'  # 같은 체크포인트 경로
 resume_from = None
 runner = dict(type='EpochBasedRunner', max_epochs=total_epochs)

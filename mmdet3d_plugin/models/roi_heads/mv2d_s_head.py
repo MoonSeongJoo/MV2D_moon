@@ -629,7 +629,7 @@ class MV2DSHead(MV2DHead):
         lidar_reference_point = torch.cat([xy_ref_point[0], dummy_z], dim=1)  # (num_proposals, 3)
 
         # 3D proposal 후보 생성
-        proposals = self.create_proposals_from_ref_points(lidar_reference_point, box_size=4)
+        proposals = self.create_proposals_from_ref_points(detection_xyz, box_size=4)
 
         # proposal 기반 RoI Align 피쳐 추출
         bev_roi_feats = self.roi_align_custom(mixed_bev_feat, proposals, output_size=7, pc_range=[0, -40, -3, 70.4, 40, 1])
