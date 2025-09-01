@@ -65,7 +65,7 @@ model = dict(
         voxelnet=dict(
             type='SimpleVoxelNet',
             init_cfg=dict(type='Pretrained', 
-                checkpoint='data/weights/hv_pointpillars_secfpn_sbn-all_4x8_2x_nus-3d_20210826_225857-f19d00a3.pth'),
+                checkpoint='data/weights/lidar_backbone_neck_rev1.0.pth'),
         ),
         corr=dict(
             type='COTR',
@@ -85,6 +85,13 @@ model = dict(
             ),
         bbox_head=dict(
             type='CrossAttentionBoxHead',
+            # transformer_lidar의 init_cfg를 이곳으로 옮깁니다.
+            init_cfg=dict(
+                type='Pretrained',
+                checkpoint='data/weights/transformer_lidar_corrected.pth',
+                # 'bbox_head' 내부의 'transformer_lidar' 라는 이름의 모듈에 적용하라는 의미
+                override=dict(name='transformer_lidar') 
+            ),
             num_classes=10,
             pc_range=point_cloud_range,
             transformer=dict(
@@ -92,7 +99,7 @@ model = dict(
                 decoder=dict(
                     type='PETRTransformerDecoder',
                     return_intermediate=True,
-                    num_layers=3,
+                    num_layers=4,
                     transformerlayers=dict(
                         type='PETRTransformerDecoderLayer',
                         attn_cfgs=[
@@ -115,10 +122,14 @@ model = dict(
                 )),
             transformer_lidar=dict(
                 type='MV2DTransformer_lidar',
+                # init_cfg=dict(
+                #     type='Pretrained',
+                #     checkpoint='data/weights/transformer_lidar_corrected.pth'
+                # ),
                 decoder=dict(
                     type='PETRTransformerDecoder',
                     return_intermediate=True,
-                    num_layers=3,
+                    num_layers=4,
                     transformerlayers=dict(
                         type='PETRTransformerDecoderLayer',
                         attn_cfgs=[
@@ -155,19 +166,6 @@ model = dict(
             ),
             loss_bbox=dict(type='L1Loss', loss_weight=0.25),
         ),
-        # query_generator=dict(
-        #     with_avg_pool=True,
-        #     num_shared_convs=1,
-        #     num_shared_fcs=1,
-        #     in_channels=256,
-        #     fc_out_channels=1024,
-        #     roi_feat_size=roi_size,
-        #     extra_encoding=dict(
-        #         num_layers=2,
-        #         feat_channels=[512, 256],
-        #         features=[dict(type='intrinsic', in_channels=16,)]
-        #     ),
-        # ),
         pe=dict(
             positional_encoding=dict(
                 type='SinePositionalEncoding3D', num_feats=128, normalize=True),
@@ -243,10 +241,10 @@ optimizer_config = dict(
 total_epochs = 72
 
 # 학습 재개를 위한 설정
-load_from = None
-# load_from = 'data/work_dirs/20250822_lidar_camera_fusion/latest.pth' #check point path
-resume_from = 'data/work_dirs/20250824_lidar_camera_fusion/latest.pth'  # 같은 체크포인트 경로
-# resume_from = None
+# load_from = None
+load_from = 'data/weights/merged_checkpoint.pth' #check point path
+# resume_from = 'data/work_dirs/20250824_lidar_camera_fusion/latest.pth'  # 같은 체크포인트 경로
+resume_from = None
 runner = dict(type='EpochBasedRunner', max_epochs=total_epochs)
 evaluation = dict(interval=72, )
 # evaluation = dict(interval=5, by_epoch=False, start=0) # validation 만 실행

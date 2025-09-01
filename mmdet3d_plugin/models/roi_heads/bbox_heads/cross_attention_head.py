@@ -233,9 +233,10 @@ class CrossAttentionBoxHead(BaseModule):
                  sync_cls_avg_factor=False,
                  train_cfg=None,
                  test_cfg=None,
+                 init_cfg=None,  # <-- 이 부분 추가
                  **kwargs
                  ):
-        super(CrossAttentionBoxHead, self).__init__()
+        super(CrossAttentionBoxHead, self).__init__(init_cfg=init_cfg)
 
         self.loss_cls = build_loss(loss_cls)
         self.loss_bbox = build_loss(loss_bbox)
@@ -332,8 +333,9 @@ class CrossAttentionBoxHead(BaseModule):
     
     def init_weights(self):
         """Initialize the transformer weights."""
+        super().init_weights()
         self.transformer.init_weights()
-        self.transformer_lidar.init_weights()
+        # self.transformer_lidar.init_weights()
         bias_init = bias_init_with_prob(0.01)
         for m in self.cls_branches:
             nn.init.constant_(m[-1].bias, bias_init)

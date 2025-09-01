@@ -63,8 +63,9 @@ class MV2DSHead(MV2DHead):
                  denoise_noise_trans=0.0,
                  denoise_weight=1.0,
                  denoise_split=0.75,
+                 init_cfg=None,  # <-- 1. 이 부분을 추가합니다.
                  **kwargs):
-        super(MV2DSHead, self).__init__(**kwargs)
+        super(MV2DSHead, self).__init__(init_cfg=init_cfg,**kwargs)
         self.use_denoise = use_denoise
         self.neg_bbox_loss = neg_bbox_loss
         self.denoise_scalar = denoise_scalar
