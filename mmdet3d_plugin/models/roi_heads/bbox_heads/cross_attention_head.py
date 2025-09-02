@@ -329,7 +329,6 @@ class CrossAttentionBoxHead(BaseModule):
             nn.ReLU(),
             nn.Linear(self.embed_dims, self.embed_dims)
         )
-
     
     def init_weights(self):
         """Initialize the transformer weights."""
@@ -409,7 +408,7 @@ class CrossAttentionBoxHead(BaseModule):
 
     #     return posemb_c
 
-    def forward(self, reference_points, x, masks, pos_embed, bev_input,
+    def forward(self, reference_points, query_fusion, x, masks, pos_embed,
                 attn_mask=None, cross_attn_mask=None, confidence_scores=None, force_fp32=False, query_embeds=None,
                 return_query_feats=False, **kwargs):
         
@@ -418,12 +417,12 @@ class CrossAttentionBoxHead(BaseModule):
         # 만약 FP32 강제가 필요하다면, 아래 wrapper 함수 내부에서 처리해야 합니다.
 
         if not self.pre_embed:
-            query_embeds = self.position_embedding(reference_points)
+            query_embeds = self.position_embedding(query_fusion)
 
-        # bev_input = bev_feat[1][:, None]
-        query_input_lidar = query_embeds.permute(1, 0, 2).contiguous()
-        pos_embed_lidar = self.pos_embed_lidar.to(bev_input.dtype)
-        mask_lidar = torch.zeros((1, 1, 225, 400), dtype=torch.bool, device=bev_input.device)
+        # # bev_input = bev_feat[1][:, None]
+        # query_input_lidar = query_embeds.permute(1, 0, 2).contiguous()
+        # pos_embed_lidar = self.pos_embed_lidar.to(bev_input.dtype)
+        # mask_lidar = torch.zeros((1, 1, 225, 400), dtype=torch.bool, device=bev_input.device)
 
         # ==================== 1. Camera Transformer Checkpointing ====================
         # checkpoint에 직접 전달할 수 없는 kwargs와 non-tensor 인자들을 처리하기 위한 wrapper 함수
@@ -439,24 +438,24 @@ class CrossAttentionBoxHead(BaseModule):
         # use_reentrant=False는 최신 PyTorch에서 권장하는 더 효율적인 방식입니다.
         outs_dec_camera, _ = checkpoint(create_camera_transformer_closure, x, masks, query_embeds, pos_embed, use_reentrant=False)
 
-        # ===================== 2. Lidar Transformer Checkpointing =====================
-        def create_lidar_transformer_closure(bev_input_l, mask_l, query_input_lidar_l, pos_embed_lidar_l):
-            return self.transformer_lidar(bev_input_l, mask_l, query_input_lidar_l, pos_embed_lidar_l,
-                                        attn_mask=attn_mask,
-                                        cross_attn_mask=cross_attn_mask,
-                                        confidence_scores=confidence_scores,
-                                        **kwargs)
+        # # ===================== 2. Lidar Transformer Checkpointing =====================
+        # def create_lidar_transformer_closure(bev_input_l, mask_l, query_input_lidar_l, pos_embed_lidar_l):
+        #     return self.transformer_lidar(bev_input_l, mask_l, query_input_lidar_l, pos_embed_lidar_l,
+        #                                 attn_mask=attn_mask,
+        #                                 cross_attn_mask=cross_attn_mask,
+        #                                 confidence_scores=confidence_scores,
+        #                                 **kwargs)
         
-        outs_dec_lidar, _ = checkpoint(create_lidar_transformer_closure, bev_input, mask_lidar, query_input_lidar, pos_embed_lidar, use_reentrant=False)
+        # outs_dec_lidar, _ = checkpoint(create_lidar_transformer_closure, bev_input, mask_lidar, query_input_lidar, pos_embed_lidar, use_reentrant=False)
         
         # ==============================================================================
 
         # 이하 로직은 동일합니다.
         outputs_classes = []
         outputs_coords = []
-        outs_dec_lidar = outs_dec_lidar.permute(0,2,1,3)
-        concat_outs_dec = torch.cat([outs_dec_camera, outs_dec_lidar], dim=-1)
-        outs_dec =  self.fusion_mlp(concat_outs_dec) 
+        # outs_dec_lidar = outs_dec_lidar.permute(0,2,1,3)
+        # concat_outs_dec = torch.cat([outs_dec_camera, outs_dec_lidar], dim=-1)
+        outs_dec =  outs_dec_camera 
         
         for lvl in range(outs_dec.shape[0]):
             reference = inverse_sigmoid(reference_points)

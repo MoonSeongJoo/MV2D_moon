@@ -60,13 +60,13 @@ class MV2D(Base3DDetector):
     def _freeze_backbone_modules(self):
         """corr 네트워크 제외한 모든 모듈 동결"""
         
-        # 1. Base Detector 동결
-        for param in self.base_detector.parameters():
-            param.requires_grad = False
+        # # 1. Base Detector 동결
+        # for param in self.base_detector.parameters():
+        #     param.requires_grad = False
             
-        # 2. Neck 동결
-        for param in self.neck.parameters():
-            param.requires_grad = False
+        # # 2. Neck 동결
+        # for param in self.neck.parameters():
+        #     param.requires_grad = False
             
         # # 3. ROI Head 내 corr 제외 동결
         # for name, param in self.roi_head.named_parameters():
@@ -83,18 +83,18 @@ class MV2D(Base3DDetector):
         for name, param in self.roi_head.named_parameters():
             if 'corr' in name:  # ← 핵심 변경점
                 param.requires_grad = False 
-            elif 'bbox_roi_extractor' in name:
-                param.requires_grad = False
-            elif 'z_estimator' in name:
-                param.requires_grad = False
-            elif 'position_encoding' in name:
-                param.requires_grad = False
+            # elif 'bbox_roi_extractor' in name:
+            #     param.requires_grad = False
+            # elif 'z_estimator' in name:
+            #     param.requires_grad = False
+            # elif 'position_encoding' in name:
+            #     param.requires_grad = False
         
-        # # 5. ROI Head 내 bbox_head.transformer만 동결
-        for name, param in self.roi_head.named_parameters():
-            # "bbox_head.transformer"로 시작하는(포함하는) 파라미터만 freeze
-            if 'bbox_head.transformer' in name and 'bbox_head.transformer_lidar' not in name :
-                param.requires_grad = False
+        # # # 5. ROI Head 내 bbox_head.transformer만 동결
+        # for name, param in self.roi_head.named_parameters():
+        #     # "bbox_head.transformer"로 시작하는(포함하는) 파라미터만 freeze
+        #     if 'bbox_head.transformer' in name and 'bbox_head.transformer_lidar' not in name :
+        #         param.requires_grad = False
         
         # # ROI Head 전체 동결
         # for param in self.roi_head.parameters():
@@ -260,15 +260,15 @@ class MV2D(Base3DDetector):
         detector_feat = self.extract_feat(img)
         # mis_depth_feat = self.extract_feat(lidar_depth_mis_resized)
 
-        # losses_detector = self.base_detector.forward_train_w_feat(
-        #     detector_feat,
-        #     img,
-        #     img_metas,
-        #     gt_bboxes,
-        #     gt_labels,
-        #     gt_bboxes_ignore)
-        # for k, v in losses_detector.items():
-        #     losses['det_' + k] = v
+        losses_detector = self.base_detector.forward_train_w_feat(
+            detector_feat,
+            img,
+            img_metas,
+            gt_bboxes,
+            gt_labels,
+            gt_bboxes_ignore)
+        for k, v in losses_detector.items():
+            losses['det_' + k] = v
 
         # generate 2D detection
         self.base_detector.set_detection_cfg(self.train_cfg.get('detection_proposal'))
