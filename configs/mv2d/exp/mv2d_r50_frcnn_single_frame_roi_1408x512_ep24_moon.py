@@ -86,12 +86,12 @@ model = dict(
         bbox_head=dict(
             type='CrossAttentionBoxHead',
             # transformer_lidar의 init_cfg를 이곳으로 옮깁니다.
-            init_cfg=dict(
-                type='Pretrained',
-                checkpoint='data/weights/transformer_lidar_corrected.pth',
-                # 'bbox_head' 내부의 'transformer_lidar' 라는 이름의 모듈에 적용하라는 의미
-                override=dict(name='transformer_lidar') 
-            ),
+            # init_cfg=dict(
+            #     type='Pretrained',
+            #     checkpoint='data/weights/transformer_lidar_corrected.pth',
+            #     # 'bbox_head' 내부의 'transformer_lidar' 라는 이름의 모듈에 적용하라는 의미
+            #     override=dict(name='transformer_lidar') 
+            # ),
             num_classes=10,
             pc_range=point_cloud_range,
             transformer=dict(

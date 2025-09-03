@@ -241,7 +241,7 @@ class CrossAttentionBoxHead(BaseModule):
         self.loss_cls = build_loss(loss_cls)
         self.loss_bbox = build_loss(loss_bbox)
         self.transformer = build_transformer(transformer)
-        self.transformer_lidar = build_transformer(transformer_lidar)
+        # self.transformer_lidar = build_transformer(transformer_lidar)
         self.pc_range = pc_range
         self.embed_dims = embed_dims
         self.pre_embed = pre_embed
@@ -253,7 +253,7 @@ class CrossAttentionBoxHead(BaseModule):
             )
 
         self.num_pred = transformer['decoder']['num_layers']
-        self.num_pred_lidar = transformer_lidar['decoder']['num_layers']
+        # self.num_pred_lidar = transformer_lidar['decoder']['num_layers']
         self.num_classes = num_classes
         self.cls_out_channels = num_classes
         cls_branch = []
@@ -324,11 +324,11 @@ class CrossAttentionBoxHead(BaseModule):
         # in CrossAttentionBoxHead.__init__()
         pos_embed_lidar = self.get_bev3d_pos_embed_init()
         self.register_buffer('pos_embed_lidar', pos_embed_lidar)
-        self.fusion_mlp = nn.Sequential(
-            nn.Linear(self.embed_dims*2, self.embed_dims),
-            nn.ReLU(),
-            nn.Linear(self.embed_dims, self.embed_dims)
-        )
+        # self.fusion_mlp = nn.Sequential(
+        #     nn.Linear(self.embed_dims*2, self.embed_dims),
+        #     nn.ReLU(),
+        #     nn.Linear(self.embed_dims, self.embed_dims)
+        # )
     
     def init_weights(self):
         """Initialize the transformer weights."""
