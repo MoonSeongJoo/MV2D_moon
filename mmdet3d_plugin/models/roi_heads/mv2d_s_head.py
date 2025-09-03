@@ -46,40 +46,55 @@ from image_processing_unit_Ver15_0 import (find_all_depthmap_z_adv,find_rois_non
                                            convert_to_bbox_coordinates_matched, get_center_points,
                                            batch_rois_center_by_cam_id,remove_duplicate_objs)
 
-class QueryEnhancerDynamic(nn.Module):
+class SEBlock(nn.Module):
+    def __init__(self, channel, reduction=4):
+        super().__init__()
+        self.fc = nn.Sequential(
+            nn.Linear(channel, channel // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(channel // reduction, channel, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        # x: (batch, channel)
+        y = x.mean(dim=0, keepdim=True)  # 쿼리 방향 평균 (batch 축 기준)
+        y = self.fc(y)  # 채널별 weight (1, channel)
+        return x * y  # 가중치 적용
+
+class QueryEnhancerWithSE(nn.Module):
     def __init__(self, max_objs=500, coord_dim=3, embed_dim=10, out_dim=64):
         super().__init__()
-        self.max_objs = max_objs  # 최대 학습 가능 임베딩 개수
+        self.max_objs = max_objs
         self.coord_dim = coord_dim
         self.embed_dim = embed_dim
         self.out_dim = out_dim
-        
-        # 고정된 수(max_objs)로 learnable 임베딩 정의
+
         self.learnable_embed_pool = nn.Parameter(torch.randn(max_objs, embed_dim))
-        
-        # fusion MLP
         self.fusion_mlp = nn.Sequential(
             nn.Linear(coord_dim + embed_dim, out_dim),
             nn.ReLU(),
             nn.Linear(out_dim, out_dim)
         )
-    
+        self.se_block = SEBlock(out_dim)  # SE Block 추가
+
     def forward(self, ref_points):
-        # ref_points: [num_objs, coord_dim]
         num_objs = ref_points.shape[0]
         if num_objs > self.max_objs:
-            # 필요시 truncate 또는 예외 처리
             learnable_embeds = self.learnable_embed_pool[:self.max_objs]
-            learnable_embeds = learnable_embeds.repeat((num_objs + self.max_objs -1) // self.max_objs, 1)[:num_objs]
+            learnable_embeds = learnable_embeds.repeat((num_objs + self.max_objs - 1) // self.max_objs, 1)[:num_objs]
         else:
-            learnable_embeds = self.learnable_embed_pool[:num_objs]  # 슬라이스
-        
-        # 두 텐서 concat
-        combined = torch.cat([ref_points, learnable_embeds], dim=1)  # [num_objs, coord_dim + embed_dim]
-        
-        # fusion MLP
-        fused_embedding = self.fusion_mlp(combined)  # [num_objs, out_dim]
-        
+            learnable_embeds = self.learnable_embed_pool[:num_objs]
+
+        combined = torch.cat([ref_points, learnable_embeds], dim=1)  # (num_objs, coord_dim + embed_dim)
+        fused_embedding = self.fusion_mlp(combined)  # (num_objs, out_dim)
+
+        # SE Block 통과 (채널별 중요도 가중치 곱셈)
+        fused_embedding = self.se_block(fused_embedding)
+
+        # # (필요시) 배치 차원 추가 및 형태 맞추기
+        # fused_embedding = fused_embedding.unsqueeze(1)  # (num_objs, 1, out_dim)
+
         return fused_embedding
 
 @HEADS.register_module()
@@ -116,7 +131,7 @@ class MV2DSHead(MV2DHead):
         self.voxelization = build_head(voxelizer)
         self.lidar_voxelnet = build_head(voxelnet)
 
-        self.learnable_query = QueryEnhancerDynamic(max_objs=500)
+        self.learnable_query = QueryEnhancerWithSE(max_objs=500)
     
     def create_confidence_cross_attention_mask(self, confidence_scores, confidence_threshold=0.3):
         """
