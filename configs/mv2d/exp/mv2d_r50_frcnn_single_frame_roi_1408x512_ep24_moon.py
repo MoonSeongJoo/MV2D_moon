@@ -67,21 +67,49 @@ model = dict(
             init_cfg=dict(type='Pretrained', 
                 checkpoint='data/weights/lidar_backbone_neck_rev1.0.pth'),
         ),
+        # corr=dict(
+        #     type='COTR',
+        #     num_kp=200,
+        # ),
         corr=dict(
             type='COTR',
             num_kp=200,
+            # --- 기존 cotr_args의 내용을 여기에 추가 ---
+            max_corrs=1000,
+            dim_feedforward=1024,
+            backbone='resnet50',
+            hidden_dim=312,
+            dilation=False,
+            dropout=0.1,
+            nheads=8,
+            layer='layer3',
+            enc_layers=6,
+            dec_layers=6,
+            position_embedding='lin_sine',
+            load_weights_freeze=False,
+            # 가중치 로딩은 mmdet3d의 표준 방식인 init_cfg를 사용합니다.
+            # 가중치 파일이 있다면 아래와 같이 설정합니다.
+            init_cfg=dict(
+                type='Pretrained',
+                checkpoint='data/weights/backbone_base_corr_rev5.0_corrected.pth' # 예시 경로
+                # checkpoint=None # 가중치 로딩이 필요 없을 경우
+            )
         ),
-        corr_loss=dict(
-            type='CorrelationCycleLoss',
-            corr_weight=2.0,
-            cycle_weight=1.0,
-        ),
+        # corr_loss=dict(
+        #     type='CorrelationCycleLoss',
+        #     corr_weight=2.0,
+        #     cycle_weight=1.0,
+        # ),
         z_estimator=dict(
             type='ZEstimator',
             enc_channels=312,
             bbox_channels=256,
             uv_dim=2,
             hidden_dim=512,
+            init_cfg=dict(
+                type='Pretrained',
+                checkpoint='data/weights/zestimator_corrected.pth' # 예시 경로
+            )
             ),
         bbox_head=dict(
             type='CrossAttentionBoxHead',
@@ -214,16 +242,19 @@ model = dict(
 )
 
 data = dict(
-    workers_per_gpu=4,
+    workers_per_gpu=8,
 )
 
 optimizer = dict(
     _delete_=True,
     type='AdamW',
-    lr=2e-5,
+    lr=2e-4,
     paramwise_cfg=dict(
         custom_keys={
-            'base_detector.backbone': dict(lr_mult=0.25),
+            'base_detector.backbone': dict(lr_mult=0.1),
+            'roi_head.corr': dict(lr_mult=0.1),
+            'roi_head.z_estimator': dict(lr_mult=0.1),
+            'roi_head.lidar_voxelnet': dict(lr_mult=0.1),
         }
     ),
     weight_decay=0.01
@@ -241,9 +272,9 @@ optimizer_config = dict(
 total_epochs = 72
 
 # 학습 재개를 위한 설정
-# load_from = None
-load_from = 'data/weights/merged_checkpoint.pth' #check point path
-# resume_from = 'data/work_dirs/20250824_lidar_camera_fusion/latest.pth'  # 같은 체크포인트 경로
+load_from = None
+# load_from = 'data/work_dirs/20250903_fusion_queryadd/latest.pth' #check point path
+# resume_from = 'data/work_dirs/20250903_fusion_queryadd/latest.pth'  # 같은 체크포인트 경로
 resume_from = None
 runner = dict(type='EpochBasedRunner', max_epochs=total_epochs)
 evaluation = dict(interval=72, )
@@ -291,18 +322,3 @@ lr_config = dict(
 #     warmup_iters=500,
 #     warmup_ratio=1.0 / 3,
 # )
-
-
-# param_scheduler = [
-#     dict(
-#         type='OneCycleLR',
-#         eta_max=2e-4,
-#         total_steps=24 * 2813,  # 총 67,512 steps
-#         pct_start=0.3,
-#         div_factor=25,
-#         final_div_factor=1e4,
-#         anneal_strategy='cos',
-#         by_epoch=False,
-#         convert_to_iter_based=True
-#     )
-# ]

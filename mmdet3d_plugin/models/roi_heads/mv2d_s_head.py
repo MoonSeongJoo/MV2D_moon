@@ -97,6 +97,90 @@ class QueryEnhancerWithSE(nn.Module):
 
         return fused_embedding
 
+# class EnhancedStructuredQueryFuser(nn.Module):
+#     # __init__ 시그니처를 변경하여 bev맵 크기와 scale_factor를 직접 받도록 함
+#     def __init__(self, ref_point_dim=3, embed_dims=256, out_dim=64, 
+#                  bev_h=225, bev_w=400, scale_factor=25): # <--- 변경: 명확한 파라미터 전달
+#         super().__init__()
+        
+#         # 1. 레이어 생성 전에 필요한 파라미터부터 계산
+#         grid_h = bev_h // scale_factor
+#         grid_w = bev_w // scale_factor
+        
+#         # 이제 num_structured_queries는 처음부터 정확한 값(144)을 가짐
+#         self.num_structured_queries = grid_h * grid_w # <--- 변경: 계산 로직을 맨 위로 이동
+#         self.embed_dims = embed_dims
+        
+#         # 2. 정확한 개수(144)로 레이어를 생성
+#         self.structured_query_bbox_embed = nn.Embedding(self.num_structured_queries, 10)
+#         self.structured_query_feat_embed = nn.Embedding(self.num_structured_queries, self.embed_dims)
+        
+#         # 3. 쿼리 풀을 구조적으로 초기화 (이제 bev_h, bev_w, scale_factor를 인자로 전달)
+#         self._init_structured_query_weights(bev_h, bev_w, scale_factor)
+        
+#         # 4. MLP 및 SEBlock 정의 (기존과 동일)
+#         combined_dim = ref_point_dim + 10 + self.embed_dims
+#         self.fusion_mlp = nn.Sequential(
+#             nn.Linear(combined_dim, out_dim),
+#             nn.ReLU(),
+#             nn.Linear(out_dim, out_dim)
+#         )
+#         self.se_block = SEBlock(out_dim)
+
+#     # _init_structured_query_weights는 이제 파라미터를 인자로 받음
+#     def _init_structured_query_weights(self, bev_h, bev_w, scale_factor): # <--- 변경
+#         """(수정됨) 직사각형 BEV맵에 맞춰 구조적 쿼리를 초기화하는 함수"""
+#         nn.init.zeros_(self.structured_query_bbox_embed.weight[:, 2:3])
+#         nn.init.zeros_(self.structured_query_bbox_embed.weight[:, 8:10])
+#         nn.init.constant_(self.structured_query_bbox_embed.weight[:, 5:6], 1.5)
+
+#         # 계산 로직은 __init__으로 이동했으므로 여기서는 값을 받아서 사용
+#         grid_h = bev_h // scale_factor
+#         grid_w = bev_w // scale_factor
+
+#         y = torch.arange(grid_h, dtype=torch.float32)
+#         x = torch.arange(grid_w, dtype=torch.float32)
+#         yy, xx = torch.meshgrid(y, x, indexing='ij')
+        
+#         xx_normalized = (xx + 0.5) / grid_w
+#         yy_normalized = (yy + 0.5) / grid_h
+        
+#         xy_normalized = torch.stack([xx_normalized, yy_normalized], dim=-1)
+        
+#         with torch.no_grad():
+#             # 이제 양쪽 텐서의 크기가 (144, 2)로 일치하여 오류가 발생하지 않음
+#             self.structured_query_bbox_embed.weight[:, :2] = xy_normalized.reshape(-1, 2)
+    
+#     def forward(self, ref_points):
+#         """
+#         Args:
+#             ref_points (Tensor): (num_objs, ref_point_dim). e.g., (num_objs, 3) for (x, y, z)
+#         """
+#         num_objs = ref_points.shape[0]
+#         device = ref_points.device
+        
+#         structured_xy = self.structured_query_bbox_embed.weight[:, :2].to(device)
+#         ref_points_xy = ref_points[:, :2]
+        
+#         # torch.cdist는 이제 (num_objs, 144) 크기의 텐서를 반환
+#         dist_matrix = torch.cdist(ref_points_xy, structured_xy)
+        
+#         matched_indices = torch.argmin(dist_matrix, dim=1)
+        
+#         matched_bbox_embeds = self.structured_query_bbox_embed(matched_indices)
+#         matched_feat_embeds = self.structured_query_feat_embed(matched_indices)
+        
+#         combined_features = torch.cat([
+#             ref_points, 
+#             matched_bbox_embeds, 
+#             matched_feat_embeds
+#         ], dim=1)
+        
+#         fused_embedding = self.fusion_mlp(combined_features)
+#         enhanced_embedding = self.se_block(fused_embedding)
+        
+#         return enhanced_embedding
+
 @HEADS.register_module()
 class MV2DSHead(MV2DHead):
     def __init__(self,
@@ -104,7 +188,7 @@ class MV2DSHead(MV2DHead):
                  voxelizer,
                  voxelnet,
                  corr,
-                 corr_loss,
+                #  corr_loss,
                  z_estimator,
                  use_denoise=False,
                  neg_bbox_loss=False,
@@ -132,6 +216,7 @@ class MV2DSHead(MV2DHead):
         self.lidar_voxelnet = build_head(voxelnet)
 
         self.learnable_query = QueryEnhancerWithSE(max_objs=500)
+        # self.learnable_query = EnhancedStructuredQueryFuser()
     
     def create_confidence_cross_attention_mask(self, confidence_scores, confidence_threshold=0.3):
         """
