@@ -352,6 +352,8 @@ class MV2DSHead(MV2DHead):
             fused_feats: fused corr_feats + bev_input broadcasted, same shape as corr_feats
             fused_pe: corr_pe broadcasted similarly
         """
+        alpha = 1.0  # LiDAR 비중
+        beta = 0.   # Image 비중
         num_rois, num_corrs, c, h, w = corr_feats.shape
         
         # 1. bev_input 채널이 corr_feats 채널과 다르면 projection 필요
@@ -372,7 +374,8 @@ class MV2DSHead(MV2DHead):
         bev_expanded = bev_resized.unsqueeze(0).expand(num_rois, num_corrs, c, h, w).contiguous()  # [num_rois, num_corrs, c, h, w]  # [num_rois, num_corrs, c, h, w]
 
         # 4. fusion (더하기 또는 concat 후 1x1 conv 가능)
-        fused_feats = corr_feats + bev_expanded
+        # fused_feats = corr_feats + bev_expanded
+        fused_feats = alpha * bev_expanded + beta * corr_feats
 
         # 5. positional embedding 도 같은 방식으로 복제
         fused_pe = corr_pe + bev_expanded  # corr_pe와 동일한 shape로 가정

@@ -57,15 +57,16 @@ model = dict(
         #     ),
         voxelizer=dict(
             type='SimpleVoxelization',
-            voxel_size=[0.3, 0.3, 8],           # voxel 크기 늘림 (ex: 0.2 -> 0.3)
+            voxel_size=[0.075, 0.075, 0.2],           # voxel 크기 늘림 (ex: 0.2 -> 0.3)
             point_cloud_range=[0, -30, -3, 60, 30, 1],  # 범위 축소
-            max_num_points=16,                  # voxel 당 최대 점 수 감소
-            max_voxels=(8000, 20000),           # 최대 voxel 수 감소
+            max_num_points=10,                  # voxel 당 최대 점 수 감소
+            max_voxels=(120000, 160000),           # 최대 voxel 수 감소
         ),
         voxelnet=dict(
             type='SimpleVoxelNet',
             init_cfg=dict(type='Pretrained', 
-                checkpoint='data/weights/lidar_backbone_neck_rev1.0.pth'),
+                # checkpoint='data/weights/lidar_backbone_neck_rev1.0.pth'),
+                checkpoint='data/weights/hv_pointpillars_secfpn_sbn-all_4x8_2x_nus-3d_20210826_225857-f19d00a3.pth'),
         ),
         # corr=dict(
         #     type='COTR',
@@ -251,10 +252,10 @@ optimizer = dict(
     lr=2e-4,
     paramwise_cfg=dict(
         custom_keys={
-            'base_detector.backbone': dict(lr_mult=0.1),
+            'base_detector.backbone': dict(lr_mult=0.01),
             'roi_head.corr': dict(lr_mult=0.1),
             'roi_head.z_estimator': dict(lr_mult=0.1),
-            'roi_head.lidar_voxelnet': dict(lr_mult=0.1),
+            'roi_head.lidar_voxelnet': dict(lr_mult=0.01),
         }
     ),
     weight_decay=0.01

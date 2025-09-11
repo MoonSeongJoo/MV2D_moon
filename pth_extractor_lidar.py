@@ -103,13 +103,13 @@ def main():
     메인 실행 함수
     """
     # 1. 문제가 되는 원본 체크포인트 파일 경로
-    checkpoint_path = "data/weights/zestimator.pth" # <--- 변경
+    checkpoint_path = "data/weights/2d_back_bone.pth" # <--- 변경
     
     # 2. 키를 수정한 후 새로 저장할 파일 경로
-    save_path = "data/weights/zestimator_corrected.pth" # <--- 변경 (새 이름)
+    save_path = "data/weights/2d_back_bone_corrected.pth" # <--- 변경 (새 이름)
     
     # 3. 로그를 통해 확인한, 제거해야 할 접두사
-    prefix_to_remove = 'roi_head.z_estimator.' # <--- 변경 (가장 중요한 부분)
+    prefix_to_remove = 'base_detector.' # <--- 변경 (가장 중요한 부분)
     
     # 원본 파일 존재 확인
     if not os.path.exists(checkpoint_path):
