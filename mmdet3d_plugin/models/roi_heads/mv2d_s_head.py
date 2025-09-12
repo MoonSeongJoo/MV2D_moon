@@ -470,7 +470,8 @@ class MV2DSHead(MV2DHead):
 
         # 쿼리 입력 생성 (좌표만 정규화)
         # query_input = trimed_uvset[..., :2]
-        query_input = trimed_center_pts[..., 2:].clone()  # [num_cams, batch_size, 2]
+        query_input = trimed_center_pts[..., 2:].clone() 
+        query_input_raw = query_input.clone() # [num_cams, batch_size, 2]
         # scaled1_query_input = scale_uvz_points(query_input,original_size=(900,1600),target_size=(192,640))
         # scaled2_query_input = normalize_uv_points(scaled1_query_input)
 
@@ -487,6 +488,10 @@ class MV2DSHead(MV2DHead):
 
         raw_corrs, cycle, corr_mask, enc_out = self.corr(sbs_img, query_input)
         # 객체 ID 정보를 예측 결과에 연결
+        pred_corr = raw_corrs.clone()
+        pred_corr[..., 0] = (pred_corr[..., 0] - 0.5) * 2
+        pred_corr[..., 0] *= pred_corr.shape[0]  # 1600
+        pred_corr[..., 1] *= pred_corr.shape[1]  # 900
 
         # loss_corr = self.corr_loss(raw_corrs, corr_target, cycle, query_input, corr_mask)
         # fine_raw_corrs = self.fine_corr(raw_corrs, dense_depth_map)
@@ -506,7 +511,6 @@ class MV2DSHead(MV2DHead):
 
         raw_pred_center_pts1 = raw_pred_center_pts.clone()
         raw_pred_center_pts1[..., 2] = (raw_pred_center_pts1[..., 2] - 0.5) * 2
-        # raw_pred_center_pts1[..., 3] = raw_pred_center_pts1[..., 3] * 2
         raw_pred_center_pts2 = raw_pred_center_pts1.clone()
         raw_pred_center_pts2[..., 2] *= dense_depth_img_color_mis.shape[3]  # 1600
         raw_pred_center_pts2[..., 3] *= dense_depth_img_color_mis.shape[2]  # 900
