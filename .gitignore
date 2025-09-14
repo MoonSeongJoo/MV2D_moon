@@ -12,3 +12,5 @@ exam.py
 .idea/
 .vscode/
 README.md
+*.pyc
+*.o

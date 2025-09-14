@@ -60,8 +60,8 @@ class SimpleVoxelNet(BaseModule):
             layer_nums=[3, 5],
             layer_strides=[2, 2],
             out_channels=[64, 128],
-            pretrained=load_pretrained_path,
         )
+
         # self.backbone_3d = SECOND(
         #     in_channels=4,
         #     layer_nums=[3, 5, 5],        # 3번째 블록 추가
