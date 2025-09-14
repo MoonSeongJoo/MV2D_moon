@@ -1,66 +1,39 @@
 import torch
-import os
-import re
+from collections import OrderedDict
 
-def convert_key(key):
-    # backbone_3d.conv_input.x.y  →  blocks.0.{x*3}.{param}
-    # m = re.match(r'backbone_3d\\.conv_input\\.(\\d+)\\.(\\w+)', key)
-    pattern = r'backbone_3d\.conv_input\.(\d+)\.(\w+)'  # r-string으로 작성
-    m = re.match(pattern, key)
-    if m:
-        idx, param = m.groups()
-        return f'blocks.0.{int(idx)*3}.{param}'
-    # backbone_3d.convN.x.y.param  →  blocks.{N}.{x*3+y}.{param}
-    m = re.match(r'backbone_3d\\.conv([0-9]+)\\.(\\d+)\\.(\\d+)\\.(\\w+)', key)
-    if m:
-        stage, block, subblock, param = m.groups()
-        block_idx = int(stage)
-        sub_idx = int(block)*3 + int(subblock)
-        return f'blocks.{block_idx}.{sub_idx}.{param}'
-    # backbone_3d.convN.x.y.num_batches_tracked  →  blocks.{N}.{x*3+y}.num_batches_tracked
-    m = re.match(r'backbone_3d\\.conv([0-9]+)\\.(\\d+)\\.(\\d+)\\.(num_batches_tracked)', key)
-    if m:
-        stage, block, subblock, param = m.groups()
-        block_idx = int(stage)
-        sub_idx = int(block)*3 + int(subblock)
-        return f'blocks.{block_idx}.{sub_idx}.{param}'
-    return None  # 변환 불가 키는 무시
+# 1. 기존 체크포인트(가중치 파일) 로드
+checkpoint_path = 'data/weights/lidar_backbone_rev1.0.pth'  # 원본 가중치 파일 경로
+corrected_checkpoint_path = 'data/weights/lidar_backbone_rev2.0.pth' # 새로 저장할 파일 경로
+checkpoint = torch.load(checkpoint_path, map_location='cpu')
 
-def extract_and_convert_from_model_state(checkpoint_path, save_path):
-    print(f"📂 Loading checkpoint: {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
-    if 'model_state' not in checkpoint:
-        print("❌ 'model_state' key가 없습니다.")
-        return False
-    state_dict = checkpoint['model_state']
-    print(f"✅ 'model_state' key 확인됨, 총 파라미터 개수: {len(state_dict)}")
+# 원본 state_dict 추출
+# print(checkpoint.keys()) 로 확인 후 맞게 수정하세요.
+original_state_dict = checkpoint['state_dict'] 
 
-    new_state_dict = {}
-    for key, value in state_dict.items():
-        if key.startswith('backbone_3d'):
-            new_key = convert_key(key)
-            if new_key is not None:
-                new_state_dict[new_key] = value
-                print(f"✅ 변환: {key} -> {new_key}")
-        else:
-            # backbone_3d로 시작하지 않는 키들은 필요시 별도 처리하거나 스킵
-            pass
+# 2. 새로운 state_dict 생성 및 키 값 변경
+new_state_dict = OrderedDict()
+prefix_to_remove = 'roi_head.lidar_voxelnet.'
 
-    torch.save(new_state_dict, save_path)
-    print(f"💾 변환된 가중치 저장 완료: {save_path}")
-    return True
-
-def main():
-    checkpoint_path = "/workspace/MV2D_moon/data/weights/second_iou7909.pth"
-    save_path = "/workspace/MV2D_moon/data/weights/converted_second_7862.pth"
-    if not os.path.exists(checkpoint_path):
-        print(f"❌ Checkpoint 파일 없음: {checkpoint_path}")
-        return
-    success = extract_and_convert_from_model_state(checkpoint_path, save_path)
-    if success:
-        print("\n🎉 변환 및 저장 성공!")
+for k, v in original_state_dict.items():
+    if k.startswith(prefix_to_remove):
+        # 접두사를 제거한 새로운 키를 만듭니다.
+        new_key = k.replace(prefix_to_remove, '', 1)
+        new_state_dict[new_key] = v
     else:
-        print("\n❌ 변환 실패!")
+        # 접두사가 없는 다른 키가 있을 경우를 대비해 그대로 추가합니다.
+        new_state_dict[k] = v
 
-if __name__ == "__main__":
-    main()
+# 3. 수정된 state_dict를 새로운 파일로 저장
+# 원본 파일의 다른 정보(epoch 등)도 유지하고 싶다면 아래와 같이 업데이트합니다.
+# checkpoint['state_dict'] = new_state_dict
+# torch.save(checkpoint, corrected_checkpoint_path)
+
+# state_dict만 따로 저장하고 싶다면 아래 코드를 사용합니다.
+torch.save({'state_dict': new_state_dict}, corrected_checkpoint_path)
+
+print(f"키 값 변경 후 새로운 가중치 파일을 '{corrected_checkpoint_path}'에 성공적으로 저장했습니다.")
+
+# 이제부터는 아래와 같이 corrected_checkpoint_path 파일을 바로 로드해서 사용하면 됩니다.
+# model = YourModelClass()
+# checkpoint_corrected = torch.load(corrected_checkpoint_path)
+# model.load_state_dict(checkpoint_corrected['state_dict'])

@@ -68,24 +68,59 @@ model = dict(
             init_cfg=dict(type='Pretrained', 
                 checkpoint='data/weights/hv_pointpillars_secfpn_sbn-all_4x8_2x_nus-3d_20210826_225857-f19d00a3.pth'),
         ),
+        # corr=dict(
+        #     type='COTR',
+        #     num_kp=200,
+        # ),
         corr=dict(
             type='COTR',
             num_kp=200,
+            # --- 기존 cotr_args의 내용을 여기에 추가 ---
+            max_corrs=1000,
+            dim_feedforward=1024,
+            backbone='resnet50',
+            hidden_dim=312,
+            dilation=False,
+            dropout=0.1,
+            nheads=8,
+            layer='layer3',
+            enc_layers=6,
+            dec_layers=6,
+            position_embedding='lin_sine',
+            load_weights_freeze=False,
+            # 가중치 로딩은 mmdet3d의 표준 방식인 init_cfg를 사용합니다.
+            # 가중치 파일이 있다면 아래와 같이 설정합니다.
+            init_cfg=dict(
+                type='Pretrained',
+                checkpoint='data/weights/backbone_base_corr_rev5.0_corrected.pth' # 예시 경로
+                # checkpoint=None # 가중치 로딩이 필요 없을 경우
+            )
         ),
-        corr_loss=dict(
-            type='CorrelationCycleLoss',
-            corr_weight=2.0,
-            cycle_weight=1.0,
-        ),
+        # corr_loss=dict(
+        #     type='CorrelationCycleLoss',
+        #     corr_weight=2.0,
+        #     cycle_weight=1.0,
+        # ),
         z_estimator=dict(
             type='ZEstimator',
             enc_channels=312,
             bbox_channels=256,
             uv_dim=2,
             hidden_dim=512,
+            init_cfg=dict(
+                type='Pretrained',
+                checkpoint='data/weights/zestimator_corrected.pth' # 예시 경로
+            )
             ),
         bbox_head=dict(
             type='CrossAttentionBoxHead',
+            # transformer_lidar의 init_cfg를 이곳으로 옮깁니다.
+            # init_cfg=dict(
+            #     type='Pretrained',
+            #     checkpoint='data/weights/transformer_lidar_corrected.pth',
+            #     # 'bbox_head' 내부의 'transformer_lidar' 라는 이름의 모듈에 적용하라는 의미
+            #     override=dict(name='transformer_lidar') 
+            # ),
             num_classes=10,
             pc_range=point_cloud_range,
             transformer=dict(
@@ -116,10 +151,14 @@ model = dict(
                 )),
             transformer_lidar=dict(
                 type='MV2DTransformer_lidar',
+                # init_cfg=dict(
+                #     type='Pretrained',
+                #     checkpoint='data/weights/transformer_lidar_corrected.pth'
+                # ),
                 decoder=dict(
                     type='PETRTransformerDecoder',
                     return_intermediate=True,
-                    num_layers=6,
+                    num_layers=4,
                     transformerlayers=dict(
                         type='PETRTransformerDecoderLayer',
                         attn_cfgs=[
@@ -156,19 +195,6 @@ model = dict(
             ),
             loss_bbox=dict(type='L1Loss', loss_weight=0.25),
         ),
-        # query_generator=dict(
-        #     with_avg_pool=True,
-        #     num_shared_convs=1,
-        #     num_shared_fcs=1,
-        #     in_channels=256,
-        #     fc_out_channels=1024,
-        #     roi_feat_size=roi_size,
-        #     extra_encoding=dict(
-        #         num_layers=2,
-        #         feat_channels=[512, 256],
-        #         features=[dict(type='intrinsic', in_channels=16,)]
-        #     ),
-        # ),
         pe=dict(
             positional_encoding=dict(
                 type='SinePositionalEncoding3D', num_feats=128, normalize=True),
@@ -217,16 +243,19 @@ model = dict(
 )
 
 data = dict(
-    workers_per_gpu=4,
+    workers_per_gpu=8,
 )
 
 optimizer = dict(
     _delete_=True,
     type='AdamW',
-    lr=6e-5,
+    lr=2e-5,
     paramwise_cfg=dict(
         custom_keys={
-            'base_detector.backbone': dict(lr_mult=0.25),
+            'base_detector.backbone': dict(lr_mult=0.01),
+            'roi_head.corr': dict(lr_mult=0.1),
+            'roi_head.z_estimator': dict(lr_mult=0.1),
+            'roi_head.lidar_voxelnet': dict(lr_mult=0.01),
         }
     ),
     weight_decay=0.01
@@ -245,7 +274,7 @@ total_epochs = 72
 
 # 학습 재개를 위한 설정
 # load_from = None
-load_from = 'data/work_dirs/20240811_mv2d_modi_cameraonly_base/latest.pth' #check point path
+load_from = 'data/weights/epoch_48.pth' #check point path
 # resume_from = 'data/work_dirs/20250822_lidar_camera_fusion/latest.pth'  # 같은 체크포인트 경로
 resume_from = None
 runner = dict(type='EpochBasedRunner', max_epochs=total_epochs)
@@ -294,18 +323,3 @@ lr_config = dict(
 #     warmup_iters=500,
 #     warmup_ratio=1.0 / 3,
 # )
-
-
-# param_scheduler = [
-#     dict(
-#         type='OneCycleLR',
-#         eta_max=2e-4,
-#         total_steps=24 * 2813,  # 총 67,512 steps
-#         pct_start=0.3,
-#         div_factor=25,
-#         final_div_factor=1e4,
-#         anneal_strategy='cos',
-#         by_epoch=False,
-#         convert_to_iter_based=True
-#     )
-# ]

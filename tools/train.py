@@ -11,7 +11,7 @@ import torch
 import torch.distributed as dist
 import torch.backends.cudnn
 from mmcv import Config, DictAction
-from mmcv.runner import get_dist_info, init_dist
+from mmcv.runner import get_dist_info, init_dist ,build_optimizer
 
 import mmdet3d_plugin.models.detectors
 from mmdet import __version__ as mmdet_version
@@ -236,15 +236,16 @@ def main():
         test_cfg=cfg.get('test_cfg'))
     model.init_weights()
 
-    # for name, param in model.named_parameters():
-    #     if param.requires_grad:
-    #         print(f"학습 가능: {name}")
+    optimizer = build_optimizer(model, cfg.optimizer)
     
     for idx, (name, param) in enumerate(model.named_parameters()):
         # print(f"Index: {idx}, Name: {name}, Requires grad: {param.requires_grad}")
         if param.requires_grad:
             print(f"학습 가능: {name}")
-
+    
+    for i, param_group in enumerate(optimizer.param_groups):
+        print("Group", i, "lr =", param_group["lr"], "params =", [p.shape for p in param_group["params"]])
+    
     # pytorch 2.0 신규 수정 
     # Compile the model using torch.compile
     # model = torch.compile(model, mode="reduce-overhead")

@@ -60,8 +60,47 @@ class SimpleVoxelNet(BaseModule):
             layer_nums=[3, 5],
             layer_strides=[2, 2],
             out_channels=[64, 128],
+            pretrained=load_pretrained_path,
         )
+        # self.backbone_3d = SECOND(
+        #     in_channels=4,
+        #     layer_nums=[3, 5, 5],        # 3번째 블록 추가
+        #     layer_strides=[2, 2, 2],    # stride도 1개 추가
+        #     out_channels=[64, 128, 256], # 3번째 블록의 출력 채널 추가
+        #     pretrained=load_pretrained_path,
+        # )
     
+    #             # pretrained 가중치 로드
+    #     if load_pretrained_path is not None:
+    #         self._load_pretrained_weights(load_pretrained_path, device)
+
+    # def _load_pretrained_weights(self, checkpoint_path, device):
+    #     checkpoint = torch.load(checkpoint_path, map_location=device)
+    #     if 'model_state_dict' in checkpoint:
+    #         pretrained_sd = checkpoint['model_state_dict']
+    #     elif 'state_dict' in checkpoint:
+    #         pretrained_sd = checkpoint['state_dict']
+    #     else:
+    #         pretrained_sd = checkpoint
+
+    #     model_sd = self.state_dict()
+    #     new_sd = {}
+    #     required_prefix = 'roi_head.lidar_voxelnet.'
+
+    #     for k, v in pretrained_sd.items():
+    #         # 'model_state', 'global_step' 등 메타키 건너뛰기
+    #         if not isinstance(k, str) or '.' not in k:
+    #             continue
+    #         new_k = required_prefix + k if not k.startswith(required_prefix) else k
+    #         if new_k in model_sd and model_sd[new_k].shape == v.shape:
+    #             new_sd[new_k] = v
+
+    #     load_res = self.load_state_dict(new_sd, strict=False)
+    #     print(f"Pretrained weights loaded with missing keys: {load_res.missing_keys}")
+    #     print(f"Pretrained weights loaded with unexpected keys: {load_res.unexpected_keys}")
+    #     print("loaded end")
+
+
     def forward(self, voxels, coors, num_points):
         if not torch.is_tensor(num_points):
             coors = torch.tensor(coors, device=voxels.device)

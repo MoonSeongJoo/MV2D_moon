@@ -1,7 +1,7 @@
 model = dict(
     base_detector=dict(
         type='TwoStageDetBase',
-        init_cfg=dict(type='Pretrained', checkpoint='data/weights/mask_rcnn_r50_fpn_1x_nuim_20201008_195238-e99f5182.pth'),
+        init_cfg=dict(type='Pretrained', checkpoint='data/weights/2d_back_bone_corrected.pth'),
         backbone=dict(
             type='ResNet',
             depth=50,
