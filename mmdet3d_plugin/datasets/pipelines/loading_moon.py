@@ -350,6 +350,7 @@ class PointToMultiViewDepth(object):
         lidar_depth_map_gt =[]
         list_gt_KT ,list_mis_RT ,list_mis_KT = [] ,[] ,[]
         list_gt_KT_3by4 =[]
+        list_cam_intrinsics =[]
         # img_ori =[]
         for cid in range(len(results['lidar2img'])):
             lidar2img = torch.from_numpy(results['lidar2img'][cid]).to(dtype=torch.float32)
@@ -387,6 +388,7 @@ class PointToMultiViewDepth(object):
             point2img_gt.append(points2img) # lidar coordination 3d
             list_mis_RT.append(extrinsic_perturb) # lidar coordination 3d mis-calibration
             list_gt_KT.append(lidar2img)
+            list_cam_intrinsics.append(cam2img)
             list_mis_KT.append(lidar2img_mis)
             # img_ori.append(img)
             
@@ -472,6 +474,7 @@ class PointToMultiViewDepth(object):
         gt_KT_3by4 = torch.stack(list_gt_KT_3by4)
         mis_RT = torch.stack(list_mis_RT)
         mis_KT = torch.stack(list_mis_KT)
+        cam_intrinsics = torch.stack(list_cam_intrinsics)
         lidar_depth_mis = torch.stack(lidar_depth_map_mis)
         lidar_depth_gt = torch.stack(lidar_depth_map_gt)
 
@@ -490,6 +493,7 @@ class PointToMultiViewDepth(object):
         results['gt_KT'] = gt_KT
         results['gt_KT_3by4'] = gt_KT_3by4
         results['raw_points'] = points_lidar_trim
+        results['cam_intrinsics'] = cam_intrinsics
 
         return results
     

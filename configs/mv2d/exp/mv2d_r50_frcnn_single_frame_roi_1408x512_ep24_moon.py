@@ -38,23 +38,57 @@ model = dict(
         end_level=2,
         num_outs=1,
     ),
+    bbox_roi_extractor=dict(
+        type='SingleRoIExtractor',
+        roi_layer=dict(type='RoIAlign', output_size=roi_size, sampling_ratio=-1),
+        featmap_strides=roi_srides,
+        out_channels=512, ),
+    corr=dict(
+        type='COTR',
+        num_kp=200,
+        # --- 기존 cotr_args의 내용을 여기에 추가 ---
+        max_corrs=1000,
+        dim_feedforward=1024,
+        backbone='resnet50',
+        hidden_dim=312,
+        dilation=False,
+        dropout=0.1,
+        nheads=8,
+        layer='layer3',
+        enc_layers=6,
+        dec_layers=6,
+        position_embedding='lin_sine',
+        load_weights_freeze=False,
+        # 가중치 로딩은 mmdet3d의 표준 방식인 init_cfg를 사용합니다.
+        # 가중치 파일이 있다면 아래와 같이 설정합니다.
+        init_cfg=dict(
+            type='Pretrained',
+            checkpoint='data/weights/backbone_base_corr_rev5.0_corrected.pth' # 예시 경로
+            # checkpoint=None # 가중치 로딩이 필요 없을 경우
+        )
+    ),
     roi_head=dict(
         type='MV2DSHead',
         pc_range=point_cloud_range,
         force_fp32=True,
         use_denoise=False,
-
-        bbox_roi_extractor=dict(
-            type='SingleRoIExtractor',
-            roi_layer=dict(type='RoIAlign', output_size=roi_size, sampling_ratio=-1),
-            featmap_strides=roi_srides,
-            out_channels=512, ),
         # voxelizer=dict(
         #     type='SimpleVoxelization',
         #     voxel_size=[0.2, 0.2, 8], 
         #     point_cloud_range=[0, -40, -3, 70.4, 40, 1], 
         #     max_num_points=32, max_voxels=(16000, 40000),
         #     ),
+        view_transform=dict(
+            type='DepthLSSTransform',
+            in_channels=256,
+            out_channels=80,
+            image_size=[256, 704],
+            feature_size=[32, 88],
+            xbound=[-54.0, 54.0, 0.3],
+            ybound=[-54.0, 54.0, 0.3],
+            zbound=[-10.0, 10.0, 20.0],
+            dbound=[1.0, 60.0, 0.5],
+            downsample=2),
         voxelizer=dict(
             type='SimpleVoxelization',
             voxel_size=[0.075, 0.075, 0.2],           # voxel 크기 늘림 (ex: 0.2 -> 0.3)
@@ -72,30 +106,6 @@ model = dict(
         #     type='COTR',
         #     num_kp=200,
         # ),
-        corr=dict(
-            type='COTR',
-            num_kp=200,
-            # --- 기존 cotr_args의 내용을 여기에 추가 ---
-            max_corrs=1000,
-            dim_feedforward=1024,
-            backbone='resnet50',
-            hidden_dim=312,
-            dilation=False,
-            dropout=0.1,
-            nheads=8,
-            layer='layer3',
-            enc_layers=6,
-            dec_layers=6,
-            position_embedding='lin_sine',
-            load_weights_freeze=False,
-            # 가중치 로딩은 mmdet3d의 표준 방식인 init_cfg를 사용합니다.
-            # 가중치 파일이 있다면 아래와 같이 설정합니다.
-            init_cfg=dict(
-                type='Pretrained',
-                checkpoint='data/weights/backbone_base_corr_rev5.0_corrected.pth' # 예시 경로
-                # checkpoint=None # 가중치 로딩이 필요 없을 경우
-            )
-        ),
         # corr_loss=dict(
         #     type='CorrelationCycleLoss',
         #     corr_weight=2.0,

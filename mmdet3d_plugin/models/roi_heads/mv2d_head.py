@@ -18,7 +18,7 @@ from .utils.query_generator import QueryGenerator
 @HEADS.register_module()
 class MV2DHead(BaseRoIHead, BBoxTestMixin, MaskTestMixin):
     def __init__(self,
-                 bbox_roi_extractor,
+                #  bbox_roi_extractor,
                  bbox_head,
                 #  query_generator,
                  pe,

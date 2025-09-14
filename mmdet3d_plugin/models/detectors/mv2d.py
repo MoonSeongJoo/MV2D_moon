@@ -13,10 +13,13 @@ from torchvision.transforms import functional as tvtf
 
 from mmcv.runner import auto_fp16
 
-from mmdet.models.builder import DETECTORS, build_detector, build_head, build_neck #,build_calib_cross_attn
+from mmdet.models.builder import DETECTORS, build_detector, build_head, build_neck ,build_corr
 from mmdet3d.core import (bbox3d2result, box3d_multiclass_nms)
 from mmdet3d.models.detectors.base import Base3DDetector
 from mmdet3d_plugin.models.utils.grid_mask import CustomGridMask
+from image_processing_unit_Ver15_0 import (dense_map_from_depth_batch, batch_colormap, 
+                                           two_images_side_by_side, two_images_side_by_side_gpu,
+                                           display_depth_maps)
 
 @DETECTORS.register_module()
 class MV2D(Base3DDetector):
@@ -24,6 +27,7 @@ class MV2D(Base3DDetector):
     def __init__(self,
                  base_detector,
                  neck,
+                 corr,
                  roi_head,
                  train_cfg=None,
                  test_cfg=None,
@@ -35,6 +39,7 @@ class MV2D(Base3DDetector):
 
         self.base_detector = build_detector(base_detector)
         self.neck = build_neck(neck)
+        self.corr = build_head(corr)
         if train_cfg is not None:
             roi_head.update(train_cfg=train_cfg['rcnn'])
         if test_cfg is not None:
@@ -192,6 +197,7 @@ class MV2D(Base3DDetector):
                       mis_Rt,
                       gt_KT,
                       gt_KT_3by4,
+                      cam_intrinsics,
                       gt_bboxes_2d,
                       gt_labels_2d,
                       gt_bboxes_2d_to_3d,
@@ -212,11 +218,45 @@ class MV2D(Base3DDetector):
         mis_Rt = mis_Rt.view(batch_size * num_views, *mis_Rt.shape[2:])
         gt_KT = gt_KT.view(batch_size * num_views, *gt_KT.shape[2:])
         gt_KT_3by4 = gt_KT_3by4.view(batch_size * num_views, *gt_KT_3by4.shape[2:])
+        cam_intrinsics = cam_intrinsics.view(batch_size * num_views, *cam_intrinsics.shape[2:])
+        uv_set = gt_KT_3by4 # uv value setting (u,v,u',v')
     
         # lidar_depth_gt = lidar_depth_gt.view(batch_size * num_views, *lidar_depth_gt.shape[2:]).to(torch.float32) # uvz_gt
         # lidar_depth_mis = lidar_depth_mis.view(batch_size * num_views, *lidar_depth_mis.shape[2:])
         lidar_depth_mis = lidar_depth_mis.contiguous().reshape(batch_size * num_views, *lidar_depth_mis.shape[2:])
         
+        ###### SJ MOON 수정 #############
+        # with torch.no_grad():
+        # dense_depth_map_gt = dense_map_from_depth_batch(uvz_gt.squeeze(0),grid=3,iterations=3)
+        dense_depth_map = dense_map_from_depth_batch(lidar_depth_mis,grid=3,iterations=3)
+        dense_depth_img_mis = dense_depth_map.to(dtype=torch.uint8)
+        dense_depth_img_color_mis = batch_colormap(dense_depth_img_mis)
+        # dense_depth_img_color_mis = differentiable_colormap(dense_depth_img_mis)
+        
+        img_resized = F.interpolate(img, size=[192, 640], mode="bilinear")
+        lidar_depth_mis_resized = F.interpolate(dense_depth_img_color_mis, size=[192, 640], mode="bilinear")
+        lidar_depth_mis_resized = tvtf.normalize(lidar_depth_mis_resized, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+        lidar_depth_mis_resized = lidar_depth_mis_resized.to(img_resized.dtype)
+        # lidar_depth_mis_resized = F.interpolate(lidar_depth_mis, size=[h, w], mode="bilinear")
+        
+        # Deformable SPN 적용 lidar_depth_mis_resized = lidar_depth_mis_resized.to(img_resized.dtype)(주요 수정 부분)
+        # dense_depth = self.deform_spn(lidar_depth_mis_resized)
+        # dense_depth = geometric_propagation(lidar_depth_mis_resized)
+
+        sbs_img = two_images_side_by_side(img_resized, lidar_depth_mis_resized)
+        sbs_img = torch.from_numpy(sbs_img).permute(0,3,1,2)
+    
+        sbs_img = two_images_side_by_side_gpu(img_resized, lidar_depth_mis_resized)
+        sbs_img = sbs_img.permute(0,3,1,2)
+    
+        # sbs_img = tvtf.normalize(sbs_img, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+        # ############## input display ##########################
+        # visualize_bboxes(img,proposal_list,output_path='bbox_display.png')
+        # display_depth_maps(img,dense_depth_img_color_mis,sbs_img,uv_set)
+        # print("input dispaly end")
+
+        
+
         if self.use_grid_mask:
             img = self.grid_mask(img)
             # lidar_depth_mis_resized = self.grid_mask(lidar_depth_mis.to(torch.float32))
@@ -291,10 +331,12 @@ class MV2D(Base3DDetector):
         #                                     ori_gt_bboxes_3d, ori_gt_labels_3d,
         #                                     attr_labels, None)
         
-        roi_losses = self.roi_head.forward_train(img_ori,img_metas,raw_points,lidar_depth_mis, feat, detections,lidar_depth_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4, gt_bboxes, gt_labels,
-                                    gt_bboxes_3d, gt_labels_3d,
-                                    ori_gt_bboxes_3d, ori_gt_labels_3d,
-                                    attr_labels, None)
+        roi_losses = self.roi_head.forward_train(img_ori,img_metas,raw_points,lidar_depth_mis, feat, detections,
+                                                 lidar_depth_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4, cam_intrinsics,
+                                                 gt_bboxes, gt_labels,
+                                                gt_bboxes_3d, gt_labels_3d,
+                                                ori_gt_bboxes_3d, ori_gt_labels_3d,
+                                                attr_labels, None)
        
         # losses['loss_corr'] = roi_losses['loss_corr']
         # losses['loss_pc_distance'] = loss_pc_distance

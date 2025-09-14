@@ -2,7 +2,7 @@ import easydict
 import torch
 import torch.nn as nn
 from COTR.COTR_models.cotr_model_moon_Ver12_0 import build
-from mmdet.models.builder import HEADS
+from mmdet.models.builder import CORR
 from mmcv.runner import BaseModule
 
 cotr_args = easydict.EasyDict({
@@ -37,7 +37,8 @@ cotr_args = easydict.EasyDict({
 #         # 배치 정규화 레이어 추가 (최종 출력 차원 기준)
 #         # self.final_bn = nn.BatchNorm1d(3)  # corrs_pred의 마지막 차원이 3인 경우
 
-@HEADS.register_module()
+# @HEADS.register_module()
+@CORR.register_module()
 class COTR(BaseModule):
     # __init__ 시그니처를 cfg 파일로부터 파라미터를 받도록 수정합니다.
     def __init__(self,
@@ -105,7 +106,7 @@ class COTR(BaseModule):
 
         return corrs_pred , cycle , mask , enc_out
 
-@HEADS.register_module()
+@CORR.register_module()
 class CorrelationCycleLoss(nn.Module):
     def __init__(self, corr_weight=1.0 , cycle_weight=1.0):
         super().__init__()

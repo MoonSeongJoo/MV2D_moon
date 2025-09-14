@@ -3136,7 +3136,7 @@ def image_to_lidar_global_modi3(det_uvz, gt_KT):
     else:
         xyz_global_torch = torch.empty(0, 5, device=det_uvz.device)  # Adjust shape to [0, 5]
     
-    return xyz_global_torch
+    return xyz_global_torch,inverse_gt_kt
 
 
 # def lidar_to_image_with_index(det_xyz, gt_KT, img_shape=(900,1600)):

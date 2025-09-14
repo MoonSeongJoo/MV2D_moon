@@ -19,7 +19,7 @@ from mmdet.models.builder import HEADS , build_head
 from .mv2d_head import MV2DHead
 from COTR.COTR_models.cotr_model_moon_Ver12_0 import build
 from torchvision.transforms import functional as tvtf
-from torchvision.ops import DeformConv2d
+# from torchvision.ops import DeformConv2d
 
 
 from image_processing_unit_Ver15_0 import (find_all_depthmap_z_adv,find_rois_nonzero_z,find_rois_nonzero_z_adv,find_rois_nonzero_z_adv1,
@@ -185,9 +185,10 @@ class QueryEnhancerWithSE(nn.Module):
 class MV2DSHead(MV2DHead):
     def __init__(self,
                  # denoise setting
+                 view_transform,
                  voxelizer,
                  voxelnet,
-                 corr,
+                #  corr,
                 #  corr_loss,
                  z_estimator,
                  use_denoise=False,
@@ -207,8 +208,9 @@ class MV2DSHead(MV2DHead):
         self.denoise_noise_trans = denoise_noise_trans
         self.denoise_weight = denoise_weight
         self.denoise_split = denoise_split
-    
-        self.corr = build_head(corr)
+
+        self.view_transform = build_head(view_transform)    
+        # self.corr = build_head(corr)
         # self.corr_loss = build_head(corr_loss)
         self.z_estimator = build_head(z_estimator)
 
@@ -382,18 +384,16 @@ class MV2DSHead(MV2DHead):
 
         return fused_feats, fused_pe
 
-    def _bbox_forward_denoise(self, img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4): # for SJMOON
+    def _bbox_forward_denoise(self, img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4,cam_intrinsics): # for SJMOON
     # def _bbox_forward_denoise(self, x, proposal_list, img_metas): # for original 
+        
         # avoid empty 2D detection
-        
-        
         if sum([len(p) for p in proposal_list]) == 0:
             proposal = torch.tensor([[0, 50, 50, 100, 100, 0]], dtype=proposal_list[0].dtype,
                                     device=proposal_list[0].device)
             proposal_list = [proposal] + proposal_list[1:]
 
         rois = bbox2roi(proposal_list)
-        uv_set = gt_KT_3by4 # uv value setting (u,v,u',v')
         object_indices = torch.arange(start=0,end=rois.size(0),dtype=torch.int32,device=rois.device).unsqueeze(1)
         rois_part1 = rois[:, :1]   # 이미지 인덱스 [3,1]
         rois_part2 = rois[:, 1:]    # 좌표 정보 [3,4]
@@ -416,36 +416,6 @@ class MV2DSHead(MV2DHead):
         extra_feats = dict(
             intrinsic=self.process_intrins_feat(rois, intrinsics)
         )
-
-        ###### SJ MOON 수정 #############
-        # with torch.no_grad():
-        # dense_depth_map_gt = dense_map_from_depth_batch(uvz_gt.squeeze(0),grid=3,iterations=3)
-        dense_depth_map = dense_map_from_depth_batch(lidar_depth_mis,grid=3,iterations=3)
-        dense_depth_img_mis = dense_depth_map.to(dtype=torch.uint8)
-        dense_depth_img_color_mis = batch_colormap(dense_depth_img_mis)
-        # dense_depth_img_color_mis = differentiable_colormap(dense_depth_img_mis)
-        
-        img_resized = F.interpolate(img, size=[192, 640], mode="bilinear")
-        lidar_depth_mis_resized = F.interpolate(dense_depth_img_color_mis, size=[192, 640], mode="bilinear")
-        lidar_depth_mis_resized = tvtf.normalize(lidar_depth_mis_resized, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-        lidar_depth_mis_resized = lidar_depth_mis_resized.to(img_resized.dtype)
-        # lidar_depth_mis_resized = F.interpolate(lidar_depth_mis, size=[h, w], mode="bilinear")
-        
-        # Deformable SPN 적용 lidar_depth_mis_resized = lidar_depth_mis_resized.to(img_resized.dtype)(주요 수정 부분)
-        # dense_depth = self.deform_spn(lidar_depth_mis_resized)
-        # dense_depth = geometric_propagation(lidar_depth_mis_resized)
-
-        sbs_img = two_images_side_by_side(img_resized, lidar_depth_mis_resized)
-        sbs_img = torch.from_numpy(sbs_img).permute(0,3,1,2)
-    
-        sbs_img = two_images_side_by_side_gpu(img_resized, lidar_depth_mis_resized)
-        sbs_img = sbs_img.permute(0,3,1,2)
-    
-        # sbs_img = tvtf.normalize(sbs_img, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-        # ############## input display ##########################
-        # visualize_bboxes(img,proposal_list,output_path='bbox_display.png')
-        # display_depth_maps(img,dense_depth_img_color_mis,sbs_img,uv_set)
-        # print("input dispaly end")
 
         # ### query generator
         # ref_points_uvz,reference_points,return_feats = self.query_generator(bbox_feats, intrinsics, extrinsics, extra_feats)
@@ -558,7 +528,17 @@ class MV2DSHead(MV2DHead):
         #     reduction='mean'
         # )
 
-        detection_nonzero_xyz = image_to_lidar_global_modi3(esitmated_uvz,gt_KT) # 교정되어진 lidar좌표계 pc
+        detection_nonzero_xyz , camera2lidar = image_to_lidar_global_modi3(esitmated_uvz,gt_KT) # 교정되어진 lidar좌표계 pc
+
+        with torch.autocast(device_type='cuda', dtype=torch.float32):
+            x = self.view_transform(
+                x,
+                raw_points,
+                gt_KT,
+                cam_intrinsics,
+                camera2lidar,
+                img_metas,
+            )
         
         # scaled_transformed_uv = scale_uvz_points(transformed_uv[...,2:4],original_size=(928,1600),target_size=(192,640))
         # scaled_transformed_uv_prime = scale_uvz_points(transformed_uv[...,6:],original_size=(900,1600),target_size=(192,640))
@@ -924,10 +904,10 @@ class MV2DSHead(MV2DHead):
         return bbox_results
 
     # def _bbox_forward(self, x, proposal_list, img_metas): # for original 
-    def _bbox_forward(self,img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4): ### this modified moon
+    def _bbox_forward(self,img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4,cam_intrinsics): ### this modified moon
         # bbox_results = self._bbox_forward_denoise(x, proposal_list, img_metas) # for original 
         # bbox_results , loss_corr = self._bbox_forward_denoise(img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON 
-        bbox_results = self._bbox_forward_denoise(img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON 
+        bbox_results = self._bbox_forward_denoise(img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4,cam_intrinsics) # for SJMOON 
         # return bbox_results , loss_corr
         torch.cuda.empty_cache()
         return bbox_results
@@ -950,11 +930,11 @@ class MV2DSHead(MV2DHead):
         num_tgt = known_indice.numel()
         return known_labels, known_bboxs, output_known_class, output_known_coord, num_tgt
     
-    def _bbox_forward_train(self, img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4): # for SJMOON
+    def _bbox_forward_train(self, img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4,cam_intrinsics): # for SJMOON
     # def _bbox_forward_train(self, x, proposal_list, img_metas): # for original 
         """Run forward function and calculate loss for box head in training."""
         # bbox_results , loss_corr = self._bbox_forward(img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJMOON
-        bbox_results = self._bbox_forward(img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
+        bbox_results = self._bbox_forward(img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4,cam_intrinsics)
         # bbox_results = self._bbox_forward(x, proposal_list, img_metas) # for original 
         bbox_results.update(pred={'cls_scores': bbox_results['cls_scores'], 'bbox_preds': bbox_results['bbox_preds']})
 
@@ -973,6 +953,7 @@ class MV2DSHead(MV2DHead):
                       mis_Rt,
                       gt_KT,
                       gt_KT_3by4,
+                      cam_intrinsics,
                       gt_bboxes,
                       gt_labels,
                       gt_bboxes_3d,
@@ -1010,7 +991,7 @@ class MV2DSHead(MV2DHead):
             img_metas[0]['gt_labels_3d'] = ori_gt_labels_3d[0]
 
         # results_from_last , loss_corr = self._bbox_forward_train(img,img_metas,raw_points,lidar_depth_mis, x, proposal_boxes, uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4) # for SJ MOON 
-        results_from_last = self._bbox_forward_train(img,img_metas,raw_points,lidar_depth_mis, x, proposal_boxes, uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4)
+        results_from_last = self._bbox_forward_train(img,img_metas,raw_points,lidar_depth_mis, x, proposal_boxes, uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4,cam_intrinsics)
         # results_from_last = self._bbox_forward_train(x, proposal_boxes, img_metas) # for original 
         preds = results_from_last['pred']
         # Confidence 손실 추출
