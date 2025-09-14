@@ -233,9 +233,10 @@ class CrossAttentionBoxHead(BaseModule):
                  sync_cls_avg_factor=False,
                  train_cfg=None,
                  test_cfg=None,
+                 init_cfg=None,  # <-- 이 부분 추가
                  **kwargs
                  ):
-        super(CrossAttentionBoxHead, self).__init__()
+        super(CrossAttentionBoxHead, self).__init__(init_cfg=init_cfg)
 
         self.loss_cls = build_loss(loss_cls)
         self.loss_bbox = build_loss(loss_bbox)
@@ -259,7 +260,10 @@ class CrossAttentionBoxHead(BaseModule):
         for _ in range(num_reg_fcs):
             cls_branch.append(Linear(self.embed_dims, self.embed_dims))
             cls_branch.append(nn.LayerNorm(self.embed_dims))
+            cls_branch.append(Linear(self.embed_dims, self.embed_dims))
+            cls_branch.append(nn.LayerNorm(self.embed_dims))
             cls_branch.append(nn.ReLU(inplace=True))
+        cls_branch.append(Linear(self.embed_dims, self.cls_out_channels))
         cls_branch.append(Linear(self.embed_dims, self.cls_out_channels))
         fc_cls = nn.Sequential(*cls_branch)
         self.cls_branches = nn.ModuleList(
@@ -268,10 +272,13 @@ class CrossAttentionBoxHead(BaseModule):
             reg_branch = []
             for _ in range(num_reg_fcs):
                 reg_branch.append(Linear(self.embed_dims, self.embed_dims))
+                reg_branch.append(Linear(self.embed_dims, self.embed_dims))
                 reg_branch.append(nn.ReLU())
+            reg_branch.append(Linear(self.embed_dims, sum(group_reg_dims)))
             reg_branch.append(Linear(self.embed_dims, sum(group_reg_dims)))
             reg_branch = nn.Sequential(*reg_branch)
         else:
+            reg_branch = RegLayer(self.embed_dims, num_reg_fcs, group_reg_dims)
             reg_branch = RegLayer(self.embed_dims, num_reg_fcs, group_reg_dims)
         self.reg_branches = nn.ModuleList(
             [copy.deepcopy(reg_branch) for _ in range(self.num_pred)])
@@ -323,7 +330,11 @@ class CrossAttentionBoxHead(BaseModule):
         # in CrossAttentionBoxHead.__init__()
         pos_embed_lidar = self.get_bev3d_pos_embed_init()
         self.register_buffer('pos_embed_lidar', pos_embed_lidar)
-
+        # self.fusion_mlp = nn.Sequential(
+        #     nn.Linear(self.embed_dims*2, self.embed_dims),
+        #     nn.ReLU(),
+        #     nn.Linear(self.embed_dims, self.embed_dims)
+        # )
     
     def init_weights(self):
         """Initialize the transformer weights."""
@@ -401,43 +412,6 @@ class CrossAttentionBoxHead(BaseModule):
     #     posemb_c = posemb_c.unsqueeze(0).unsqueeze(0)
 
     #     return posemb_c
-    def generate_lidar_scene_mask(self, 
-                                  bev_input, 
-                                  voxel_point_cloud_range=[0, -40, -3, 70.4, 40, 1], 
-                                  pc_range=[-51.2, -51.2, -5.0, 51.2, 51.2, 3.0],
-                                  threshold=1e-3):
-        """
-        bev_input: [bs, n, c, h, w]
-        voxel_point_cloud_range: [x_min, y_min, z_min, x_max, y_max, z_max] for voxelizer
-        pc_range: 모델의 point_cloud_range
-        
-        반환값: mask [bs, n, h, w], True인 위치는 마스킹 대상
-        """
-        bs, n, c, h, w = bev_input.shape
-
-        # 정확한 차원 순서로 meshgrid 생성 (y, x 순서 => h: y축, w: x축)
-        y_lin = torch.linspace(voxel_point_cloud_range[1], voxel_point_cloud_range[4], h, device=bev_input.device)
-        x_lin = torch.linspace(voxel_point_cloud_range[0], voxel_point_cloud_range[3], w, device=bev_input.device)
-        ys, xs = torch.meshgrid(y_lin, x_lin, indexing='ij')  # ys: [h, w], xs: [h, w]
-
-        valid_x = (xs >= pc_range[0]) & (xs <= pc_range[3])
-        valid_y = (ys >= pc_range[1]) & (ys <= pc_range[4])
-
-        spatial_mask = valid_x & valid_y  # [h, w]
-
-        # 차원 확장 (bs, n, h, w)
-        spatial_mask = spatial_mask.unsqueeze(0).unsqueeze(0).expand(bs, n, h, w)
-
-        # 채널 절대값 합산으로 voxel 유효성 판단
-        voxel_valid_mask = (bev_input.abs().sum(dim=2) > threshold)  # [bs, n, h, w]
-
-        # 두 마스크 결합
-        combined_valid_mask = spatial_mask & voxel_valid_mask
-
-        # invert mask (True: 마스킹 대상)
-        mask = ~combined_valid_mask
-
-        return mask
 
     def forward(self, reference_points, x, masks, pos_embed, bev_input,
                 attn_mask=None, cross_attn_mask=None, confidence_scores=None, force_fp32=False, query_embeds=None,
@@ -448,7 +422,7 @@ class CrossAttentionBoxHead(BaseModule):
         # 만약 FP32 강제가 필요하다면, 아래 wrapper 함수 내부에서 처리해야 합니다.
 
         if not self.pre_embed:
-            query_embeds = self.position_embedding(reference_points)
+            query_embeds = self.position_embedding(query_fusion)
 
         # bev_input = bev_feat[1][:, None]
         query_input_lidar = query_embeds.permute(1, 0, 2).contiguous()
@@ -471,15 +445,15 @@ class CrossAttentionBoxHead(BaseModule):
         # # use_reentrant=False는 최신 PyTorch에서 권장하는 더 효율적인 방식입니다.
         # outs_dec_camera, _ = checkpoint(create_camera_transformer_closure, x, masks, query_embeds, pos_embed, use_reentrant=False)
 
-        # ===================== 2. Lidar Transformer Checkpointing =====================
-        def create_lidar_transformer_closure(bev_input_l, mask_l, query_input_lidar_l, pos_embed_lidar_l):
-            return self.transformer_lidar(bev_input_l, mask_l, query_input_lidar_l, pos_embed_lidar_l,
-                                        attn_mask=attn_mask,
-                                        cross_attn_mask=cross_attn_mask,
-                                        confidence_scores=confidence_scores,
-                                        **kwargs)
+        # # ===================== 2. Lidar Transformer Checkpointing =====================
+        # def create_lidar_transformer_closure(bev_input_l, mask_l, query_input_lidar_l, pos_embed_lidar_l):
+        #     return self.transformer_lidar(bev_input_l, mask_l, query_input_lidar_l, pos_embed_lidar_l,
+        #                                 attn_mask=attn_mask,
+        #                                 cross_attn_mask=cross_attn_mask,
+        #                                 confidence_scores=confidence_scores,
+        #                                 **kwargs)
         
-        outs_dec_lidar, _ = checkpoint(create_lidar_transformer_closure, bev_input, mask_lidar, query_input_lidar, pos_embed_lidar, use_reentrant=False)
+        # outs_dec_lidar, _ = checkpoint(create_lidar_transformer_closure, bev_input, mask_lidar, query_input_lidar, pos_embed_lidar, use_reentrant=False)
         
         # ==============================================================================
 

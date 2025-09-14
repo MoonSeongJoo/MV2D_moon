@@ -35,15 +35,11 @@ def extract_base_detector_and_neck(checkpoint_path, save_path):
     neck_count = 0
     
     for key, value in state_dict.items():
-        if key.startswith('base_detector') or key.startswith('neck'):
+        if key.startswith('roi_head.bbox_head.transformer_lidar'):
             filtered_state_dict[key] = value
             
-            if key.startswith('base_detector'):
+            if key.startswith('transformer_lidar'):
                 base_detector_count += 1
-            elif key.startswith('neck'):
-                neck_count += 1
-            # if key.startswith('z_estimator'):
-            #     corr_count += 1
             
             print(f"✅ Extracted: {key}")
     
@@ -112,8 +108,8 @@ def main():
     """
     메인 실행 함수
     """
-    checkpoint_path = "data/work_dirs/20240811_mv2d_modi_cameraonly_base/epoch_72.pth"
-    save_path = "data/weights/2d_back_bone.pth"
+    checkpoint_path = "data/work_dirs/20250825_lidar_only/latest.pth"
+    save_path = "data/weights/transformer_lidar_rev1.0.pth"
     
     # 파일 존재 확인
     if not os.path.exists(checkpoint_path):

@@ -3136,7 +3136,7 @@ def image_to_lidar_global_modi3(det_uvz, gt_KT):
     else:
         xyz_global_torch = torch.empty(0, 5, device=det_uvz.device)  # Adjust shape to [0, 5]
     
-    return xyz_global_torch
+    return xyz_global_torch,inverse_gt_kt
 
 
 # def lidar_to_image_with_index(det_xyz, gt_KT, img_shape=(900,1600)):
@@ -4984,3 +4984,39 @@ def descale_uvz_points(uvz_tensor, original_size=(192,640),target_size=(900,1600
     
     return scaled_uvz
 
+def save_img_comparison_as_jpg(img, warped_img, cam_idx=0, save_path='comparison.jpg'):
+    img_np = img[cam_idx].cpu().permute(1, 2, 0).numpy()
+    warped_np = warped_img[cam_idx].cpu().permute(1, 2, 0).numpy()
+
+    fig, axs = plt.subplots(1, 2, figsize=(15, 7))
+    axs[0].imshow(img_np)
+    axs[0].set_title(f'Original Image - Camera {cam_idx}')
+    axs[0].axis('off')
+
+    axs[1].imshow(warped_np)
+    axs[1].set_title(f'Warped Image - Camera {cam_idx}')
+    axs[1].axis('off')
+
+    plt.tight_layout()
+    plt.savefig(save_path, bbox_inches='tight')
+    plt.close()
+
+def bbox2roi_with_camidx(bbox_list):
+    """
+    Args:
+        bbox_list (list[Tensor]): 각 박스 tensor에서 첫 번째 컬럼이 camera index로 들어 있음
+    Returns:
+        Tensor: shape (n, 6), [batch_ind, camera_idx, x1, y1, x2, y2]
+    """
+    rois_list = []
+    for img_id, bboxes in enumerate(bbox_list):
+        if bboxes.size(0) > 0:
+            img_inds = bboxes.new_full((bboxes.size(0), 1), img_id)
+            cam_indices = bboxes[:, 0].unsqueeze(1)              # 첫 번째 값(camera index)
+            coords = bboxes[:, 1:5]                              # 박스 좌표 [x1, y1, x2, y2]
+            rois = torch.cat([img_inds, cam_indices, coords], dim=-1)  # [N, 6]
+        else:
+            rois = bboxes.new_zeros((0, 6))
+        rois_list.append(rois)
+    rois = torch.cat(rois_list, 0)
+    return rois

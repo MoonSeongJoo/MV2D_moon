@@ -2,7 +2,8 @@ import easydict
 import torch
 import torch.nn as nn
 from COTR.COTR_models.cotr_model_moon_Ver12_0 import build
-from mmdet.models.builder import HEADS
+from mmdet.models.builder import CORR
+from mmcv.runner import BaseModule
 
 cotr_args = easydict.EasyDict({
                 "out_dir" : "general_config['out']",
@@ -26,15 +27,62 @@ cotr_args = easydict.EasyDict({
                 
 })
 
-@HEADS.register_module()
-class COTR(nn.Module):
-    def __init__(self, num_kp=200):
-        super(COTR, self).__init__()
+# @HEADS.register_module()
+# class COTR(BaseModule):
+#     def __init__(self, num_kp=200):
+#         super(COTR, self).__init__()
+#         self.num_kp = num_kp
+#         ##### CORR network #######
+#         self.corr = build(cotr_args)
+#         # 배치 정규화 레이어 추가 (최종 출력 차원 기준)
+#         # self.final_bn = nn.BatchNorm1d(3)  # corrs_pred의 마지막 차원이 3인 경우
+
+# @HEADS.register_module()
+@CORR.register_module()
+class COTR(BaseModule):
+    # __init__ 시그니처를 cfg 파일로부터 파라미터를 받도록 수정합니다.
+    def __init__(self,
+                 num_kp=200,
+                 max_corrs=1000,
+                 dim_feedforward=1024,
+                 backbone='resnet50',
+                 hidden_dim=312,
+                 dilation=False,
+                 dropout=0.1,
+                 nheads=8,
+                 layer='layer3',
+                 enc_layers=6,
+                 dec_layers=6,
+                 position_embedding='lin_sine',
+                 load_weights_freeze=False, # cfg에서 받을 수 있도록 추가
+                 init_cfg=None): # mmdet3d의 표준 가중치 초기화를 위해 init_cfg를 받습니다.
+        # super() 호출 시 init_cfg를 전달해야 Pretrained 가중치 로딩이 동작합니다.
+        super(COTR, self).__init__(init_cfg)
         self.num_kp = num_kp
+
+        # __init__ 함수 내에서 build 함수에 전달할 설정 딕셔너리를 동적으로 생성합니다.
+        cotr_config = {
+            "max_corrs": max_corrs,
+            "dim_feedforward": dim_feedforward,
+            "backbone": backbone,
+            "hidden_dim": hidden_dim,
+            "dilation": dilation,
+            "dropout": dropout,
+            "nheads": nheads,
+            "layer": layer,
+            "enc_layers": enc_layers,
+            "dec_layers": dec_layers,
+            "position_embedding": position_embedding,
+            "load_weights_freeze": load_weights_freeze,
+            # init_cfg를 통해 가중치 경로를 전달받습니다.
+            "load_weights_path": self.init_cfg.get('checkpoint') if self.init_cfg else None,
+            # 아래 파라미터들은 모델 빌드에 직접 필요하지 않을 수 있으나 호환성을 위해 유지
+            "out_dir": None,
+        }
+
         ##### CORR network #######
-        self.corr = build(cotr_args)
-        # 배치 정규화 레이어 추가 (최종 출력 차원 기준)
-        # self.final_bn = nn.BatchNorm1d(3)  # corrs_pred의 마지막 차원이 3인 경우
+        # 동적으로 생성한 cotr_config를 전달합니다. build 함수가 easydict를 요구하면 변환합니다.
+        self.corr = build(easydict.EasyDict(cotr_config))
     
     def forward(self, sbs_img , query_input):
 
@@ -58,7 +106,7 @@ class COTR(nn.Module):
 
         return corrs_pred , cycle , mask , enc_out
 
-@HEADS.register_module()
+@CORR.register_module()
 class CorrelationCycleLoss(nn.Module):
     def __init__(self, corr_weight=1.0 , cycle_weight=1.0):
         super().__init__()

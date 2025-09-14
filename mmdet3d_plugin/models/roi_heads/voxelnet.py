@@ -48,6 +48,9 @@ class SimpleVoxelization(nn.Module):
 class SimpleVoxelNet(BaseModule):
     def __init__(self,init_cfg=None):
         super().__init__(init_cfg=init_cfg)
+class SimpleVoxelNet(BaseModule):
+    def __init__(self,init_cfg=None):
+        super().__init__(init_cfg=init_cfg)
         
         # Voxel feature encoder
         self.voxel_encoder = HardSimpleVFE(num_features=4)
@@ -68,6 +71,7 @@ class SimpleVoxelNet(BaseModule):
             num_points = torch.tensor(num_points, device=voxels.device)
         voxel_features = self.voxel_encoder(voxels, num_points, coors)  # [num_voxels, C]
         x = self.middle_encoder(voxel_features, coors, batch_size=1)
+        x = self.pts_backbone(x)
         x = self.pts_backbone(x)
 
         # 필요 없다면 반환 직후 caller에서 반드시 아래처럼 관리!

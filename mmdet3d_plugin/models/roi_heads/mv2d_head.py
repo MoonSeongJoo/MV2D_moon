@@ -18,7 +18,7 @@ from .utils.query_generator import QueryGenerator
 @HEADS.register_module()
 class MV2DHead(BaseRoIHead, BBoxTestMixin, MaskTestMixin):
     def __init__(self,
-                 bbox_roi_extractor,
+                #  bbox_roi_extractor,
                  bbox_head,
                 #  query_generator,
                  pe,
@@ -29,9 +29,10 @@ class MV2DHead(BaseRoIHead, BBoxTestMixin, MaskTestMixin):
                  force_fp32=False,
                  train_cfg=None,
                  test_cfg=None,
+                 init_cfg=None,
                  **kwargs):
         super(MV2DHead, self).__init__(bbox_roi_extractor=bbox_roi_extractor, bbox_head=bbox_head,
-                                       train_cfg=train_cfg, test_cfg=test_cfg, **kwargs)
+                                       train_cfg=train_cfg, test_cfg=test_cfg, init_cfg=None,**kwargs)
         self.roi_size = bbox_roi_extractor['roi_layer']['output_size']
         if isinstance(self.roi_size, int):
             self.roi_size = [self.roi_size, self.roi_size]

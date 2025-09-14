@@ -10,6 +10,7 @@ from mmdet3d.datasets.pipelines.loading import LoadAnnotations3D
 from einops import rearrange
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
+from mmdet3d.core.bbox import LiDARInstance3DBoxes
 
 from mmdet3d_plugin.datasets.pipelines.image_display import (points2depthmap_cpu,points2depthmap_gpu,
                                                              add_calibration,add_calibration_adv,add_mis_calibration_ori,add_calibration_adv2,
@@ -350,6 +351,7 @@ class PointToMultiViewDepth(object):
         lidar_depth_map_gt =[]
         list_gt_KT ,list_mis_RT ,list_mis_KT = [] ,[] ,[]
         list_gt_KT_3by4 =[]
+        list_cam_intrinsics =[]
         # img_ori =[]
         for cid in range(len(results['lidar2img'])):
             lidar2img = torch.from_numpy(results['lidar2img'][cid]).to(dtype=torch.float32)
@@ -387,6 +389,7 @@ class PointToMultiViewDepth(object):
             point2img_gt.append(points2img) # lidar coordination 3d
             list_mis_RT.append(extrinsic_perturb) # lidar coordination 3d mis-calibration
             list_gt_KT.append(lidar2img)
+            list_cam_intrinsics.append(cam2img)
             list_mis_KT.append(lidar2img_mis)
             # img_ori.append(img)
             
@@ -472,6 +475,7 @@ class PointToMultiViewDepth(object):
         gt_KT_3by4 = torch.stack(list_gt_KT_3by4)
         mis_RT = torch.stack(list_mis_RT)
         mis_KT = torch.stack(list_mis_KT)
+        cam_intrinsics = torch.stack(list_cam_intrinsics)
         lidar_depth_mis = torch.stack(lidar_depth_map_mis)
         lidar_depth_gt = torch.stack(lidar_depth_map_gt)
 
@@ -490,6 +494,7 @@ class PointToMultiViewDepth(object):
         results['gt_KT'] = gt_KT
         results['gt_KT_3by4'] = gt_KT_3by4
         results['raw_points'] = points_lidar_trim
+        results['cam_intrinsics'] = cam_intrinsics
 
         return results
     
@@ -569,4 +574,78 @@ class ToPytorchTensor(object):
                 tensor_results[key] = value
         return tensor_results
 
+@PIPELINES.register_module()
+class gt_bbox_trasform(object):
+    def __call__(self, results):
+        # --- [시작] 에러 회피 코드 ---
+        # 1. 'gt_bboxes_3d' 키가 없거나, 있더라도 객체 수가 0개인 경우를 확인합니다.
+        if 'gt_bboxes_3d' not in results or results['gt_bboxes_3d'].tensor.shape[0] == 0:
+            # 2. 파이프라인의 일관성을 위해 빈 LiDARInstance3DBoxes 객체를 생성합니다.
+            #    device와 dtype을 원본 텐서(존재한다면)나 기본값으로 설정해줍니다.
+            device = results['gt_bboxes_3d'].tensor.device if 'gt_bboxes_3d' in results else 'cuda'
+            dtype = results['gt_bboxes_3d'].tensor.dtype if 'gt_bboxes_3d' in results else torch.float32
+            
+            empty_boxes = LiDARInstance3DBoxes(
+                torch.zeros((0, 9), device=device, dtype=dtype),
+                box_dim=9
+            )
+            # 3. 빈 객체를 결과에 할당하고 함수를 즉시 종료합니다.
+            results['gt_3d_bbox_mis_per_cam_matched'] = empty_boxes
+            return results
+        # --- [끝] 에러 회피 코드 ---
 
+        # 아래 코드는 gt_bboxes_3d에 객체가 하나 이상 있을 때만 실행됩니다.
+        gt_bboxes_3d = results['gt_bboxes_3d'].tensor
+        mis_RT_all = results['mis_Rt']
+        gt_bboxes_indices_per_cam = results['gt_bboxes_2d_to_3d']
+
+        final_transformed_bboxes = gt_bboxes_3d.clone()
+
+        for cam_idx in range(mis_RT_all.shape[0]):
+            RT = mis_RT_all[cam_idx]
+            indices = gt_bboxes_indices_per_cam[cam_idx]
+            
+            if indices.size == 0:
+                continue
+
+            indices_tensor = torch.from_numpy(indices).long().to(gt_bboxes_3d.device)
+            bboxes_to_transform = gt_bboxes_3d[indices_tensor]
+
+            R = RT[:3, :3]
+            N_subset = bboxes_to_transform.shape[0]
+
+            boxes_xyz = bboxes_to_transform[:, :3]
+            boxes_homo = torch.cat([boxes_xyz, torch.ones((N_subset, 1), device=boxes_xyz.device)], dim=1)
+            boxes_trans = (RT @ boxes_homo.T).T[:, :3]
+            
+            sizes = bboxes_to_transform[:, 3:6]
+            sizes_rot = torch.abs(R) @ sizes.T
+            sizes_rot = sizes_rot.T
+            
+            yaw = bboxes_to_transform[:, 6]
+            rot_angle = torch.atan2(R[1, 0], R[0, 0])
+            yaw_new = yaw + rot_angle
+            
+            if bboxes_to_transform.size(1) > 7:
+                vel = bboxes_to_transform[:, 7:9]
+                vel_rot = (R[:2, :2] @ vel.T).T
+            else:
+                vel_rot = bboxes_to_transform.new_zeros((N_subset, 2))
+
+            transformed_subset = bboxes_to_transform.clone()
+            transformed_subset[:, :3] = boxes_trans
+            transformed_subset[:, 3:6] = sizes_rot
+            transformed_subset[:, 6] = yaw_new
+            if bboxes_to_transform.size(1) > 7:
+                transformed_subset[:, 7:9] = vel_rot
+
+            final_transformed_bboxes[indices_tensor] = transformed_subset
+
+        transformed_boxes_object = LiDARInstance3DBoxes(
+            final_transformed_bboxes,
+            box_dim=9
+        )
+        
+        results['gt_3d_bbox_mis_per_cam_matched'] = transformed_boxes_object
+        results['gt_bboxes_3d'] = transformed_boxes_object
+        return results

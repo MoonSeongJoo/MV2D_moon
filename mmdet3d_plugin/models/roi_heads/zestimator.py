@@ -2,11 +2,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from mmdet.models.builder import HEADS
+from mmcv.runner import BaseModule
 
 @HEADS.register_module()
-class ZEstimator(nn.Module):
-    def __init__(self, enc_channels=312, bbox_channels=256, uv_dim=2, hidden_dim=512):
-        super().__init__()
+class ZEstimator(BaseModule):
+    def __init__(self, enc_channels=312, bbox_channels=256, uv_dim=2, hidden_dim=512,init_cfg=None):
+        super().__init__(init_cfg=init_cfg)
         # enc_out 특징 압축
         self.enc_adaptor = nn.Sequential(
             nn.Conv2d(enc_channels, 128, kernel_size=1),
