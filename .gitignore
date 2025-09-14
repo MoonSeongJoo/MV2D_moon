@@ -1,4 +1,4 @@
-
+	
 work_dirs/
 epoch_3.pth
 COTR/
@@ -6,9 +6,10 @@ COTR/
 *.png
 *.jpg
 training_log.txt
+out.txt
 exam.py
 .idea/
 .vscode/
 README.md
 *.pyc
-out.txt
+*.o

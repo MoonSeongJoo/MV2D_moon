@@ -6,6 +6,7 @@
 import copy
 import sys
 import os
+import cv2
 
 from networkx import is_dominating_set
 import numpy as np
@@ -44,7 +45,8 @@ from image_processing_unit_Ver15_0 import (find_all_depthmap_z_adv,find_rois_non
                                            deduplicate_obj_ids,merge_point_clouds,differentiable_deduplicate,differentiable_object_matching,
                                            differentiable_object_matching,differentiable_merge_point_clouds,
                                            convert_to_bbox_coordinates_matched, get_center_points,
-                                           batch_rois_center_by_cam_id,remove_duplicate_objs)
+                                           batch_rois_center_by_cam_id,remove_duplicate_objs,
+                                           save_img_comparison_as_jpg,bbox2roi_with_camidx)
 
 class SEBlock(nn.Module):
     def __init__(self, channel, reduction=4):
@@ -354,8 +356,8 @@ class MV2DSHead(MV2DHead):
             fused_feats: fused corr_feats + bev_input broadcasted, same shape as corr_feats
             fused_pe: corr_pe broadcasted similarly
         """
-        alpha = 1.0  # LiDAR 비중
-        beta = 0.   # Image 비중
+        alpha = 0.7  # LiDAR 비중
+        beta = 0.3   # Image 비중
         num_rois, num_corrs, c, h, w = corr_feats.shape
         
         # 1. bev_input 채널이 corr_feats 채널과 다르면 projection 필요
@@ -383,6 +385,83 @@ class MV2DSHead(MV2DHead):
         fused_pe = corr_pe + bev_expanded  # corr_pe와 동일한 shape로 가정
 
         return fused_feats, fused_pe
+    
+    def transform_points_torch(self, query_input_raw, pred_corr):
+        device = query_input_raw.device  # GPU device 정보 추출
+
+        num_cams, num_points, _ = query_input_raw.shape
+        affine_matrices_all = []
+
+        for cam_idx in range(num_cams):
+            src_points = query_input_raw[cam_idx].cpu().numpy().astype(np.float32)
+            dst_points = pred_corr[cam_idx].cpu().numpy().astype(np.float32)
+
+            affine_matrix, inliers = cv2.estimateAffine2D(src_points, dst_points, method=cv2.RANSAC, ransacReprojThreshold=3.0)
+            if affine_matrix is None or inliers is None or np.sum(inliers) < 3:
+                # print(f"Camera {cam_idx}: Affine estimation failed or not enough inliers. Using identity matrix.")
+                affine_matrix = np.array([[1, 0, 0],
+                                        [0, 1, 0]], dtype=np.float32)
+
+            affine_matrices_all.append(torch.from_numpy(affine_matrix).to(device))
+
+        return torch.stack(affine_matrices_all).to(device)
+
+    
+    def warp_images_with_affine(self,img, affine_matrices):
+        """
+        img: torch.Tensor, shape = [6, 3, 1600, 900], float32 or uint8 (이미지 6개, 3채널 H=1600, W=900)
+        affine_matrices: numpy.ndarray, shape = [6, 2, 3], 각 카메라별 affine 행렬
+        
+        반환: torch.Tensor, shape = [6, 3, 1600, 900], 변환된 이미지
+        """
+        num_cams, channels, height, width = img.shape
+        
+        warped_imgs = []
+        
+        img_np = img.cpu().numpy()
+        affine_matrices_np = affine_matrices.cpu().numpy().astype(np.float32)
+        
+        
+        for cam_idx in range(num_cams):
+            # (C, H, W) -> (H, W, C) OpenCV에 맞게 변환
+            img_cv = np.transpose(img_np[cam_idx], (1, 2, 0))
+            
+            affine_matrix = affine_matrices_np[cam_idx]
+            # warpAffine 적용 (출력 크기 지정: (width, height))
+            warped_img_cv = cv2.warpAffine(img_cv, affine_matrix, (width, height), flags=cv2.INTER_LINEAR)
+            
+            # (H, W, C) -> (C, H, W) 다시 변환
+            warped_img = np.transpose(warped_img_cv, (2, 0, 1))
+            
+            warped_imgs.append(torch.from_numpy(warped_img))
+            
+        return torch.stack(warped_imgs)
+    
+    def apply_affine_transform_to_features(self, bbox_features, affine_matrices, rois_with_camidx):
+        """
+        bbox_features: torch.Tensor, shape = [num_rois, C, H, W]
+        affine_matrices: torch.Tensor, shape = [num_cams, 2, 3]
+        rois_with_camidx: torch.Tensor, shape = [num_rois, 6]
+                        (각 roi에 [batch_ind, cam_idx, x1, y1, x2, y2] 포함)
+        
+        반환: 좌표 변환이 적용된 bbox_features, shape = [num_rois, C, H, W]
+        """
+
+        num_rois, C, H, W = bbox_features.shape
+
+        # rois_with_camidx에서 cam_idx 정보 추출 (dtype Long)
+        cam_indices = rois_with_camidx[:, 0].long()  # [num_rois]
+
+        # cam_indices에 맞추어 각 roi에 해당하는 affine_matrix 선택
+        # selected_affines: [num_rois, 2, 3]
+        selected_affines = affine_matrices[cam_indices].float()
+
+        # affine_grid, grid_sample 적용
+        grid = F.affine_grid(selected_affines, size=bbox_features.size(), align_corners=False)
+
+        transformed_features = F.grid_sample(bbox_features, grid, mode='bilinear', padding_mode='border', align_corners=False)
+
+        return transformed_features
 
     def _bbox_forward_denoise(self, img,img_metas,raw_points,lidar_depth_mis,x, proposal_list,uvz_gt,mis_KT,mis_Rt,gt_KT,gt_KT_3by4,cam_intrinsics): # for SJMOON
     # def _bbox_forward_denoise(self, x, proposal_list, img_metas): # for original 
@@ -394,6 +473,7 @@ class MV2DSHead(MV2DHead):
             proposal_list = [proposal] + proposal_list[1:]
 
         rois = bbox2roi(proposal_list)
+        rois_with_camidx = bbox2roi_with_camidx(proposal_list)
         object_indices = torch.arange(start=0,end=rois.size(0),dtype=torch.int32,device=rois.device).unsqueeze(1)
         rois_part1 = rois[:, :1]   # 이미지 인덱스 [3,1]
         rois_part2 = rois[:, 1:]    # 좌표 정보 [3,4]
@@ -440,7 +520,8 @@ class MV2DSHead(MV2DHead):
 
         # 쿼리 입력 생성 (좌표만 정규화)
         # query_input = trimed_uvset[..., :2]
-        query_input = trimed_center_pts[..., 2:].clone()  # [num_cams, batch_size, 2]
+        query_input = trimed_center_pts[..., 2:].clone() 
+        query_input_raw = query_input.clone() # [num_cams, batch_size, 2]
         # scaled1_query_input = scale_uvz_points(query_input,original_size=(900,1600),target_size=(192,640))
         # scaled2_query_input = normalize_uv_points(scaled1_query_input)
 
@@ -457,12 +538,24 @@ class MV2DSHead(MV2DHead):
 
         raw_corrs, cycle, corr_mask, enc_out = self.corr(sbs_img, query_input)
         # 객체 ID 정보를 예측 결과에 연결
+        pred_corr = raw_corrs.clone()
+        pred_corr[..., 0] = (pred_corr[..., 0] - 0.5) * 2
+        pred_corr[..., 0] *= dense_depth_img_color_mis.shape[3]  # 1600
+        pred_corr[..., 1] *= dense_depth_img_color_mis.shape[2] # 900
 
+        corrs = torch.cat([query_input_raw,pred_corr],dim=-1)
         # loss_corr = self.corr_loss(raw_corrs, corr_target, cycle, query_input, corr_mask)
         # fine_raw_corrs = self.fine_corr(raw_corrs, dense_depth_map)
         # fine_raw_corrs[...,0] = fine_raw_corrs[...,0] - 0.5
         # loss_corr = self.corr_loss(fine_raw_corrs[...,:2], query_input, img, dense_depth_map)
-        
+        affine_matrix =self.transform_points_torch(query_input_raw, pred_corr)
+        # warp_img = self.warp_images_with_affine(img, affine_matrix)
+        transformed_bbox_feats = self.apply_affine_transform_to_features(bbox_feats, affine_matrix, rois_with_camidx)
+
+        # for img_idx in range(img.shape[0]):
+        #     save_img_comparison_as_jpg(img, warp_img,cam_idx=img_idx, save_path=f'warped_comparison_cam{img_idx}.jpg')
+        #     print("warped image saved")
+       
         corrs_pred_with_obj = torch.cat([
             object_ids.unsqueeze(-1),  # [num_cams, batch_size, 1]
             raw_corrs                 # [num_cams, batch_size, 2]
@@ -476,7 +569,6 @@ class MV2DSHead(MV2DHead):
 
         raw_pred_center_pts1 = raw_pred_center_pts.clone()
         raw_pred_center_pts1[..., 2] = (raw_pred_center_pts1[..., 2] - 0.5) * 2
-        # raw_pred_center_pts1[..., 3] = raw_pred_center_pts1[..., 3] * 2
         raw_pred_center_pts2 = raw_pred_center_pts1.clone()
         raw_pred_center_pts2[..., 2] *= dense_depth_img_color_mis.shape[3]  # 1600
         raw_pred_center_pts2[..., 3] *= dense_depth_img_color_mis.shape[2]  # 900
@@ -512,7 +604,7 @@ class MV2DSHead(MV2DHead):
         # transformed_uv = transform_uv_points(rois_with_indices,uv_set)      
         # esitmated_z = self.z_estimator(transformed_uv[...,:4], dense_depth_map_gt,bbox_feats,ref_points_uvz)
         # esitmated_z = self.z_estimator(pred_center_pts, dense_depth_map_gt,bbox_feats)
-        esitmated_z = self.z_estimator(raw_pred_center_pts2, dense_depth_map,bbox_feats, enc_out)
+        esitmated_z = self.z_estimator(raw_pred_center_pts2, dense_depth_map,transformed_bbox_feats, enc_out)
         # **Confidence 정보 추출**
         # confidence_scores = esitmated_z['confidence'].view(-1,1)  # [N]
         # z_depth_real = esitmated_z['z_lidar_real']  # [N]
@@ -860,7 +952,7 @@ class MV2DSHead(MV2DHead):
         else:
             mask_dict = None
 
-            corr_feats = bbox_feats[corr]  # [num_rois, num_corrs, c, h, w]
+            corr_feats = transformed_bbox_feats[corr]  # [num_rois, num_corrs, c, h, w]
             corr_pe = pe[corr]
             corr_feats_fused, corr_pe_fused = self.fusion_corr_bev(corr_feats, corr_pe, mixed_bev_feat)
     
