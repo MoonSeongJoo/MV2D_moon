@@ -60,18 +60,18 @@ class MV2D(Base3DDetector):
     def _freeze_backbone_modules(self):
         """corr 네트워크 제외한 모든 모듈 동결"""
         
-        # 1. Base Detector 동결
-        for param in self.base_detector.parameters():
-            param.requires_grad = False
+        # # 1. Base Detector 동결
+        # for param in self.base_detector.parameters():
+        #     param.requires_grad = False
             
-        # 2. Neck 동결
-        for param in self.neck.parameters():
-            param.requires_grad = False
+        # # 2. Neck 동결
+        # for param in self.neck.parameters():
+        #     param.requires_grad = False
             
-        # # 3. ROI Head 내 corr 제외 동결
-        # for name, param in self.roi_head.named_parameters():
-        #     if 'corr' not in name:  # ← 핵심 변경점
-        #         param.requires_grad = False 
+        # 3. ROI Head 내 corr 제외 동결
+        for name, param in self.roi_head.named_parameters():
+            if 'corr' not in name:  # ← 핵심 변경점
+                param.requires_grad = False 
         
         # # ROI Head 내 corr과 pts_regressor 제외 동결
         # for name, param in self.roi_head.named_parameters():
@@ -79,16 +79,16 @@ class MV2D(Base3DDetector):
         #     if 'corr' not in name and 'pts_regressor' not in name:
         #         param.requires_grad = False
         
-        # # 4. ROI Head 내 corr 만 동결 
-        for name, param in self.roi_head.named_parameters():
-            if 'corr' in name:  # ← 핵심 변경점
-                param.requires_grad = False 
-            # elif 'bbox_roi_extractor' in name:
-            #     param.requires_grad = False
-            # elif 'z_estimator' in name:
-            #     param.requires_grad = False
-            # elif 'position_encoding' in name:
-            #     param.requires_grad = False
+        # # # 4. ROI Head 내 corr 만 동결 
+        # for name, param in self.roi_head.named_parameters():
+        #     if 'corr' in name:  # ← 핵심 변경점
+        #         param.requires_grad = False 
+        #     # elif 'bbox_roi_extractor' in name:
+        #     #     param.requires_grad = False
+        #     # elif 'z_estimator' in name:
+        #     #     param.requires_grad = False
+        #     # elif 'position_encoding' in name:
+        #     #     param.requires_grad = False
         
         # # # 5. ROI Head 내 bbox_head.transformer만 동결
         # for name, param in self.roi_head.named_parameters():

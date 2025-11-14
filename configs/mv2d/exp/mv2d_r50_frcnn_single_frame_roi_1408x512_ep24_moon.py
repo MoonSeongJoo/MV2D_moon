@@ -96,11 +96,11 @@ model = dict(
                 # checkpoint=None # 가중치 로딩이 필요 없을 경우
             )
         ),
-        # corr_loss=dict(
-        #     type='CorrelationCycleLoss',
-        #     corr_weight=2.0,
-        #     cycle_weight=1.0,
-        # ),
+        corr_loss=dict(
+            type='CorrelationCycleLoss',
+            corr_weight=2.0,
+            cycle_weight=1.0,
+        ),
         z_estimator=dict(
             type='ZEstimator',
             enc_channels=312,

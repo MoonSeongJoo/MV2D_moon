@@ -4732,6 +4732,8 @@ def get_center_points(rois_with_indices):
     y_min = rois_with_indices[:, 3]
     x_max = rois_with_indices[:, 4]
     y_max = rois_with_indices[:, 5]
+    # score = rois_with_indices[:, 6]
+    # cls_lable = rois_with_indices[:, 7]
 
     center_x = (x_min + x_max) / 2.0
     center_y = (y_min + y_max) / 2.0
